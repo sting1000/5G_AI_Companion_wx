@@ -1,0 +1,75 @@
+<view class="page">
+  <!-- 顶部导航 -->
+  <view class="nav-bar">
+    <view class="nav-back" bindtap="goBack">
+      <text>‹ 返回</text>
+    </view>
+    <text class="nav-title">通话摘要</text>
+    <view class="nav-placeholder"></view>
+  </view>
+
+  <block wx:if="{{notFound}}">
+    <view class="empty-state">
+      <text>未找到通话记录</text>
+    </view>
+  </block>
+
+  <block wx:elif="{{record}}">
+    <!-- 元信息 -->
+    <view class="card meta-card">
+      <view class="meta-row">
+        <view>
+          <text class="meta-date">{{record.date}}</text>
+          <text class="meta-duration">时长 {{record.duration}}</text>
+        </view>
+        <text class="meta-mood">{{record.mood}}</text>
+      </view>
+    </view>
+
+    <!-- 摘要 -->
+    <view class="card" wx:if="{{record.summary}}">
+      <text class="card-title">通话概要</text>
+      <text class="summary-text">{{record.summary}}</text>
+      <view class="topics" wx:if="{{record.topics.length > 0}}">
+        <text
+          class="topic-tag"
+          wx:for="{{record.topics}}"
+          wx:key="*this"
+        >{{item}}</text>
+      </view>
+    </view>
+
+    <view class="card" wx:else>
+      <text class="card-title">通话概要</text>
+      <text class="summary-loading">摘要生成中...</text>
+    </view>
+
+    <!-- 重要提及 -->
+    <view class="card" wx:if="{{record.highlights.length > 0}}">
+      <text class="card-title">重要提及</text>
+      <view class="highlight-list">
+        <view class="highlight-item" wx:for="{{record.highlights}}" wx:key="*this">
+          <view class="highlight-dot"></view>
+          <text>{{item}}</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 对话记录 -->
+    <view class="card" wx:if="{{record.messages.length > 0}}">
+      <text class="card-title">对话记录</text>
+      <view class="messages">
+        <view
+          class="msg-row {{item.role === 'user' ? 'msg-user' : 'msg-ai'}}"
+          wx:for="{{record.messages}}"
+          wx:key="index"
+        >
+          <text class="msg-label">{{item.role === 'user' ? '👤' : '👩'}}</text>
+          <view class="msg-bubble {{item.role === 'user' ? 'bubble-user' : 'bubble-ai'}}">
+            <text>{{item.content}}</text>
+          </view>
+        </view>
+      </view>
+    </view>
+  </block>
+</view>

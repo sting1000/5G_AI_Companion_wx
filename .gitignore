@@ -1,0 +1,5 @@
+node_modules/
+miniprogram/config.local.js
+cloudfunctions/**/node_modules/
+.DS_Store
+*.log

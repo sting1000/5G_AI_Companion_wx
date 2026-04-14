@@ -1,0 +1,192 @@
+.page {
+  padding: 32rpx;
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+/* 空状态 */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 200rpx;
+}
+
+.empty-emoji {
+  font-size: 100rpx;
+  margin-bottom: 32rpx;
+}
+
+.empty-title {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: #2D2A26;
+  margin-bottom: 12rpx;
+}
+
+.empty-desc {
+  font-size: 28rpx;
+  color: #8A8580;
+  margin-bottom: 48rpx;
+}
+
+/* 老人卡片 */
+.elder-card {
+  margin-bottom: 40rpx;
+}
+
+.elder-info {
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+  margin-bottom: 28rpx;
+}
+
+.elder-avatar {
+  width: 88rpx;
+  height: 88rpx;
+  border-radius: 50%;
+  background: #FF6B4A;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.elder-avatar text {
+  font-size: 36rpx;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.elder-detail {
+  display: flex;
+  flex-direction: column;
+}
+
+.elder-name {
+  font-size: 34rpx;
+  font-weight: 600;
+  color: #2D2A26;
+}
+
+.elder-title {
+  font-size: 26rpx;
+  color: #8A8580;
+  margin-top: 6rpx;
+}
+
+/* 拨打按钮 */
+.call-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12rpx;
+  background: #FF6B4A;
+  color: #ffffff;
+  border: none;
+  border-radius: 24rpx;
+  padding: 28rpx 0;
+  font-size: 34rpx;
+  font-weight: 600;
+}
+
+.call-btn:active {
+  background: #E55A3A;
+}
+
+/* 模拟来电按钮 */
+.incoming-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12rpx;
+  background: #ffffff;
+  color: #FF6B4A;
+  border: 2rpx solid #FF6B4A;
+  border-radius: 24rpx;
+  padding: 24rpx 0;
+  font-size: 30rpx;
+  font-weight: 600;
+  margin-top: 16rpx;
+}
+
+.incoming-btn:active {
+  background: #FFF5F2;
+}
+
+.call-icon {
+  font-size: 36rpx;
+}
+
+/* 通话记录 */
+.section {
+  margin-top: 16rpx;
+}
+
+.section-title {
+  display: block;
+  font-size: 30rpx;
+  font-weight: 600;
+  color: #2D2A26;
+  margin-bottom: 20rpx;
+}
+
+.empty-calls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48rpx 32rpx;
+}
+
+.empty-call-text {
+  font-size: 28rpx;
+  color: #8A8580;
+  margin-top: 16rpx;
+}
+
+.empty-call-hint {
+  font-size: 24rpx;
+  color: #B0ACA8;
+  margin-top: 8rpx;
+}
+
+/* 通话行 */
+.call-row {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  margin-bottom: 16rpx;
+  padding: 28rpx 32rpx;
+}
+
+.call-mood {
+  font-size: 44rpx;
+  flex-shrink: 0;
+}
+
+.call-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.call-date {
+  font-size: 28rpx;
+  color: #2D2A26;
+  font-weight: 500;
+}
+
+.call-duration {
+  font-size: 24rpx;
+  color: #8A8580;
+  margin-top: 4rpx;
+}
+
+.call-arrow {
+  font-size: 36rpx;
+  color: #C0BCB8;
+  flex-shrink: 0;
+}

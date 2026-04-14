@@ -1,0 +1,183 @@
+.page {
+  min-height: 100vh;
+  padding-bottom: 60rpx;
+}
+
+/* 导航栏 */
+.nav-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 100rpx 32rpx 24rpx;
+  background: #ffffff;
+  border-bottom: 2rpx solid #E8E4DF;
+}
+
+.nav-back {
+  font-size: 32rpx;
+  color: #FF6B4A;
+  padding: 8rpx 0;
+}
+
+.nav-title {
+  font-size: 34rpx;
+  font-weight: 600;
+  color: #2D2A26;
+}
+
+.nav-placeholder {
+  width: 80rpx;
+}
+
+/* 内容区 */
+.card {
+  margin: 24rpx 32rpx 0;
+}
+
+.card-title {
+  display: block;
+  font-size: 30rpx;
+  font-weight: 600;
+  color: #2D2A26;
+  margin-bottom: 20rpx;
+}
+
+/* 元信息 */
+.meta-card {
+  padding: 28rpx 32rpx;
+}
+
+.meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.meta-date {
+  display: block;
+  font-size: 28rpx;
+  color: #8A8580;
+}
+
+.meta-duration {
+  display: block;
+  font-size: 26rpx;
+  color: #8A8580;
+  margin-top: 4rpx;
+}
+
+.meta-mood {
+  font-size: 48rpx;
+}
+
+/* 摘要 */
+.summary-text {
+  display: block;
+  font-size: 28rpx;
+  color: #2D2A26;
+  line-height: 1.8;
+}
+
+.summary-loading {
+  display: block;
+  font-size: 28rpx;
+  color: #8A8580;
+  text-align: center;
+  padding: 32rpx 0;
+}
+
+/* 话题标签 */
+.topics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin-top: 20rpx;
+}
+
+.topic-tag {
+  padding: 8rpx 20rpx;
+  border-radius: 40rpx;
+  background: #FFF5F2;
+  color: #FF6B4A;
+  font-size: 24rpx;
+  font-weight: 500;
+}
+
+/* 重要提及 */
+.highlight-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+}
+
+.highlight-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 16rpx;
+}
+
+.highlight-dot {
+  width: 12rpx;
+  height: 12rpx;
+  border-radius: 50%;
+  background: #FF6B4A;
+  margin-top: 14rpx;
+  flex-shrink: 0;
+}
+
+.highlight-item text {
+  font-size: 28rpx;
+  color: #2D2A26;
+  line-height: 1.6;
+}
+
+/* 对话记录 */
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.msg-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12rpx;
+}
+
+.msg-user {
+  flex-direction: row-reverse;
+}
+
+.msg-label {
+  font-size: 32rpx;
+  flex-shrink: 0;
+  margin-top: 4rpx;
+}
+
+.msg-bubble {
+  max-width: 75%;
+  padding: 16rpx 24rpx;
+  border-radius: 20rpx;
+  font-size: 28rpx;
+  line-height: 1.6;
+}
+
+.bubble-ai {
+  background: #F0EDEA;
+  color: #2D2A26;
+  border-top-left-radius: 4rpx;
+}
+
+.bubble-user {
+  background: #FF6B4A;
+  color: #ffffff;
+  border-top-right-radius: 4rpx;
+}
+
+/* 空状态 */
+.empty-state {
+  text-align: center;
+  padding-top: 200rpx;
+  color: #8A8580;
+  font-size: 28rpx;
+}

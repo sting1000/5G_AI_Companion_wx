@@ -1,0 +1,65 @@
+<view class="page">
+  <!-- 未配置状态 -->
+  <block wx:if="{{!hasConfig}}">
+    <view class="empty-state">
+      <text class="empty-emoji">👋</text>
+      <text class="empty-title">开始为父母配置AI陪伴</text>
+      <text class="empty-desc">小林将每天陪伴您的父母聊天</text>
+      <button class="btn-primary" bindtap="goOnboarding">立即配置</button>
+    </view>
+  </block>
+
+  <!-- 已配置状态 -->
+  <block wx:else>
+    <!-- 老人信息 + 拨打按钮 -->
+    <view class="card elder-card">
+      <view class="elder-info">
+        <view class="elder-avatar">
+          <text>{{elderConfig.parentName[0]}}</text>
+        </view>
+        <view class="elder-detail">
+          <text class="elder-name">{{elderConfig.parentName}}</text>
+          <text class="elder-title">小林称呼：{{elderTitle}}</text>
+        </view>
+      </view>
+      <button class="call-btn" bindtap="goCall">
+        <text class="call-icon">📞</text>
+        <text>拨打陪伴电话</text>
+      </button>
+      <button class="incoming-btn" bindtap="goIncomingCall">
+        <text class="call-icon">📲</text>
+        <text>模拟小林来电</text>
+      </button>
+    </view>
+
+    <!-- 通话记录 -->
+    <view class="section">
+      <text class="section-title">通话记录</text>
+
+      <block wx:if="{{callHistory.length === 0}}">
+        <view class="card empty-calls">
+          <text class="empty-emoji">💬</text>
+          <text class="empty-call-text">暂无通话记录</text>
+          <text class="empty-call-hint">拨打第一通陪伴电话吧</text>
+        </view>
+      </block>
+
+      <block wx:else>
+        <view
+          class="card call-row"
+          wx:for="{{callHistory}}"
+          wx:key="id"
+          bindtap="goSummary"
+          data-id="{{item.id}}"
+        >
+          <view class="call-mood">{{item.mood}}</view>
+          <view class="call-info">
+            <text class="call-date">{{item.date}}</text>
+            <text class="call-duration">时长 {{item.duration}}</text>
+          </view>
+          <view class="call-arrow">›</view>
+        </view>
+      </block>
+    </view>
+  </block>
+</view>

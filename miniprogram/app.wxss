@@ -1,0 +1,58 @@
+/* 全局样式 - 适老化设计 */
+page {
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background-color: #FBF8F4;
+  color: #2D2A26;
+  font-size: 32rpx;
+  line-height: 1.6;
+}
+
+/* 颜色变量 */
+:root {
+  --coral-50: #FFF5F2;
+  --coral-100: #FFE8E0;
+  --coral-500: #FF6B4A;
+  --coral-600: #E55A3A;
+  --warm-bg: #FBF8F4;
+  --warm-text: #2D2A26;
+  --warm-muted: #8A8580;
+  --warm-border: #E8E4DF;
+}
+
+/* 通用卡片 */
+.card {
+  background: #ffffff;
+  border-radius: 24rpx;
+  padding: 32rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.04);
+}
+
+/* 主按钮 */
+.btn-primary {
+  background: #FF6B4A;
+  color: #ffffff;
+  border: none;
+  border-radius: 24rpx;
+  padding: 24rpx 0;
+  font-size: 32rpx;
+  font-weight: 600;
+  text-align: center;
+  width: 100%;
+}
+
+.btn-primary:active {
+  background: #E55A3A;
+}
+
+/* 次要按钮 */
+.btn-secondary {
+  background: #ffffff;
+  color: #8A8580;
+  border: 2rpx solid #E8E4DF;
+  border-radius: 24rpx;
+  padding: 24rpx 0;
+  font-size: 32rpx;
+  font-weight: 600;
+  text-align: center;
+  width: 100%;
+}

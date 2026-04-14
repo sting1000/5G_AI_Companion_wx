@@ -1,0 +1,148 @@
+.page {
+  padding: 40rpx 32rpx;
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 48rpx;
+}
+
+.title {
+  display: block;
+  font-size: 44rpx;
+  font-weight: 700;
+  color: #2D2A26;
+}
+
+.subtitle {
+  display: block;
+  font-size: 28rpx;
+  color: #8A8580;
+  margin-top: 12rpx;
+}
+
+/* 角色卡片 */
+.role-card {
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+  margin-bottom: 32rpx;
+}
+
+.role-avatar {
+  width: 100rpx;
+  height: 100rpx;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #FFE8E0, #FFF5F2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 52rpx;
+  flex-shrink: 0;
+}
+
+.role-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.role-name {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: #2D2A26;
+}
+
+.role-desc {
+  font-size: 26rpx;
+  color: #8A8580;
+  margin-top: 6rpx;
+}
+
+/* 表单 */
+.form-card {
+  margin-bottom: 32rpx;
+}
+
+.form-item {
+  margin-bottom: 36rpx;
+}
+
+.form-item:last-child {
+  margin-bottom: 0;
+}
+
+.label {
+  display: block;
+  font-size: 28rpx;
+  font-weight: 500;
+  color: #2D2A26;
+  margin-bottom: 16rpx;
+}
+
+.input {
+  width: 100%;
+  padding: 24rpx 28rpx;
+  border: 2rpx solid #E8E4DF;
+  border-radius: 20rpx;
+  background: #FBF8F4;
+  font-size: 32rpx;
+  color: #2D2A26;
+  box-sizing: border-box;
+  min-height: 88rpx;
+}
+
+.name-row {
+  display: flex;
+  gap: 16rpx;
+  align-items: center;
+  width: 100%;
+}
+
+.name-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.title-picker {
+  flex-shrink: 0;
+}
+
+.picker-value {
+  padding: 24rpx 28rpx;
+  border: 2rpx solid #E8E4DF;
+  border-radius: 20rpx;
+  background: #FBF8F4;
+  font-size: 32rpx;
+  color: #2D2A26;
+  white-space: nowrap;
+}
+
+.hint {
+  display: block;
+  font-size: 24rpx;
+  color: #FF6B4A;
+  margin-top: 12rpx;
+}
+
+/* 隐私提示 */
+.privacy-tip {
+  background: #FFF8F0;
+  border: 2rpx solid #FFE8D0;
+  border-radius: 20rpx;
+  padding: 24rpx;
+  margin-bottom: 48rpx;
+}
+
+.privacy-tip text {
+  font-size: 24rpx;
+  color: #B08040;
+}
+
+/* 提交按钮 */
+.submit-btn {
+  margin-top: 16rpx;
+  font-size: 34rpx;
+  padding: 28rpx 0;
+}

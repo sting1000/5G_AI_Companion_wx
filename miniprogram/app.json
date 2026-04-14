@@ -1,0 +1,24 @@
+{
+  "pages": [
+    "pages/dashboard/dashboard",
+    "pages/onboarding/onboarding",
+    "pages/call/call",
+    "pages/summary/summary"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#ffffff",
+    "navigationBarTitleText": "亲情陪伴",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#FBF8F4",
+    "backgroundTextStyle": "dark"
+  },
+  "requiredPrivateInfos": [
+    "getLocation"
+  ],
+  "permission": {
+    "scope.record": {
+      "desc": "需要使用麦克风进行语音通话"
+    }
+  },
+  "sitemapLocation": "sitemap.json"
+}

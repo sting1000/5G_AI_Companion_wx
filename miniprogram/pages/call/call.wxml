@@ -1,0 +1,86 @@
+<view class="call-page" wx:if="{{!showIncoming}}">
+  <!-- 计时器 -->
+  <view class="timer-area">
+    <text class="timer-label">{{status === 'connecting' ? '正在连接...' : '通话中'}}</text>
+    <text class="timer-text">{{elapsedText}}</text>
+  </view>
+
+  <!-- 头像区 -->
+  <view class="avatar-area">
+    <view class="avatar-glow"></view>
+    <view class="avatar">
+      <text class="avatar-emoji">👧</text>
+    </view>
+    <text class="avatar-name">小林</text>
+    <text class="avatar-role">贴心晚辈</text>
+  </view>
+
+  <!-- 字幕区 -->
+  <view class="subtitle-area">
+    <view class="subtitle-box" wx:if="{{subtitle || userText}}">
+      <text class="subtitle-user" wx:if="{{userText}}">🎤 {{userText}}</text>
+      <text class="subtitle-ai" wx:if="{{subtitle}}">{{subtitle}}</text>
+    </view>
+    <view class="subtitle-box" wx:elif="{{status === 'connecting'}}">
+      <text class="subtitle-ai">正在连接小林...</text>
+    </view>
+    <view class="subtitle-box" wx:else>
+      <text class="subtitle-hint">正在聆听，直接说话即可</text>
+    </view>
+  </view>
+
+  <!-- 底部：声波指示 + 挂断 -->
+  <view class="bottom-area">
+    <view class="mic-indicator {{isSpeaking ? 'mic-active' : ''}}">
+      <view class="mic-ring"></view>
+      <text class="mic-icon">🎙️</text>
+    </view>
+    <text class="mic-label">{{isSpeaking ? '正在聆听...' : '等待说话'}}</text>
+
+    <view class="hangup-btn" catchtap="onHangup">
+      <text class="hangup-icon">📞</text>
+    </view>
+    <text class="hangup-label">挂断</text>
+
+    <!-- 开发者工具文本调试 -->
+    <view class="debug-input-area" wx:if="{{status === 'connected'}}">
+      <input class="debug-input"
+        placeholder="打字发送（调试用）"
+        value="{{debugInput}}"
+        bindinput="onDebugInput"
+        bindconfirm="onDebugSend"
+        confirm-type="send" />
+      <view class="debug-send-btn" catchtap="onDebugSend">
+        <text>发送</text>
+      </view>
+    </view>
+  </view>
+</view>
+
+<!-- 模拟来电界面 -->
+<view class="incoming-page" wx:if="{{showIncoming}}">
+  <view class="incoming-content">
+    <view class="incoming-avatar">
+      <text class="incoming-emoji">👧</text>
+    </view>
+    <text class="incoming-name">小林</text>
+    <text class="incoming-desc">来电</text>
+    <view class="incoming-ring-text">
+      <text>正在响铃...</text>
+    </view>
+  </view>
+  <view class="incoming-actions">
+    <view class="incoming-action-group">
+      <view class="decline-btn" catchtap="onDecline">
+        <text>📞</text>
+      </view>
+      <text class="incoming-action-label">拒绝</text>
+    </view>
+    <view class="incoming-action-group">
+      <view class="accept-btn" catchtap="onAccept">
+        <text>📞</text>
+      </view>
+      <text class="incoming-action-label">接听</text>
+    </view>
+  </view>
+</view>
