@@ -12,12 +12,11 @@
       <text class="avatar-emoji">👧</text>
     </view>
     <text class="avatar-name">小林</text>
-    <text class="avatar-role">贴心晚辈</text>
   </view>
 
   <!-- 字幕区 -->
   <view class="subtitle-area">
-    <scroll-view class="subtitle-box transcript-scroll" scroll-y scroll-into-view="{{transcriptAnchorId}}" wx:if="{{transcriptItems.length > 0 || currentUserDraft || currentAssistantDraft}}">
+    <scroll-view class="subtitle-box transcript-scroll" scroll-y scroll-into-view="{{transcriptAnchorId}}" scroll-top="{{transcriptScrollTop}}" scroll-with-animation lower-threshold="48" bindscroll="onTranscriptScroll" bindscrolltolower="onTranscriptScrollToLower" wx:if="{{transcriptItems.length > 0 || currentUserDraft || currentAssistantDraft}}">
       <view
         wx:for="{{transcriptItems}}"
         wx:key="id"

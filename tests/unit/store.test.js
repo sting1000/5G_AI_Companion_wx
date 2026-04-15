@@ -111,4 +111,37 @@ describe('store 离线规则', () => {
     expect(prompt).toContain('上次承诺跟进')
     expect(prompt).toContain('老人近期事件')
   })
+
+  test('buildMemoryPrompt 会过滤低信息记忆句', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:0005'
+    store.initMemoryBundle(elderKey, {
+      health: '血压偏高',
+      hobbies: ['太极'],
+      preferredAddress: '王阿姨',
+    })
+    store.mergeMemoryBundle(elderKey, {
+      elderMemory: {
+        recentEvents: ['过得还行吧', '昨天去公园散步'],
+      },
+      xiaolinMemory: {
+        followUps: ['没有呢，没有出去玩', '明天去医院复查膝盖'],
+      },
+    }, 'call_002')
+
+    const prompt = store.buildMemoryPrompt(elderKey, {
+      maxItems: 3,
+      minConfidence: 0.6,
+      typeBudget: {
+        followUp: 2,
+        recentEvent: 2,
+        interest: 1,
+      },
+    })
+    expect(prompt).toContain('明天去医院复查膝盖')
+    expect(prompt).toContain('昨天去公园散步')
+    expect(prompt).not.toContain('过得还行吧')
+    expect(prompt).not.toContain('没有呢，没有出去玩')
+  })
 })

@@ -78,7 +78,7 @@
 /* 字幕 */
 .subtitle-area {
   width: 100%;
-  min-height: 220rpx;
+  min-height: 280rpx;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -87,15 +87,18 @@
 .subtitle-box {
   background: rgba(255, 255, 255, 0.1);
   border-radius: 24rpx;
-  padding: 24rpx 28rpx;
+  padding: 30rpx 34rpx;
   width: 100%;
   text-align: center;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .transcript-scroll {
-  max-height: 320rpx;
+  max-height: 400rpx;
   text-align: left;
   box-sizing: border-box;
+  width: 100%;
 }
 
 .transcript-item {

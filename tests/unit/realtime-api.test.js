@@ -50,6 +50,22 @@ function getFrameEventId(frameBuffer) {
   return view.getUint32(4)
 }
 
+function getClientFramePayload(frameBuffer) {
+  const data = new Uint8Array(frameBuffer)
+  const view = new DataView(frameBuffer)
+  let offset = 8 // header(4) + event(4)
+  const eventId = view.getUint32(4)
+  if (eventId >= 100) {
+    const sidLen = view.getUint32(offset)
+    offset += 4 + sidLen
+  }
+  const payloadSize = view.getUint32(offset)
+  offset += 4
+  const payloadBytes = data.slice(offset, offset + payloadSize)
+  const payloadText = new TextDecoder().decode(payloadBytes)
+  return JSON.parse(payloadText)
+}
+
 describe('realtime-api 离线协议与生命周期', () => {
   function loadClient() {
     jest.resetModules()
@@ -108,6 +124,11 @@ describe('realtime-api 离线协议与生命周期', () => {
 
     const sessionFrame = wx.__socketTask.send.mock.calls[1][0].data
     expect(getFrameEventId(sessionFrame)).toBe(EVENT.START_SESSION)
+    const payload = getClientFramePayload(sessionFrame)
+    expect(payload.tts.speaker).toBe('voice_a')
+    expect(payload.tts.voice_type).toBe('voice_a')
+    expect(payload.dialog.extra.model).toBe('2.2.0.0')
+    expect(payload.dialog.extra.input_mod).toBe('keep_alive')
 
     wx.__socketTask.__emitMessage(buildServerFrame({
       msgType: 0b1001,
@@ -116,6 +137,36 @@ describe('realtime-api 离线协议与生命周期', () => {
       payload: { dialog_id: 'dialog-new' },
     }))
     await expect(startPromise).resolves.toBe('dialog-new')
+  })
+
+  test('startSession 会透传 asrConfig 和热词配置', async () => {
+    const client = loadClient()
+    const connectPromise = client.connect()
+    wx.__socketTask.__emitOpen()
+    wx.__socketTask.__emitMessage(buildServerFrame({
+      msgType: 0b1001,
+      eventId: SERVER_EVENT.CONNECTION_STARTED,
+      payload: {},
+    }))
+    await connectPromise
+
+    client.startSession({
+      asrConfig: {
+        enableCustomVad: true,
+        endSmoothWindowMs: 900,
+        enableAsrTwopass: true,
+        hotwords: ['小林', '太极拳'],
+        correctWords: { 小玲: '小林' },
+      },
+    })
+    const sessionFrame = wx.__socketTask.send.mock.calls[1][0].data
+    const payload = getClientFramePayload(sessionFrame)
+    expect(payload.tts.speaker).toBe('saturn_zh_female_wenrouwenya_tob')
+    expect(payload.asr.extra.enable_custom_vad).toBe(true)
+    expect(payload.asr.extra.end_smooth_window_ms).toBe(900)
+    expect(payload.asr.extra.enable_asr_twopass).toBe(true)
+    expect(payload.asr.extra.context.hotwords).toEqual([{ word: '小林' }, { word: '太极拳' }])
+    expect(payload.asr.extra.context.correct_words).toEqual({ 小玲: '小林' })
   })
 
   test('错误帧会触发 onError 回调', () => {

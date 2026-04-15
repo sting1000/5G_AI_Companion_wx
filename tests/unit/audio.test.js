@@ -42,6 +42,7 @@ describe('audio 离线播放与录音', () => {
     expect(fs.writeFile).toHaveBeenCalled()
     expect(wx.__audioContext.play).toHaveBeenCalled()
     expect(onStart).toHaveBeenCalled()
+    player.stop()
   })
 
   test('AudioPlayer.stop 会清空状态并调用 audioCtx.stop', () => {

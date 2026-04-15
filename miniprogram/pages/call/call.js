@@ -1,5 +1,5 @@
 const { RealtimeAPIClient } = require('../../utils/realtime-api')
-const { AudioRecorder, AudioPlayer } = require('../../utils/audio')
+const { AudioRecorder, AudioPlayer, FRAME_SIZE } = require('../../utils/audio')
 const store = require('../../utils/store')
 const SUBTITLE_THROTTLE_MS = 120
 const TRANSCRIPT_MAX_ITEMS = 30
@@ -16,8 +16,8 @@ const GREETING_MEMORY_COOLDOWN_MS = 48 * 60 * 60 * 1000
 const MIN_CONNECTING_UI_MS = 2200
 const CONNECTING_FALLBACK_MS = 6500
 const SPEAKER_FALLBACK_CHAIN = [
+  'saturn_zh_female_wenrouwenya_tob',
   'saturn_zh_female_tiexinnvyou_tob',
-  'zh_female_vv_jupiter_bigtts',
 ]
 const BOUNDARY_VIOLATION_PATTERNS = [
   /(我|我来|我可以|我能|我去|我会).{0,6}(陪您|陪你).{0,8}(去|到).{0,10}(医院|门诊|看病|复诊|体检)/,
@@ -25,26 +25,43 @@ const BOUNDARY_VIOLATION_PATTERNS = [
   /(我|我来|我可以|我能|我去|我会).{0,8}(帮您买|给您买|代买|代办|跑腿|送过去|寄给您|陪同就医)/,
 ]
 const BOUNDARY_SAFE_REPLY = '我不能线下陪同或代办，但我可以马上帮您联系对应的人。您这件事我建议先联系家人；如果是紧急不适，我现在就帮您优先联系120。'
-const DEFAULT_VOICE_PRESET = 'expressive'
+const DEFAULT_VOICE_PRESET = 'safe'
+const UPLINK_CHUNK_BYTES = FRAME_SIZE || 640
+const SC20_EXPERIMENT_TAG = 'sc20_v1_wenrouwenya_keepalive_vad1300'
+const DEFAULT_ASR_PROFILE = Object.freeze({
+  mode: 'steady',
+  enableCustomVad: true,
+  // 用户反馈思考停顿容易被提前判停，默认回调到更稳妥窗口
+  endSmoothWindowMs: 1300,
+  enableAsrTwopass: false,
+  hotwords: ['小林', '提醒', '复查', '太极拳'],
+  correctWords: {
+    小玲: '小林',
+  },
+})
+const LATENCY_BASELINE_TARGET = Object.freeze({
+  playP50MaxMs: 2200,
+  playP90MaxMs: 3600,
+})
 const VOICE_PRESET_CONFIG = {
   safe: {
     label: '自然稳健',
     speakingStyle: '说话温柔自然，句子短一点，停顿清楚，语速平稳偏慢，优先保证可懂度',
-    characterManifest: '',
+    characterManifest: '温柔、耐心、短句表达、信息明确，优先保证老人可理解。',
     careStrategies: ['语速自然正常', '语句简短', '多确认理解', '情绪表达克制而温暖'],
     tts: { speechRate: -8, loudnessRate: -4, enableLoudnessNorm: true },
   },
   balanced: {
     label: '轻情感',
     speakingStyle: '说话自然亲切，适度加入情绪起伏，句子保持口语化，停顿柔和',
-    characterManifest: '',
+    characterManifest: '自然亲切，保持口语化，但每句话只表达一个重点。',
     careStrategies: ['语速自然正常', '口语化表达', '多给共情反馈', '建议保持可执行'],
     tts: { speechRate: 0, loudnessRate: 0, enableLoudnessNorm: true },
   },
   expressive: {
     label: '情感实验',
     speakingStyle: '说话更有情感层次，但不要夸张，保持语义清晰和断句稳定',
-    characterManifest: '',
+    characterManifest: '更有情感层次，但不过度夸张，始终保持清晰断句。',
     careStrategies: ['语速自然正常', '口语化表达', '先共情再建议', '高风险场景优先安抚与转介'],
     tts: { speechRate: 6, loudnessRate: 3, enableLoudnessNorm: true },
   },
@@ -61,6 +78,7 @@ Page({
     currentUserDraft: '',
     currentAssistantDraft: '',
     transcriptAnchorId: 'transcript-anchor',
+    transcriptScrollTop: 0,
     isSpeaking: false,
     isAssistantSpeaking: false,
     showIncoming: false, // 是否展示来电界面
@@ -99,6 +117,12 @@ Page({
     this.currentSpeakerIndex = 0
     this.isSwitchingSpeaker = false
     this.callStartAt = Date.now()
+    this.uplinkRemainder = new Uint8Array(0)
+    this.stabilityMetrics = {
+      idleTimeoutCount: 0,
+      reconnectAttempts: 0,
+      reconnectSuccess: 0,
+    }
     this.hasSwitchedToConnected = false
     this.connectingFallbackTimer = null
     this.currentTurnBoundaryViolated = false
@@ -158,6 +182,11 @@ Page({
         : ''
 
       const voicePreset = VOICE_PRESET_CONFIG[DEFAULT_VOICE_PRESET] || VOICE_PRESET_CONFIG.safe
+      const layeredPersonaManifest = this._buildCharacterManifest({
+        title,
+        voicePreset,
+        memoryBundle,
+      })
       const reminderGuidance = greetingPayload.usedReminderId
         ? `\n当前通话是“提醒事项回访”。对话优先级：先确认“提醒事项是否已完成”；若未完成，先问阻碍并给1-2条可执行建议；若已完成，先肯定再简短关心近况。不要再用“能聊聊吗/方便聊两句吗”作为开场。`
         : ''
@@ -189,11 +218,14 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         botName: '小林',
         systemRole,
         speakingStyle: voicePreset.speakingStyle,
-        characterManifest: voicePreset.characterManifest || '',
+        characterManifest: layeredPersonaManifest,
         careStrategies: voicePreset.careStrategies || [],
         ttsAudioConfig: voicePreset.tts || {},
+        asrConfig: Object.assign({}, DEFAULT_ASR_PROFILE),
         dialogId,
         speaker: SPEAKER_FALLBACK_CHAIN[this.currentSpeakerIndex] || SPEAKER_FALLBACK_CHAIN[0],
+        inputMode: 'keep_alive',
+        profileTag: SC20_EXPERIMENT_TAG,
         voicePreset: DEFAULT_VOICE_PRESET,
       }
       const returnedDialogId = await this.client.startSession(this.sessionOptions)
@@ -250,7 +282,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     this._frameCount = 0
     this.recorder.onFrameData = (pcmBuffer) => {
       this._frameCount++
-      if (this._frameCount <= 3 || this._frameCount % 50 === 0) {
+      if (this._frameCount <= 3 || this._frameCount % 200 === 0) {
         console.log('[Call] 录音帧 #' + this._frameCount + ', 大小:', pcmBuffer ? pcmBuffer.byteLength : 0)
       }
       if (this.initialEchoGuardActive) {
@@ -290,8 +322,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         console.log(FLOW_LOG_PREFIX, '上行恢复发送')
         this.lastUplinkBlockReason = ''
       }
-      this.client.sendAudio(pcmBuffer)
-      this.lastAudioUplinkAt = Date.now()
+      this._sendAudioIn20msFrames(pcmBuffer)
     }
 
     // ASR：用户说话识别
@@ -301,6 +332,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       this.setData({
         currentUserDraft: visibleText,
         transcriptAnchorId: 'draft-user',
+        transcriptScrollTop: this.data.transcriptScrollTop + 9999,
         isSpeaking: true,
         isAssistantSpeaking: false,
       })
@@ -367,6 +399,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         currentUserDraft: '',
         currentAssistantDraft: seededAssistantDraft || '',
         transcriptAnchorId: seededAssistantDraft ? 'draft-assistant' : this.data.transcriptAnchorId,
+        transcriptScrollTop: this.data.transcriptScrollTop + 9999,
         isSpeaking: false,
         isAssistantSpeaking: true,
       })
@@ -426,6 +459,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       }
       // sami error: DialogAudioIdleTimeoutError，通常表示服务端判定上行音频长时间中断
       if (String(err.code) === '55000001') {
+        this.stabilityMetrics.idleTimeoutCount += 1
         console.warn(FLOW_LOG_PREFIX, '收到 idle timeout 错误，尝试恢复会话')
         this._refreshSessionForLongCall()
       }
@@ -493,11 +527,15 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       }
       if (!this.client || !this.client.connected || !this.client.sessionActive) return
       if (this.isRefreshingSession || this.isRecoveringDisconnect) return
+      if (!ALLOW_UPLINK_DURING_PLAYBACK) {
+        if (this.initialEchoGuardActive) return
+        if (this.player && this.player.playing) return
+        if (Date.now() < this.playbackEchoGuardUntil) return
+      }
       const now = Date.now()
       if (now - this.lastAudioUplinkAt < UPLINK_IDLE_TRIGGER_MS) return
       const silence = this._getSilenceFrame()
-      this.client.sendAudio(silence)
-      this.lastAudioUplinkAt = now
+      this._sendAudioIn20msFrames(silence)
       console.log(FLOW_LOG_PREFIX, '发送静音保活帧，防止 idle timeout')
     }, UPLINK_KEEPALIVE_INTERVAL_MS)
   },
@@ -564,6 +602,24 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     return this.silenceFrame
   },
 
+  _sendAudioIn20msFrames(pcmBuffer) {
+    if (!pcmBuffer) return
+    const incoming = new Uint8Array(pcmBuffer)
+    if (incoming.byteLength === 0) return
+    const merged = new Uint8Array(this.uplinkRemainder.byteLength + incoming.byteLength)
+    merged.set(this.uplinkRemainder, 0)
+    merged.set(incoming, this.uplinkRemainder.byteLength)
+    let offset = 0
+    while (offset + UPLINK_CHUNK_BYTES <= merged.byteLength) {
+      const frame = new Uint8Array(UPLINK_CHUNK_BYTES)
+      frame.set(merged.slice(offset, offset + UPLINK_CHUNK_BYTES))
+      this.client.sendAudio(frame.buffer)
+      this.lastAudioUplinkAt = Date.now()
+      offset += UPLINK_CHUNK_BYTES
+    }
+    this.uplinkRemainder = merged.slice(offset)
+  },
+
   // 挂断
   onHangup() {
     this._endCall({
@@ -598,6 +654,12 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       this.client.finishSession()
       this.client.disconnect()
     }
+    console.log('[Call][Stability]', {
+      profile: this.sessionOptions && this.sessionOptions.profileTag,
+      idleTimeoutCount: this.stabilityMetrics.idleTimeoutCount,
+      reconnectAttempts: this.stabilityMetrics.reconnectAttempts,
+      reconnectSuccess: this.stabilityMetrics.reconnectSuccess,
+    })
 
     const record = this._buildCallRecord()
     if (this.messages.length > 0 || this.data.elapsed > 5) {
@@ -623,6 +685,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       return
     }
     this.isRefreshingSession = true
+    this.stabilityMetrics.reconnectAttempts += 1
     console.warn(FLOW_LOG_PREFIX, '开始自动恢复会话')
     try {
       const latestDialogId = store.getDialogId(this.currentElderKey) || this.client.dialogId || ''
@@ -633,6 +696,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       if (nextDialogId) {
         store.saveDialogId(nextDialogId, this.currentElderKey)
       }
+      this.stabilityMetrics.reconnectSuccess += 1
       console.log('[Call] 已自动续会话，assistantTurnCount=', this.assistantTurnCount)
       console.log(FLOW_LOG_PREFIX, '自动恢复会话成功', {
         dialogId: nextDialogId || latestDialogId || '',
@@ -649,6 +713,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     if (this.isRecoveringDisconnect || this.data.status !== 'connected') return
     if (!this.sessionOptions || !this.client) return
     this.isRecoveringDisconnect = true
+    this.stabilityMetrics.reconnectAttempts += 1
     console.warn(FLOW_LOG_PREFIX, '检测到断连，开始自动重连恢复')
     try {
       await this.client.connect()
@@ -659,6 +724,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       if (resumedDialogId) {
         store.saveDialogId(resumedDialogId, this.currentElderKey)
       }
+      this.stabilityMetrics.reconnectSuccess += 1
       console.log(FLOW_LOG_PREFIX, '断连恢复成功', {
         dialogId: resumedDialogId || latestDialogId || '',
       })
@@ -752,6 +818,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       this.setData({
         currentAssistantDraft: this.pendingAssistantDraft || '',
         transcriptAnchorId: 'draft-assistant',
+        transcriptScrollTop: this.data.transcriptScrollTop + 9999,
       })
       return
     }
@@ -766,6 +833,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       this.setData({
         currentAssistantDraft: this.pendingAssistantDraft || '',
         transcriptAnchorId: 'draft-assistant',
+        transcriptScrollTop: this.data.transcriptScrollTop + 9999,
       })
     }, waitMs)
   },
@@ -779,6 +847,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     this.setData({
       transcriptItems: clipped,
       transcriptAnchorId: id,
+      transcriptScrollTop: this.data.transcriptScrollTop + 9999,
     })
   },
 
@@ -820,7 +889,34 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     const chatDelay = latest.firstChatAt ? (latest.firstChatAt - latest.userEndAt) : -1
     const ttsDelay = latest.firstTTSAt ? (latest.firstTTSAt - latest.userEndAt) : -1
     const playDelay = latest.playStartAt ? (latest.playStartAt - latest.userEndAt) : -1
-    console.log('[Call][Latency] latest(chat/tts/play)=', chatDelay, ttsDelay, playDelay, 'ms; p50/p90(play)=', p50, p90, 'ms')
+    console.log('[Call][Latency] profile=', this.sessionOptions && this.sessionOptions.profileTag, 'latest(chat/tts/play)=', chatDelay, ttsDelay, playDelay, 'ms; p50/p90(play)=', p50, p90, 'ms')
+    if (p50 > LATENCY_BASELINE_TARGET.playP50MaxMs || p90 > LATENCY_BASELINE_TARGET.playP90MaxMs) {
+      console.warn('[Call][Latency][ABCheck] 超出阈值', {
+        profile: this.sessionOptions && this.sessionOptions.profileTag,
+        p50,
+        p90,
+        target: LATENCY_BASELINE_TARGET,
+      })
+    }
+  },
+
+  _buildCharacterManifest({ title, voicePreset, memoryBundle }) {
+    const elderMemory = memoryBundle && memoryBundle.elderMemory ? memoryBundle.elderMemory : {}
+    const xiaolinMemory = memoryBundle && memoryBundle.xiaolinMemory ? memoryBundle.xiaolinMemory : {}
+    const stableInterests = (elderMemory.interestTags || []).slice(0, 3).join('、')
+    const stableHealth = (elderMemory.healthNotes || []).slice(0, 2).join('；')
+    const tabooTopics = (xiaolinMemory.tabooTopics || []).slice(0, 2).join('、')
+    const careStrategies = (voicePreset.careStrategies || []).slice(0, 4).join('；')
+    return [
+      `你是“小林”，服务对象是${title}，核心目标是提供温柔、可靠、电话内可执行的陪伴。`,
+      '优先级规则：安全约束 > 角色稳定规则 > 动态记忆事实；低优先级不得覆盖高优先级。',
+      '角色底线：不能承诺线下行动（上门、陪同、代买代办、寄送等），只能提供电话内协助与转介。',
+      `表达风格：${voicePreset.characterManifest || '温柔亲切，短句清晰，避免说教。'}`,
+      careStrategies ? `陪伴策略：${careStrategies}` : '',
+      stableInterests ? `动态记忆（兴趣，谨慎提及）：${stableInterests}` : '',
+      stableHealth ? `动态记忆（健康背景，仅在相关场景提及）：${stableHealth}` : '',
+      tabooTopics ? `动态记忆（慎提话题）：${tabooTopics}` : '',
+    ].filter(Boolean).join('\n')
   },
 
   // 异步生成通话摘要
@@ -937,20 +1033,12 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     const candidates = []
       .concat(summaryData.highlights || [])
       .concat(userMessages || [])
-      .filter(Boolean)
-      .map(text => String(text).trim())
-      .filter(text => text.length >= 6)
-      .filter(text => {
-        const normalized = this._normalizeMemorySentence(text)
-        if (this._isLowInfoSentence(normalized)) return false
-        // 需要包含未来行动/提醒/回访语义，避免“想/可以/需要”等泛词误判
-        const hasIntentSignal = /下次|回头|改天|之后|明天|这周|记得|提醒|复查|复诊|进展|到时候/.test(normalized)
-        if (!hasIntentSignal) return false
-        // 同时要有动作信息，降低空泛句入库
-        return /去|做|看|聊|问|复查|复诊|提醒|联系|准备|安排/.test(normalized)
-      })
-
-    return candidates.slice(0, 3)
+    return this._extractTopicMemoryCandidates(candidates, {
+      maxItems: 3,
+      maxSegments: 5,
+      preferFuture: true,
+      requireAction: true,
+    })
   },
 
   _extractReminderCandidates(record, summaryData) {
@@ -1267,7 +1355,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
   _pickFirstNotCooling(candidates) {
     const list = (candidates || [])
       .map(text => this._normalizeMemorySentence(text))
-      .filter(Boolean)
+      .filter(text => text && !this._isLowInfoSentence(text))
     for (let i = 0; i < list.length; i++) {
       const text = list[i]
       if (!store.isGreetingMemoryCooling(this.currentElderKey, text, GREETING_MEMORY_COOLDOWN_MS)) {
@@ -1325,17 +1413,15 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
   },
 
   _extractRecentEvents(userMessages, highlights) {
-    const fromUser = (userMessages || [])
-      .filter(text => /今天|昨天|最近|这周|这两天|刚刚|前几天/.test(text))
-      .filter(text => /去|做|看|买|复查|复诊|散步|睡|见|聊/.test(text))
-      .map(text => this._normalizeMemorySentence(text))
-      .filter(text => !this._isLowInfoSentence(text))
-      .slice(0, 3)
-    const fromHighlights = (highlights || [])
-      .map(text => this._normalizeMemorySentence(text))
-      .filter(text => !this._isLowInfoSentence(text))
-      .slice(0, 3)
-    return [].concat(fromHighlights, fromUser).slice(0, 5)
+    const candidates = []
+      .concat(highlights || [])
+      .concat(userMessages || [])
+    return this._extractTopicMemoryCandidates(candidates, {
+      maxItems: 5,
+      maxSegments: 6,
+      preferFuture: false,
+      requireAction: false,
+    })
   },
 
   _extractInterestTags(userMessages) {
@@ -1398,6 +1484,126 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       .replace(/\s+/g, '')
   },
 
+  _extractTopicMemoryCandidates(lines, options) {
+    const opts = options || {}
+    const normalizedLines = (lines || [])
+      .map(text => this._normalizeMemorySentence(text))
+      .filter(Boolean)
+      .filter(text => !this._isLowInfoSentence(text))
+      .filter(text => text.length >= 6)
+    if (normalizedLines.length === 0) return []
+
+    const maxSegments = typeof opts.maxSegments === 'number' ? opts.maxSegments : 6
+    const maxItems = typeof opts.maxItems === 'number' ? opts.maxItems : 3
+    const segments = this._buildTopicSegments(normalizedLines).slice(0, maxSegments)
+    const picked = []
+    segments.forEach(segment => {
+      const best = this._pickBestSentenceInSegment(segment, opts)
+      if (best) picked.push(best)
+    })
+    return Array.from(new Set(picked)).slice(0, maxItems)
+  },
+
+  _buildTopicSegments(lines) {
+    const segments = []
+    let current = []
+    let currentSignals = {}
+    ;(lines || []).forEach((line) => {
+      const signals = this._extractTopicSignals(line)
+      const overlap = this._topicSignalOverlap(currentSignals, signals)
+      if (current.length === 0 || overlap >= 0.2) {
+        current.push(line)
+        currentSignals = this._mergeTopicSignals(currentSignals, signals)
+        return
+      }
+      segments.push(current)
+      current = [line]
+      currentSignals = signals
+    })
+    if (current.length > 0) segments.push(current)
+    return segments
+  },
+
+  _pickBestSentenceInSegment(segment, options) {
+    const opts = options || {}
+    let bestText = ''
+    let bestScore = -Infinity
+    ;(segment || []).forEach(text => {
+      const score = this._scoreMemorySentence(text, opts)
+      if (score > bestScore) {
+        bestScore = score
+        bestText = text
+      }
+    })
+    if (!bestText) return ''
+    if (bestScore < 2.5) return ''
+    return bestText
+  },
+
+  _scoreMemorySentence(text, options) {
+    const opts = options || {}
+    const line = this._normalizeMemorySentence(text)
+    if (!line || this._isLowInfoSentence(line)) return -10
+
+    const hasAction = /(去|做|看|聊|问|复查|复诊|提醒|联系|准备|安排|散步|锻炼|吃药|买菜|睡|起床)/.test(line)
+    const hasTime = /(今天|昨天|最近|这周|这两天|前几天|明天|后天|下周|周[一二三四五六日天]|早上|上午|中午|下午|晚上|\d+点|\d+月\d+[日号]?)/.test(line)
+    const hasEntity = /(医院|门诊|医生|女儿|儿子|家里|社区|公园|药|血压|血糖|睡眠|兴趣|太极|书法|复查|复诊)/.test(line)
+    const hasFollowUpIntent = /(下次|回头|改天|之后|记得|提醒|进展|到时候)/.test(line)
+    const hasOnlyNegation = /^(没有|没)(呢|呀|啊)?([，,、]?)(没有|没)?(出去|出门|外出)?(玩|逛|活动)?$/.test(line)
+
+    if (opts.requireAction && !hasAction) return -4
+    if (opts.preferFuture && !(hasFollowUpIntent || /明天|后天|下周|记得|提醒|复查|复诊/.test(line))) return -3
+    if (hasOnlyNegation) return -6
+
+    let score = 0
+    score += Math.min(2, line.length / 10)
+    if (hasAction) score += 1.6
+    if (hasTime) score += 1.2
+    if (hasEntity) score += 1.2
+    if (hasFollowUpIntent) score += 1
+    if (/我(想|要|准备|计划)/.test(line)) score += 0.8
+    if (/但是|不过|因为|所以/.test(line)) score += 0.4
+    return score
+  },
+
+  _extractTopicSignals(text) {
+    const line = this._normalizeMemorySentence(text)
+    const groups = {
+      health: ['血压', '血糖', '膝盖', '复查', '复诊', '医院', '医生', '吃药', '睡眠'],
+      family: ['女儿', '儿子', '孙子', '孙女', '老伴', '家里'],
+      routine: ['早上', '上午', '中午', '下午', '晚上', '起床', '散步', '买菜', '做饭'],
+      hobby: ['太极', '书法', '广场舞', '音乐', '戏曲', '电视剧', '公园'],
+      reminder: ['提醒', '记得', '下次', '回头', '安排', '计划', '准备'],
+    }
+    const signals = {}
+    Object.keys(groups).forEach(group => {
+      groups[group].forEach(keyword => {
+        if (line.includes(keyword)) {
+          signals[`${group}:${keyword}`] = true
+        }
+      })
+    })
+    if (/(今天|昨天|最近|明天|后天|下周|周[一二三四五六日天])/.test(line)) {
+      signals['time:relative'] = true
+    }
+    return signals
+  },
+
+  _mergeTopicSignals(base, incoming) {
+    return Object.assign({}, base || {}, incoming || {})
+  },
+
+  _topicSignalOverlap(a, b) {
+    const aKeys = Object.keys(a || {})
+    const bKeys = Object.keys(b || {})
+    if (aKeys.length === 0 || bKeys.length === 0) return 0
+    let hit = 0
+    bKeys.forEach(key => {
+      if (a[key]) hit += 1
+    })
+    return hit / Math.max(1, Math.min(aKeys.length, bKeys.length))
+  },
+
   _isLowInfoSentence(text) {
     const line = this._normalizeMemorySentence(text)
     if (!line) return true
@@ -1411,6 +1617,12 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
 
     // 只包含情绪应答词且没有实体信息
     if (/^(挺|还|就)?(好|行|可以|不错)$/.test(line)) return true
+    // 常见寒暄短答：过得还行吧 / 日子就那样
+    if (/^(过得|日子|最近)?(还|挺|就)?(行|还行|一般|凑合|那样)(吧|呢|呀)?$/.test(line)) return true
+    // 常见否定短答：没有呢，没有出去玩
+    if (/^(没有|没)(呢|呀|啊)?([，,、]?)(没有|没)?(出去|出门|外出)?(玩|逛|活动)?$/.test(line)) return true
+    // 没有明确时间/人物/事项的泛化回复，不作为跨通话记忆
+    if (/^(没有|没)(什么|啥)?(特别|安排|计划|进展)?(的)?$/.test(line)) return true
     return false
   },
 
@@ -1500,6 +1712,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     this.recorder.stop()
     this.player.stop()
     this.player.destroy()
+    this.uplinkRemainder = new Uint8Array(0)
     if (this.client.connected) {
       this.client.finishSession()
       this.client.disconnect()

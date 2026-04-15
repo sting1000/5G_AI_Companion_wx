@@ -240,6 +240,27 @@ function clampNumber(value, min, max) {
   return Math.round(num)
 }
 
+function normalizeHotwords(list) {
+  if (!Array.isArray(list)) return []
+  return list
+    .map(item => String(item || '').trim())
+    .filter(Boolean)
+    .slice(0, 20)
+    .map(word => ({ word }))
+}
+
+function normalizeCorrectWords(mapLike) {
+  if (!mapLike || typeof mapLike !== 'object') return {}
+  const result = {}
+  Object.keys(mapLike).forEach((key) => {
+    const source = String(key || '').trim()
+    const target = String(mapLike[key] || '').trim()
+    if (!source || !target) return
+    result[source] = target
+  })
+  return result
+}
+
 /**
  * RealtimeAPI 客户端
  */
@@ -339,6 +360,13 @@ class RealtimeAPIClient {
    * @param {number} options.ttsAudioConfig.speechRate - 语速 [-50,100]
    * @param {number} options.ttsAudioConfig.loudnessRate - 音量 [-50,100]
    * @param {boolean} options.ttsAudioConfig.enableLoudnessNorm - 开启响度均衡
+   * @param {object} options.asrConfig - ASR 识别配置
+   * @param {boolean} options.asrConfig.enableCustomVad - 开启自定义停顿判定
+   * @param {number} options.asrConfig.endSmoothWindowMs - 停顿窗口 [500,50000]
+   * @param {boolean} options.asrConfig.enableAsrTwopass - 开启二遍识别
+   * @param {string[]} options.asrConfig.hotwords - 热词数组
+   * @param {Object.<string,string>} options.asrConfig.correctWords - 替换词映射
+   * @param {string} options.inputMode - 输入模式 keep_alive/push_to_talk/text/audio_file
    */
   startSession(options = {}) {
     return new Promise((resolve, reject) => {
@@ -346,15 +374,26 @@ class RealtimeAPIClient {
       this._firstChatPacketSeen = false
       this._firstTTSPacketSeen = false
       const ttsAudioConfig = options.ttsAudioConfig || {}
+      const asrConfig = options.asrConfig || {}
       const speechRate = clampNumber(ttsAudioConfig.speechRate, -50, 100)
       const loudnessRate = clampNumber(ttsAudioConfig.loudnessRate, -50, 100)
+      const endSmoothWindowMs = clampNumber(asrConfig.endSmoothWindowMs, 500, 50000)
+      const hotwords = normalizeHotwords(asrConfig.hotwords)
+      const correctWords = normalizeCorrectWords(asrConfig.correctWords)
       const enableLoudnessNorm = typeof ttsAudioConfig.enableLoudnessNorm === 'boolean'
         ? ttsAudioConfig.enableLoudnessNorm
+        : false
+      const enableCustomVad = typeof asrConfig.enableCustomVad === 'boolean'
+        ? asrConfig.enableCustomVad
+        : false
+      const enableAsrTwopass = typeof asrConfig.enableAsrTwopass === 'boolean'
+        ? asrConfig.enableAsrTwopass
         : false
       const dialogExtra = {
         model: '2.2.0.0',
         strict_audit: false,
         enable_loudness_norm: enableLoudnessNorm,
+        input_mod: options.inputMode || 'keep_alive',
       }
       const ttsExtra = {}
       const ttsPayloadAudioConfig = {
@@ -368,16 +407,32 @@ class RealtimeAPIClient {
       if (loudnessRate !== null) {
         ttsPayloadAudioConfig.loudness_rate = loudnessRate
       }
+      const asrExtra = {
+        enable_custom_vad: enableCustomVad,
+        enable_asr_twopass: enableAsrTwopass,
+      }
+      if (endSmoothWindowMs !== null) {
+        asrExtra.end_smooth_window_ms = endSmoothWindowMs
+      }
+      if (hotwords.length > 0 || Object.keys(correctWords).length > 0) {
+        asrExtra.context = {}
+        if (hotwords.length > 0) {
+          asrExtra.context.hotwords = hotwords
+        }
+        if (Object.keys(correctWords).length > 0) {
+          asrExtra.context.correct_words = correctWords
+        }
+      }
 
       const payload = {
         tts: {
-          speaker: options.speaker || 'saturn_zh_female_tiexinnvyou_tob',
-          voice_type: options.speaker || 'saturn_zh_female_tiexinnvyou_tob',
+          speaker: options.speaker || 'saturn_zh_female_wenrouwenya_tob',
+          voice_type: options.speaker || 'saturn_zh_female_wenrouwenya_tob',
           audio_config: ttsPayloadAudioConfig,
           extra: ttsExtra,
         },
         asr: {
-          extra: {},
+          extra: asrExtra,
         },
         dialog: {
           bot_name: options.botName || '小林',

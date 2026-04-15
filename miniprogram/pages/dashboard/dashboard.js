@@ -82,11 +82,37 @@ Page({
   _loadProfile() {
     const config = store.getElderConfig() || {}
     const profile = store.getProfile()
-    const hobbies = profile.hobbies || []
-    const healthSource = config.health || profile.health || ''
-    const extractedHealthTags = this._extractHealthTags(healthSource)
+    const elderKey = store.getElderKey ? store.getElderKey(config) : ''
+    const memoryBundle = store.getMemoryBundle ? store.getMemoryBundle(elderKey) : null
+    const elderMemory = memoryBundle && memoryBundle.elderMemory
+      ? memoryBundle.elderMemory
+      : {}
+    const memoryItems = memoryBundle && Array.isArray(memoryBundle.memoryItems)
+      ? memoryBundle.memoryItems
+      : []
+    const memoryHealthNotes = elderMemory.healthNotes || []
+    const memoryInterestTags = elderMemory.interestTags || []
+    const memoryItemInterestTags = memoryItems
+      .filter(item => item && item.type === 'interest')
+      .map(item => item.text)
+    const memoryItemHealthNotes = memoryItems
+      .filter(item => item && item.type === 'healthNote')
+      .map(item => item.text)
+    const hobbies = []
+      .concat(profile.hobbies || [])
+      .concat(memoryInterestTags)
+      .concat(memoryItemInterestTags)
+    const healthSources = []
+      .concat(config.health || '')
+      .concat(profile.health || '')
+      .concat(memoryHealthNotes)
+      .concat(memoryItemHealthNotes)
+      .filter(Boolean)
+    const extractedHealthTags = healthSources.reduce((all, source) => {
+      return all.concat(this._extractHealthTags(source))
+    }, [])
 
-    const interestTags = this._uniqTags(hobbies).slice(0, 6)
+    const interestTags = this._normalizeInterestTags(hobbies).slice(0, 6)
     const healthTags = this._uniqTags(extractedHealthTags).slice(0, 6)
 
     this.setData({
@@ -150,13 +176,24 @@ Page({
     if (!text) return []
     const compact = text.replace(/\s+/g, '')
     const keywordDict = [
-      ['睡眠问题', ['失眠', '睡眠', '睡不着', '早醒', '入睡困难']],
-      ['高血压', ['高血压', '血压', '头晕']],
-      ['血糖异常', ['血糖', '糖尿病']],
-      ['心脏不适', ['心脏', '心悸', '胸闷', '胸痛']],
+      ['失眠', ['失眠']],
+      ['睡不着', ['睡不着', '入睡困难', '早醒']],
+      ['睡眠问题', ['睡眠']],
+      ['高血压', ['高血压']],
+      ['血压波动', ['血压', '头晕']],
+      ['糖尿病', ['糖尿病']],
+      ['血糖偏高', ['血糖']],
+      ['心脏病', ['心脏病']],
+      ['心悸', ['心悸']],
+      ['胸闷', ['胸闷']],
+      ['胸痛', ['胸痛']],
+      ['心脏问题', ['心脏']],
       ['关节疼痛', ['关节', '膝盖', '腰痛', '腰酸', '腿疼', '疼痛']],
-      ['胃口与消化', ['胃口', '食欲', '消化', '胃痛', '腹胀']],
-      ['用药管理', ['吃药', '药', '按时服药', '漏服']],
+      ['食欲下降', ['胃口', '食欲']],
+      ['消化不适', ['消化', '胃痛', '腹胀']],
+      ['按时吃药', ['按时服药']],
+      ['漏服药', ['漏服']],
+      ['用药', ['吃药', '药']],
     ]
     const matchedMeta = keywordDict
       .map(([tag, keywords]) => ({
@@ -176,6 +213,30 @@ Page({
       .map(item => (item.length > 8 ? `${item.slice(0, 8)}...` : item))
 
     return this._uniqTags([].concat(matched, fallbackTags))
+  },
+
+  _normalizeInterestTags(tags) {
+    const source = []
+      .concat(tags || [])
+      .map(tag => String(tag || '').trim())
+      .filter(Boolean)
+    const normalized = []
+
+    source.forEach(text => {
+      const compact = text.replace(/\s+/g, '')
+      if (!compact) return
+
+      // 更贴近原话：提到“广场舞”时统一展示“广场舞”，否则“跳舞/舞蹈”展示“跳舞”
+      if (compact.includes('广场舞')) {
+        normalized.push('广场舞')
+      } else if (compact.includes('跳舞') || compact.includes('舞蹈')) {
+        normalized.push('跳舞')
+      } else {
+        normalized.push(text)
+      }
+    })
+
+    return this._uniqTags(normalized)
   },
 
   _uniqTags(tags) {

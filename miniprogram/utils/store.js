@@ -105,6 +105,23 @@ function _normalizeMemoryText(text) {
     .replace(/[。！？!?,，、；;]+$/g, '')
 }
 
+function _isLowInfoMemoryText(text) {
+  const line = _normalizeMemoryText(text)
+  if (!line) return true
+  if (line.length <= 3) return true
+
+  const lowInfoSet = new Set([
+    '还不错', '挺好', '很好', '还好', '一般', '就那样', '可以', '行', '嗯', '嗯嗯', '哦', '好的',
+    '没事', '没什么', '都好', '还行', '可以的', '还可以', '是的', '对', '对的', '好'
+  ])
+  if (lowInfoSet.has(line)) return true
+  if (/^(挺|还|就)?(好|行|可以|不错)$/.test(line)) return true
+  if (/^(过得|日子|最近)?(还|挺|就)?(行|还行|一般|凑合|那样)(吧|呢|呀)?$/.test(line)) return true
+  if (/^(没有|没)(呢|呀|啊)?([，,、]?)(没有|没)?(出去|出门|外出)?(玩|逛|活动)?$/.test(line)) return true
+  if (/^(没有|没)(什么|啥)?(特别|安排|计划|进展)?(的)?$/.test(line)) return true
+  return false
+}
+
 function _memoryItemId(type, text) {
   const base = `${type}:${_normalizeMemoryText(text)}`
   return `mem_${Date.now()}_${base.slice(0, 24)}`
@@ -898,6 +915,7 @@ function buildMemoryPrompt(elderKey, options) {
 
   const memoryItems = (bundle.memoryItems || [])
     .filter(item => item && item.text)
+    .filter(item => !_isLowInfoMemoryText(item.text))
     .filter(item => item.confidence >= minConfidence)
     .filter(item => !excludeSet.has(_normalizeMemoryText(item.text)))
     .filter(item => {
@@ -952,16 +970,25 @@ function buildMemoryPrompt(elderKey, options) {
   }
 
   if (elderMemory.recentEvents && elderMemory.recentEvents.length > 0) {
-    parts.push(`老人近期事件：${elderMemory.recentEvents.slice(0, 3).join('；')}`)
+    const recentEvents = (elderMemory.recentEvents || []).filter(text => !_isLowInfoMemoryText(text))
+    if (recentEvents.length > 0) {
+      parts.push(`老人近期事件：${recentEvents.slice(0, 3).join('；')}`)
+    }
   }
   if (elderMemory.interestTags && elderMemory.interestTags.length > 0) {
-    parts.push(`老人兴趣：${elderMemory.interestTags.slice(0, 5).join('、')}`)
+    const interestTags = (elderMemory.interestTags || []).filter(text => !_isLowInfoMemoryText(text))
+    if (interestTags.length > 0) {
+      parts.push(`老人兴趣：${interestTags.slice(0, 5).join('、')}`)
+    }
   }
   if (xiaolinMemory.preferredAddress) {
     parts.push(`偏好称呼：${xiaolinMemory.preferredAddress}`)
   }
   if (xiaolinMemory.followUps && xiaolinMemory.followUps.length > 0) {
-    parts.push(`上次承诺跟进：${xiaolinMemory.followUps.slice(0, 3).join('；')}`)
+    const followUps = (xiaolinMemory.followUps || []).filter(text => !_isLowInfoMemoryText(text))
+    if (followUps.length > 0) {
+      parts.push(`上次承诺跟进：${followUps.slice(0, 3).join('；')}`)
+    }
   }
 
   return parts.join('\n')
