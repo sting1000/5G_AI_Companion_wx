@@ -1,0 +1,42 @@
+{
+  "name": "basic_incoming_flow",
+  "description": "离线事件流样本，可用于后续 call 状态机回放",
+  "events": [
+    {
+      "atMs": 0,
+      "type": "connection_started",
+      "payload": {}
+    },
+    {
+      "atMs": 40,
+      "type": "session_started",
+      "payload": {
+        "dialog_id": "dialog_fixture_001"
+      }
+    },
+    {
+      "atMs": 120,
+      "type": "tts_sentence_start",
+      "payload": {
+        "text": "王阿姨您好，今天感觉怎么样？"
+      }
+    },
+    {
+      "atMs": 260,
+      "type": "tts_ended",
+      "payload": {}
+    },
+    {
+      "atMs": 480,
+      "type": "asr_response",
+      "payload": {
+        "results": [
+          {
+            "text": "我今天有点头晕",
+            "is_interim": false
+          }
+        ]
+      }
+    }
+  ]
+}

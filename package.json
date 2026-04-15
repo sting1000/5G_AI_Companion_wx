@@ -1,0 +1,17 @@
+{
+  "name": "5g-ai-companion",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "verify": "npm run test:unit && npm run test:page",
+    "test": "jest --runInBand",
+    "test:unit": "jest --runInBand tests/unit",
+    "test:page": "jest --runInBand tests/page",
+    "test:watch": "jest --watch",
+    "setup:hooks": "node scripts/setup-git-hooks.js"
+  },
+  "devDependencies": {
+    "jest": "^30.2.0",
+    "miniprogram-simulate": "^1.6.1"
+  }
+}

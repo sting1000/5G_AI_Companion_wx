@@ -104,6 +104,36 @@ cp miniprogram/config.local.example.js miniprogram/config.local.js
    - `call` 发起/接听语音通话
    - `summary` 查看摘要与关键信息
 
+## 离线自动化测试（不调用外部 API）
+
+测试全部在本地 Node 环境运行，统一 mock `wx`、WebSocket、录音与存储能力，不会调用豆包/方舟接口。
+
+```bash
+npm test
+npm run test:unit
+npm run test:page
+npm run test:watch
+```
+
+如果希望每次 `git commit` 自动跑离线验证，可执行一次：
+
+```bash
+npm run setup:hooks
+```
+
+安装后，提交时会自动执行：
+
+```bash
+npm run verify
+```
+
+当前测试目录约定：
+
+- `tests/unit`：`store` / `realtime-api` / `audio` 规则与协议单元测试
+- `tests/page`：`onboarding` / `dashboard` / `call` 页面离线流程测试
+- `tests/mocks`：`wx` 与配置 mock
+- `tests/fixtures/replay`：事件流回放样本（可扩展）
+
 ## 开发建议
 
 - 每次改动后先在微信开发者工具编译验证
