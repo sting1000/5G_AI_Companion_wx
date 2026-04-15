@@ -10,6 +10,8 @@ const config = require('../config.local')
 const WS_URL = 'wss://openspeech.bytedance.com/api/v3/realtime/dialogue'
 const RESOURCE_ID = 'volc.speech.dialog'
 const APP_KEY = 'PlgvMymc7f3tQnJ6'
+const DEBUG_LOG = false
+const FLOW_LOG_PREFIX = '[RealtimeFlow]'
 
 // 客户端事件 ID
 const EVENT = {
@@ -225,6 +227,11 @@ function tryParseJSON(str) {
   }
 }
 
+function logDebug(...args) {
+  if (!DEBUG_LOG) return
+  console.log(...args)
+}
+
 /**
  * RealtimeAPI 客户端
  */
@@ -247,6 +254,10 @@ class RealtimeAPIClient {
     this.onSessionStarted = null // (dialogId) => {}
     this.onError = null          // (error) => {}
     this.onDisconnect = null     // () => {} WebSocket 断开
+    this.onFirstChatPacket = null // (timestampMs) => {}
+    this.onFirstTTSAudioPacket = null // (timestampMs) => {}
+    this._firstChatPacketSeen = false
+    this._firstTTSPacketSeen = false
   }
 
   /**
@@ -256,8 +267,8 @@ class RealtimeAPIClient {
     return new Promise((resolve, reject) => {
       this.connectId = generateUUID()
 
-      console.log('[RealtimeAPI] 正在连接:', WS_URL)
-      console.log('[RealtimeAPI] AppID:', config.speech.appId)
+      logDebug('[RealtimeAPI] 正在连接:', WS_URL)
+      logDebug('[RealtimeAPI] AppID:', config.speech.appId)
 
       const socketTask = wx.connectSocket({
         url: WS_URL,
@@ -277,7 +288,8 @@ class RealtimeAPIClient {
       this.socket = socketTask
 
       socketTask.onOpen((res) => {
-        console.log('[RealtimeAPI] WebSocket onOpen', JSON.stringify(res))
+        logDebug('[RealtimeAPI] WebSocket onOpen', JSON.stringify(res))
+        console.log(FLOW_LOG_PREFIX, 'WebSocket onOpen')
         this._sendStartConnection()
       })
 
@@ -292,7 +304,8 @@ class RealtimeAPIClient {
       })
 
       socketTask.onClose((res) => {
-        console.log('[RealtimeAPI] WebSocket onClose:', JSON.stringify(res))
+        logDebug('[RealtimeAPI] WebSocket onClose:', JSON.stringify(res))
+        console.warn(FLOW_LOG_PREFIX, 'WebSocket onClose')
         this.socket = null
         this.connected = false
         this.sessionActive = false
@@ -317,6 +330,8 @@ class RealtimeAPIClient {
   startSession(options = {}) {
     return new Promise((resolve, reject) => {
       this.sessionId = generateUUID()
+      this._firstChatPacketSeen = false
+      this._firstTTSPacketSeen = false
 
       const payload = {
         tts: {
@@ -343,7 +358,7 @@ class RealtimeAPIClient {
         },
       }
 
-      console.log('[RealtimeAPI] startSession payload:', JSON.stringify(payload))
+      logDebug('[RealtimeAPI] startSession payload:', JSON.stringify(payload))
 
       const frame = buildFrame(
         MSG_TYPE.FULL_CLIENT,
@@ -368,6 +383,7 @@ class RealtimeAPIClient {
       this.sessionId,
       { content }
     )
+    console.log(FLOW_LOG_PREFIX, '发送 SAY_HELLO')
     this.socket.send({ data: frame })
   }
 
@@ -382,11 +398,6 @@ class RealtimeAPIClient {
     if (!this.socket) {
       console.warn('[RealtimeAPI] sendAudio: socket is null, skipping')
       return
-    }
-    if (!this._audioFrameCount) this._audioFrameCount = 0
-    this._audioFrameCount++
-    if (this._audioFrameCount <= 3 || this._audioFrameCount % 50 === 0) {
-      console.log('[RealtimeAPI] sendAudio frame #' + this._audioFrameCount + ', size:', pcmBuffer ? pcmBuffer.byteLength : 0)
     }
     const frame = buildFrame(
       MSG_TYPE.AUDIO_CLIENT,
@@ -491,7 +502,13 @@ class RealtimeAPIClient {
     }
 
     const { msgType, eventId, payload, audioData } = parsed
-    console.log('[RealtimeAPI] 收到事件:', eventId, msgType === MSG_TYPE.AUDIO_SERVER ? `(audio ${parsed.audioSize || '?'}B)` : JSON.stringify(payload || ''))
+    if (DEBUG_LOG) {
+      if (msgType === MSG_TYPE.AUDIO_SERVER) {
+        logDebug('[RealtimeAPI] 收到音频事件:', eventId, `size=${audioData ? audioData.byteLength : 0}`)
+      } else {
+        logDebug('[RealtimeAPI] 收到事件:', eventId, JSON.stringify(payload || {}))
+      }
+    }
 
     // 错误处理
     if (msgType === MSG_TYPE.ERROR) {
@@ -503,6 +520,7 @@ class RealtimeAPIClient {
     switch (eventId) {
       case SERVER_EVENT.CONNECTION_STARTED:
         this.connected = true
+        console.log(FLOW_LOG_PREFIX, '收到 CONNECTION_STARTED')
         if (this._onceConnected) {
           this._onceConnected()
           this._onceConnected = null
@@ -510,6 +528,7 @@ class RealtimeAPIClient {
         break
 
       case SERVER_EVENT.CONNECTION_FAILED:
+        console.error(FLOW_LOG_PREFIX, '收到 CONNECTION_FAILED', payload || {})
         if (this._onConnectFailed) {
           this._onConnectFailed(payload)
           this._onConnectFailed = null
@@ -519,6 +538,9 @@ class RealtimeAPIClient {
       case SERVER_EVENT.SESSION_STARTED:
         this.sessionActive = true
         this.dialogId = payload?.dialog_id || ''
+        console.log(FLOW_LOG_PREFIX, '收到 SESSION_STARTED', {
+          dialogId: this.dialogId,
+        })
         if (this.onSessionStarted) this.onSessionStarted(this.dialogId)
         if (this._onceSessionStarted) {
           this._onceSessionStarted(this.dialogId)
@@ -527,6 +549,7 @@ class RealtimeAPIClient {
         break
 
       case SERVER_EVENT.SESSION_FAILED:
+        console.error(FLOW_LOG_PREFIX, '收到 SESSION_FAILED', payload || {})
         if (this._onSessionFailed) {
           this._onSessionFailed(payload)
           this._onSessionFailed = null
@@ -546,26 +569,37 @@ class RealtimeAPIClient {
         break
 
       case SERVER_EVENT.ASR_ENDED:
+        console.log(FLOW_LOG_PREFIX, '收到 ASR_ENDED')
         if (this.onASREnd) this.onASREnd()
         break
 
       case SERVER_EVENT.CHAT_RESPONSE:
         if (payload?.content && this.onChatText) {
+          if (!this._firstChatPacketSeen) {
+            this._firstChatPacketSeen = true
+            if (this.onFirstChatPacket) this.onFirstChatPacket(Date.now())
+          }
           this.onChatText(payload.content)
         }
         break
 
       case SERVER_EVENT.CHAT_ENDED:
+        console.log(FLOW_LOG_PREFIX, '收到 CHAT_ENDED')
         break
 
       case SERVER_EVENT.TTS_SENTENCE_START:
+        console.log(FLOW_LOG_PREFIX, '收到 TTS_SENTENCE_START')
         if (this.onTTSStart) this.onTTSStart(payload?.text || '')
         break
 
       case SERVER_EVENT.TTS_RESPONSE:
         if (audioData) {
+          if (!this._firstTTSPacketSeen) {
+            this._firstTTSPacketSeen = true
+            if (this.onFirstTTSAudioPacket) this.onFirstTTSAudioPacket(Date.now())
+          }
           // 首包音频格式检测
-          if (!this._ttsFormatLogged) {
+          if (!this._ttsFormatLogged && DEBUG_LOG) {
             this._ttsFormatLogged = true
             const firstBytes = new Uint8Array(audioData.slice(0, 8))
             const header = Array.from(firstBytes).map(b => b.toString(16).padStart(2, '0')).join(' ')
@@ -578,6 +612,7 @@ class RealtimeAPIClient {
         break
 
       case SERVER_EVENT.TTS_ENDED:
+        console.log(FLOW_LOG_PREFIX, '收到 TTS_ENDED')
         if (this.onTTSEnd) this.onTTSEnd()
         break
     }

@@ -10,6 +10,10 @@ const BIT_DEPTH = 16
 const CHANNELS = 1
 const FRAME_DURATION_MS = 20 // 每帧 20ms
 const FRAME_SIZE = (SAMPLE_RATE * BIT_DEPTH * CHANNELS * FRAME_DURATION_MS) / (8 * 1000) // 640 bytes
+const USE_LOW_LATENCY_TTS = true
+const TTS_START_BUFFER_MS = 240
+const PLAYBACK_WATCHDOG_MS = 20000
+const FLOW_LOG_PREFIX = '[AudioFlow]'
 
 /**
  * 录音管理器封装
@@ -50,6 +54,8 @@ class AudioRecorder {
       encodeBitRate: 48000,
       format: 'PCM',
       frameSize: 1,
+      // 优先启用通话音频源，系统会做更强的回声抑制/降噪处理
+      audioSource: 'voice_communication',
     })
   }
 
@@ -69,16 +75,34 @@ class AudioPlayer {
   constructor() {
     this.audioCtx = wx.createInnerAudioContext()
     this.pcmChunks = []
+    this.pendingChunks = []
+    this.pendingBytes = 0
+    this.segmentQueue = []
+    this.hasStartedStreamPlayback = false
     this.playing = false
+    this.playWatchdogTimer = null
     this._fileIndex = 0
+    this.onPlayStart = null
+    this.onPlayEnd = null
 
     this.audioCtx.onEnded(() => {
       this.playing = false
+      this._clearPlayWatchdog()
+      console.log(FLOW_LOG_PREFIX, 'onEnded，尝试播放下一段', {
+        queueSize: this.segmentQueue.length,
+      })
+      this._tryPlayNextSegment()
+      if (!this.playing && this.segmentQueue.length === 0 && this.onPlayEnd) {
+        this.onPlayEnd()
+      }
     })
 
     this.audioCtx.onError((err) => {
       console.error('[AudioPlayer] error:', err)
+      console.error(FLOW_LOG_PREFIX, '播放错误，尝试继续后续分段', err)
       this.playing = false
+      this._clearPlayWatchdog()
+      this._tryPlayNextSegment()
     })
   }
 
@@ -86,7 +110,19 @@ class AudioPlayer {
    * 添加 PCM 音频数据块
    */
   appendChunk(pcmBuffer) {
-    this.pcmChunks.push(new Uint8Array(pcmBuffer))
+    const chunk = new Uint8Array(pcmBuffer)
+    this.pcmChunks.push(chunk)
+
+    if (!USE_LOW_LATENCY_TTS) return
+    this.pendingChunks.push(chunk)
+    this.pendingBytes += chunk.byteLength
+
+    // 仅首段低延迟起播，后续数据留到句末一次性播放，避免多段切换导致“卡顿感”
+    if (!this.hasStartedStreamPlayback && this.pendingBytes >= this._bytesFromMs(TTS_START_BUFFER_MS)) {
+      this._flushPendingToQueue(false)
+      this._tryPlayNextSegment()
+      this.hasStartedStreamPlayback = true
+    }
   }
 
   /**
@@ -94,6 +130,14 @@ class AudioPlayer {
    */
   playBuffered() {
     if (this.pcmChunks.length === 0) return
+
+    if (USE_LOW_LATENCY_TTS) {
+      this._flushPendingToQueue(true)
+      this._tryPlayNextSegment()
+      this.pcmChunks = []
+      this.hasStartedStreamPlayback = false
+      return
+    }
 
     // 合并所有 PCM chunks
     const totalLen = this.pcmChunks.reduce((sum, c) => sum + c.byteLength, 0)
@@ -117,25 +161,107 @@ class AudioPlayer {
       encoding: 'binary',
       success: () => {
         this.playing = true
+        this._armPlayWatchdog()
+        console.log(FLOW_LOG_PREFIX, '开始播放整句缓冲音频')
         this.audioCtx.src = filePath
         this.audioCtx.play()
+        if (this.onPlayStart) this.onPlayStart()
       },
       fail: (err) => {
         console.error('[AudioPlayer] write file error:', err)
+        this.playing = false
       },
     })
+  }
+
+  _bytesFromMs(ms) {
+    return Math.floor((SAMPLE_RATE * CHANNELS * (BIT_DEPTH / 8) * ms) / 1000)
+  }
+
+  _flushPendingToQueue(forceFlush) {
+    if (this.pendingBytes <= 0) return
+    const minBytes = forceFlush ? 1 : this._bytesFromMs(TTS_START_BUFFER_MS)
+    if (this.pendingBytes < minBytes) return
+
+    const totalLen = this.pendingBytes
+    const pcmData = new Uint8Array(totalLen)
+    let offset = 0
+    for (const chunk of this.pendingChunks) {
+      pcmData.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    this.pendingChunks = []
+    this.pendingBytes = 0
+    this.segmentQueue.push(pcmData.buffer)
+  }
+
+  _tryPlayNextSegment() {
+    if (!USE_LOW_LATENCY_TTS) return
+    if (this.playing || this.segmentQueue.length === 0) return
+
+    const nextPcmBuffer = this.segmentQueue.shift()
+    console.log(FLOW_LOG_PREFIX, '开始播放分段音频', {
+      remainQueue: this.segmentQueue.length,
+    })
+    const wavBuffer = addWavHeader(nextPcmBuffer, SAMPLE_RATE, BIT_DEPTH, CHANNELS)
+    const filePath = `${wx.env.USER_DATA_PATH}/tts_${this._fileIndex++}.wav`
+    const fs = wx.getFileSystemManager()
+    fs.writeFile({
+      filePath,
+      data: wavBuffer,
+      encoding: 'binary',
+      success: () => {
+        this.playing = true
+        this._armPlayWatchdog()
+        this.audioCtx.src = filePath
+        this.audioCtx.play()
+        if (this.onPlayStart) this.onPlayStart()
+      },
+      fail: (err) => {
+        console.error('[AudioPlayer] write segment error:', err)
+        this.playing = false
+        // 当前片段写失败时尝试继续后续片段，避免整句静音
+        this._tryPlayNextSegment()
+      },
+    })
+  }
+
+  _armPlayWatchdog() {
+    this._clearPlayWatchdog()
+    this.playWatchdogTimer = setTimeout(() => {
+      console.warn('[AudioPlayer] 播放超时，强制解锁播放状态')
+      console.warn(FLOW_LOG_PREFIX, '播放 watchdog 触发，准备解锁并续播')
+      this.playing = false
+      try {
+        this.audioCtx.stop()
+      } catch (e) {}
+      this._tryPlayNextSegment()
+    }, PLAYBACK_WATCHDOG_MS)
+  }
+
+  _clearPlayWatchdog() {
+    if (this.playWatchdogTimer) {
+      clearTimeout(this.playWatchdogTimer)
+      this.playWatchdogTimer = null
+    }
   }
 
   /**
    * 停止播放（用于用户打断）
    */
   stop() {
+    this._clearPlayWatchdog()
     this.audioCtx.stop()
     this.pcmChunks = []
+    this.pendingChunks = []
+    this.pendingBytes = 0
+    this.segmentQueue = []
+    this.hasStartedStreamPlayback = false
     this.playing = false
   }
 
   destroy() {
+    this._clearPlayWatchdog()
     this.audioCtx.destroy()
   }
 }

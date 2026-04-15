@@ -62,11 +62,152 @@ function getDefaultMemoryBundle() {
       memoryUpdatedAt: '',
     },
     memoryMeta: {
-      version: 1,
+      version: 2,
       updatedFromCallId: '',
       memoryUpdatedAt: '',
     },
+    memoryItems: [],
   }
+}
+
+const MEMORY_TYPE_LIMIT = {
+  followUp: 10,
+  recentEvent: 12,
+  interest: 20,
+  healthNote: 10,
+  tabooTopic: 10,
+}
+
+const MEMORY_TYPE_CONFIDENCE = {
+  followUp: 0.75,
+  recentEvent: 0.7,
+  interest: 0.65,
+  healthNote: 0.8,
+  tabooTopic: 0.85,
+}
+
+function _normalizeMemoryText(text) {
+  return String(text || '')
+    .trim()
+    .replace(/\s+/g, '')
+    .replace(/[。！？!?,，、；;]+$/g, '')
+}
+
+function _memoryItemId(type, text) {
+  const base = `${type}:${_normalizeMemoryText(text)}`
+  return `mem_${Date.now()}_${base.slice(0, 24)}`
+}
+
+function _buildMemoryItem(type, text, source, confidence, now, evidence) {
+  const cleanText = _normalizeMemoryText(text)
+  if (!cleanText) return null
+  return {
+    id: _memoryItemId(type, cleanText),
+    type,
+    text: cleanText,
+    source: source || 'summary',
+    confidence: Math.max(0, Math.min(1, Number(confidence || 0.6))),
+    stability: type === 'interest' || type === 'healthNote' ? 'stable' : 'semi_stable',
+    createdAt: now,
+    lastUsedAt: '',
+    evidence: evidence || cleanText,
+  }
+}
+
+function _isRecent(iso, days) {
+  if (!iso) return false
+  const ts = Date.parse(iso)
+  if (!ts) return false
+  const ageMs = Date.now() - ts
+  return ageMs <= days * 24 * 60 * 60 * 1000
+}
+
+function _mergeMemoryItems(existingItems, deltaItems) {
+  const now = new Date().toISOString()
+  const allItems = []
+    .concat(existingItems || [])
+    .concat(deltaItems || [])
+    .filter(Boolean)
+
+  const mergedMap = {}
+  allItems.forEach(item => {
+    const type = item.type || 'recentEvent'
+    const text = _normalizeMemoryText(item.text)
+    if (!text) return
+    const key = `${type}:${text}`
+    const normalizedItem = Object.assign({}, item, {
+      id: item.id || _memoryItemId(type, text),
+      type,
+      text,
+      confidence: Math.max(0, Math.min(1, Number(item.confidence || MEMORY_TYPE_CONFIDENCE[type] || 0.6))),
+      source: item.source || 'summary',
+      createdAt: item.createdAt || now,
+      lastUsedAt: item.lastUsedAt || '',
+      stability: item.stability || (type === 'interest' || type === 'healthNote' ? 'stable' : 'semi_stable'),
+      evidence: item.evidence || text,
+    })
+    const current = mergedMap[key]
+    if (!current) {
+      mergedMap[key] = normalizedItem
+      return
+    }
+    // 冲突时优先保留高置信度版本，并补齐最近使用时间
+    if (normalizedItem.confidence > current.confidence) {
+      mergedMap[key] = Object.assign({}, current, normalizedItem, {
+        lastUsedAt: current.lastUsedAt || normalizedItem.lastUsedAt || '',
+      })
+      return
+    }
+    if (!current.lastUsedAt && normalizedItem.lastUsedAt) {
+      current.lastUsedAt = normalizedItem.lastUsedAt
+    }
+  })
+
+  const byType = {}
+  Object.keys(mergedMap).forEach(key => {
+    const item = mergedMap[key]
+    if (!byType[item.type]) byType[item.type] = []
+    byType[item.type].push(item)
+  })
+
+  const result = []
+  Object.keys(byType).forEach(type => {
+    const limit = MEMORY_TYPE_LIMIT[type] || 10
+    const sorted = byType[type].sort((a, b) => {
+      if (b.confidence !== a.confidence) return b.confidence - a.confidence
+      return Date.parse(b.createdAt || '') - Date.parse(a.createdAt || '')
+    })
+    result.push.apply(result, sorted.slice(0, limit))
+  })
+  return result
+}
+
+function _buildItemsFromLegacy(bundle) {
+  const now = new Date().toISOString()
+  const elderMemory = bundle.elderMemory || {}
+  const xiaolinMemory = bundle.xiaolinMemory || {}
+  const items = []
+  ;(elderMemory.recentEvents || []).forEach(text => {
+    const item = _buildMemoryItem('recentEvent', text, 'legacy', 0.65, now, text)
+    if (item) items.push(item)
+  })
+  ;(elderMemory.interestTags || []).forEach(text => {
+    const item = _buildMemoryItem('interest', text, 'legacy', 0.65, now, text)
+    if (item) items.push(item)
+  })
+  ;(elderMemory.healthNotes || []).forEach(text => {
+    const item = _buildMemoryItem('healthNote', text, 'legacy', 0.8, now, text)
+    if (item) items.push(item)
+  })
+  ;(xiaolinMemory.followUps || []).forEach(text => {
+    const item = _buildMemoryItem('followUp', text, 'legacy', 0.7, now, text)
+    if (item) items.push(item)
+  })
+  ;(xiaolinMemory.tabooTopics || []).forEach(text => {
+    const item = _buildMemoryItem('tabooTopic', text, 'legacy', 0.8, now, text)
+    if (item) items.push(item)
+  })
+  return _mergeMemoryItems([], items)
 }
 
 function getElderKey(config) {
@@ -183,6 +324,9 @@ function getMemoryBundle(elderKey) {
   if (!merged.xiaolinMemory.memoryUpdatedAt && merged.xiaolinMemory.lastUpdatedAt) {
     merged.xiaolinMemory.memoryUpdatedAt = merged.xiaolinMemory.lastUpdatedAt
   }
+  if (!Array.isArray(merged.memoryItems) || merged.memoryItems.length === 0) {
+    merged.memoryItems = _buildItemsFromLegacy(merged)
+  }
   return merged
 }
 
@@ -233,6 +377,9 @@ function initMemoryBundle(elderKey, seed) {
     memoryMeta: Object.assign({}, base.memoryMeta, {
       memoryUpdatedAt: now,
     }),
+    memoryItems: _mergeMemoryItems(base.memoryItems, [
+      _buildMemoryItem('healthNote', seed && seed.health, 'onboarding', 0.9, now, seed && seed.health),
+    ].concat((seed && seed.hobbies || []).map(tag => _buildMemoryItem('interest', tag, 'onboarding', 0.85, now, tag))).filter(Boolean)),
   })
   saveMemoryBundle(next, scopedKey)
   return next
@@ -257,24 +404,94 @@ function mergeMemoryBundle(elderKey, delta, callId) {
   xiaolinMemory.lastUpdatedAt = now
   xiaolinMemory.memoryUpdatedAt = now
 
+  const deltaItems = []
+  ;(elderMemory.recentEvents || []).forEach(text => {
+    const item = _buildMemoryItem('recentEvent', text, 'summary', MEMORY_TYPE_CONFIDENCE.recentEvent, now, text)
+    if (item) deltaItems.push(item)
+  })
+  ;(elderMemory.interestTags || []).forEach(text => {
+    const item = _buildMemoryItem('interest', text, 'summary', MEMORY_TYPE_CONFIDENCE.interest, now, text)
+    if (item) deltaItems.push(item)
+  })
+  ;(elderMemory.healthNotes || []).forEach(text => {
+    const item = _buildMemoryItem('healthNote', text, 'summary', MEMORY_TYPE_CONFIDENCE.healthNote, now, text)
+    if (item) deltaItems.push(item)
+  })
+  ;(xiaolinMemory.followUps || []).forEach(text => {
+    const item = _buildMemoryItem('followUp', text, 'summary', MEMORY_TYPE_CONFIDENCE.followUp, now, text)
+    if (item) deltaItems.push(item)
+  })
+  ;(xiaolinMemory.tabooTopics || []).forEach(text => {
+    const item = _buildMemoryItem('tabooTopic', text, 'summary', MEMORY_TYPE_CONFIDENCE.tabooTopic, now, text)
+    if (item) deltaItems.push(item)
+  })
+
   const next = {
     elderMemory,
     xiaolinMemory,
     memoryMeta: Object.assign({}, current.memoryMeta, {
-      version: 1,
+      version: 2,
       updatedFromCallId: callId || '',
       memoryUpdatedAt: now,
     }),
+    memoryItems: _mergeMemoryItems(current.memoryItems || [], deltaItems),
   }
   saveMemoryBundle(next, scopedKey)
   return next
 }
 
-function buildMemoryPrompt(elderKey) {
+function buildMemoryPrompt(elderKey, options) {
   const bundle = getMemoryBundle(elderKey)
+  const opts = options || {}
   const parts = []
   const elderMemory = bundle.elderMemory || {}
   const xiaolinMemory = bundle.xiaolinMemory || {}
+  const excludeSet = new Set((opts.excludeTexts || []).map(_normalizeMemoryText).filter(Boolean))
+  const maxItems = typeof opts.maxItems === 'number' ? opts.maxItems : 3
+  const minConfidence = typeof opts.minConfidence === 'number' ? opts.minConfidence : 0.6
+
+  const memoryItems = (bundle.memoryItems || [])
+    .filter(item => item && item.text)
+    .filter(item => item.confidence >= minConfidence)
+    .filter(item => !excludeSet.has(_normalizeMemoryText(item.text)))
+    .filter(item => {
+      if (item.type === 'interest' || item.type === 'healthNote') return true
+      return _isRecent(item.createdAt, 45)
+    })
+
+  if (memoryItems.length > 0) {
+    const pickedTypes = {}
+    const selected = memoryItems
+      .sort((a, b) => {
+        const typeRank = { followUp: 3, recentEvent: 2, interest: 1 }
+        const ar = typeRank[a.type] || 0
+        const br = typeRank[b.type] || 0
+        if (br !== ar) return br - ar
+        if (b.confidence !== a.confidence) return b.confidence - a.confidence
+        return Date.parse(b.createdAt || '') - Date.parse(a.createdAt || '')
+      })
+      .filter(item => {
+        if (!(item.type === 'followUp' || item.type === 'recentEvent' || item.type === 'interest')) return false
+        if (pickedTypes[item.type]) return false
+        pickedTypes[item.type] = true
+        return true
+      })
+      .slice(0, maxItems)
+
+    selected.forEach(item => {
+      if (item.type === 'followUp') {
+        parts.push(`上次承诺跟进：${item.text}`)
+      } else if (item.type === 'recentEvent') {
+        parts.push(`老人近期事件：${item.text}`)
+      } else if (item.type === 'interest') {
+        parts.push(`老人兴趣：${item.text}`)
+      }
+    })
+  }
+
+  if (parts.length > 0) {
+    return parts.join('\n')
+  }
 
   if (elderMemory.recentEvents && elderMemory.recentEvents.length > 0) {
     parts.push(`老人近期事件：${elderMemory.recentEvents.slice(0, 3).join('；')}`)
@@ -290,6 +507,25 @@ function buildMemoryPrompt(elderKey) {
   }
 
   return parts.join('\n')
+}
+
+function markMemoryItemsUsed(elderKey, texts) {
+  const scopedKey = elderKey || getElderKey()
+  const bundle = getMemoryBundle(scopedKey)
+  const usedSet = new Set([].concat(texts || []).map(_normalizeMemoryText).filter(Boolean))
+  if (usedSet.size === 0) return false
+  const now = new Date().toISOString()
+  let changed = false
+  const nextItems = (bundle.memoryItems || []).map(item => {
+    if (usedSet.has(_normalizeMemoryText(item.text))) {
+      changed = true
+      return Object.assign({}, item, { lastUsedAt: now })
+    }
+    return item
+  })
+  if (!changed) return false
+  saveMemoryBundle(Object.assign({}, bundle, { memoryItems: nextItems }), scopedKey)
+  return true
 }
 
 function getMemoryDebugSnapshot(elderKey) {
@@ -352,6 +588,7 @@ module.exports = {
   initMemoryBundle,
   mergeMemoryBundle,
   buildMemoryPrompt,
+  markMemoryItemsUsed,
   getMemoryDebugSnapshot,
   getProfile,
   updateProfile,

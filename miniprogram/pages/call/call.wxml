@@ -41,19 +41,6 @@
       <text class="hangup-icon">📞</text>
     </view>
     <text class="hangup-label">挂断</text>
-
-    <!-- 开发者工具文本调试 -->
-    <view class="debug-input-area" wx:if="{{status === 'connected'}}">
-      <input class="debug-input"
-        placeholder="打字发送（调试用）"
-        value="{{debugInput}}"
-        bindinput="onDebugInput"
-        bindconfirm="onDebugSend"
-        confirm-type="send" />
-      <view class="debug-send-btn" catchtap="onDebugSend">
-        <text>发送</text>
-      </view>
-    </view>
   </view>
 </view>
 
