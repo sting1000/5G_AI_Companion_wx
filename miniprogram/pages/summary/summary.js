@@ -4,23 +4,39 @@ Page({
   data: {
     record: null,
     notFound: false,
+    callId: '',
   },
 
   onLoad(options) {
-    const { id } = options
-    if (!id) {
+    const callId = options.id
+    if (!callId) {
       this.setData({ notFound: true })
       return
     }
 
-    const history = store.getCallHistory()
-    const record = history.find((r) => r.id === id)
+    this.setData({ callId })
+    this._loadRecord()
+  },
 
-    if (record) {
-      this.setData({ record })
-    } else {
-      this.setData({ notFound: true })
+  onShow() {
+    if (this.data.callId) {
+      this._loadRecord()
     }
+  },
+
+  _loadRecord() {
+    const history = store.getCallHistory()
+    const record = history.find(r => r.id === this.data.callId)
+
+    if (!record) {
+      this.setData({ notFound: true, record: null })
+      return
+    }
+
+    this.setData({
+      record,
+      notFound: false,
+    })
   },
 
   goBack() {

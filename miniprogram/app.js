@@ -9,6 +9,13 @@ App({
   },
 
   onLaunch() {
+    // 初始化云开发
+    if (wx.cloud) {
+      wx.cloud.init({
+        traceUser: true,
+      })
+    }
+
     // 从本地存储恢复数据
     const elderConfig = wx.getStorageSync('elderConfig')
     if (elderConfig) {

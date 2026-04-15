@@ -1,65 +1,96 @@
-<view class="page">
-  <!-- 未配置状态 -->
-  <block wx:if="{{!hasConfig}}">
-    <view class="empty-state">
-      <text class="empty-emoji">👋</text>
-      <text class="empty-title">开始为父母配置AI陪伴</text>
-      <text class="empty-desc">小林将每天陪伴您的父母聊天</text>
-      <button class="btn-primary" bindtap="goOnboarding">立即配置</button>
-    </view>
-  </block>
+<view class="container">
+  <!-- 自定义导航栏 -->
+  <view class="custom-nav">
+  </view>
 
-  <!-- 已配置状态 -->
-  <block wx:else>
-    <!-- 老人信息 + 拨打按钮 -->
-    <view class="card elder-card">
-      <view class="elder-info">
-        <view class="elder-avatar">
-          <text>{{elderConfig.parentName[0]}}</text>
-        </view>
-        <view class="elder-detail">
-          <text class="elder-name">{{elderConfig.parentName}}</text>
-          <text class="elder-title">小林称呼：{{elderTitle}}</text>
+  <!-- 预警条 -->
+  <view class="warning-bar" wx:if="{{hasWarning}}">
+    <text>⚠️ 妈妈今日连续3次未接听 — 点击处理 ›</text>
+  </view>
+
+  <view class="scroll-content">
+    <!-- 父母信息卡片 -->
+    <view class="card parent-card">
+      <view class="parent-avatar">
+        <text>{{elderEmoji}}</text>
+      </view>
+      <view class="parent-info">
+        <text class="parent-name">{{elderName}}</text>
+        <text class="last-call">{{lastCallTime}}</text>
+        <view class="mood-badge" wx:if="{{lastMood}}">
+          <text>{{lastMood}} {{lastMoodLabel}}</text>
         </view>
       </view>
-      <button class="call-btn" bindtap="goCall">
-        <text class="call-icon">📞</text>
-        <text>拨打陪伴电话</text>
-      </button>
-      <button class="incoming-btn" bindtap="goIncomingCall">
-        <text class="call-icon">📲</text>
-        <text>模拟小林来电</text>
-      </button>
     </view>
 
-    <!-- 通话记录 -->
-    <view class="section">
-      <text class="section-title">通话记录</text>
-
-      <block wx:if="{{callHistory.length === 0}}">
-        <view class="card empty-calls">
-          <text class="empty-emoji">💬</text>
-          <text class="empty-call-text">暂无通话记录</text>
-          <text class="empty-call-hint">拨打第一通陪伴电话吧</text>
-        </view>
-      </block>
-
-      <block wx:else>
-        <view
-          class="card call-row"
-          wx:for="{{callHistory}}"
-          wx:key="id"
-          bindtap="goSummary"
-          data-id="{{item.id}}"
-        >
-          <view class="call-mood">{{item.mood}}</view>
-          <view class="call-info">
-            <text class="call-date">{{item.date}}</text>
-            <text class="call-duration">时长 {{item.duration}}</text>
-          </view>
-          <view class="call-arrow">›</view>
-        </view>
-      </block>
+    <!-- 统计卡片 -->
+    <view class="card stats-card">
+      <view class="sparkle-icon">✨</view>
+      <view class="stat-item">
+        <text class="stat-value">{{totalCalls}}</text>
+        <text class="stat-label">通话次数</text>
+      </view>
+      <view class="stat-divider"></view>
+      <view class="stat-item">
+        <text class="stat-value">{{totalInterests}}</text>
+        <text class="stat-label">识别兴趣</text>
+      </view>
     </view>
-  </block>
+
+    <!-- 发现兴趣信号卡片 -->
+    <view class="card signal-card" wx:if="{{hasSignal}}">
+      <view class="signal-header">
+        <view class="signal-icon">📡</view>
+        <view class="signal-title-box">
+          <text class="signal-title">发现兴趣信号</text>
+          <text class="signal-desc">妈妈对「{{latestSignal}}」感兴趣</text>
+        </view>
+      </view>
+      <view class="signal-action">
+        <text>小林将在下次通话中自然地聊到相关话题</text>
+      </view>
+    </view>
+
+    <!-- 无通话时的引导卡片 -->
+    <view class="card signal-card" wx:if="{{!hasCallHistory}}">
+      <view class="signal-header">
+        <view class="signal-icon">💡</view>
+        <view class="signal-title-box">
+          <text class="signal-title">开始第一次陪伴通话</text>
+          <text class="signal-desc">点击下方按钮，让小林和{{elderName}}聊聊天吧</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 倒计时卡片（有通话记录后显示） -->
+    <view class="card countdown-card" wx:if="{{hasCallHistory}}">
+      <view class="countdown-title">
+        <text>🕒 距下次通话</text>
+      </view>
+      <view class="countdown-timer">
+        <view class="time-box">
+          <text class="time-num">02</text>
+          <text class="time-unit">时</text>
+        </view>
+        <text class="time-colon">:</text>
+        <view class="time-box">
+          <text class="time-num">11</text>
+          <text class="time-unit">分</text>
+        </view>
+        <text class="time-colon">:</text>
+        <view class="time-box">
+          <text class="time-num">37</text>
+          <text class="time-unit">秒</text>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 底部固定通话按钮 -->
+  <view class="bottom-action">
+    <button class="call-btn-large" bindtap="goCall">
+      <text class="btn-icon">📞</text>
+      <text>立即通话</text>
+    </button>
+  </view>
 </view>

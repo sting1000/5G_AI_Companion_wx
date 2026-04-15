@@ -1,0 +1,293 @@
+.container {
+  min-height: 100vh;
+  background-color: #F8F9FA;
+  padding-bottom: 40rpx;
+}
+
+/* 顶部自定义导航栏 */
+.custom-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 100rpx 40rpx 20rpx;
+  background-color: #F8F9FA;
+}
+
+.nav-left {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+}
+
+.icon-avatar {
+  width: 64rpx;
+  height: 64rpx;
+  background-color: #FF6B4A;
+  border-radius: 50%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  color: white;
+  font-size: 32rpx;
+}
+
+.nav-title {
+  font-size: 36rpx;
+  font-weight: 600;
+  color: #333;
+}
+
+.nav-right {
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+}
+
+.bell-icon {
+  position: relative;
+  font-size: 40rpx;
+}
+
+.badge {
+  position: absolute;
+  top: -8rpx;
+  right: -8rpx;
+  background-color: #FF3B30;
+  color: white;
+  font-size: 20rpx;
+  padding: 2rpx 8rpx;
+  border-radius: 20rpx;
+  min-width: 24rpx;
+  text-align: center;
+}
+
+.user-avatar-small {
+  width: 64rpx;
+  height: 64rpx;
+  background-color: #FFE5D9;
+  color: #FF6B4A;
+  border-radius: 50%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-weight: bold;
+}
+
+.page-title {
+  font-size: 48rpx;
+  font-weight: bold;
+  padding: 20rpx 40rpx 32rpx;
+  color: #333;
+}
+
+/* Segmented Control */
+.segment-control {
+  display: flex;
+  background: white;
+  margin: 0 40rpx 32rpx;
+  border-radius: 16rpx;
+  padding: 8rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0,0,0,0.03);
+}
+
+.segment-item {
+  flex: 1;
+  text-align: center;
+  padding: 20rpx 0;
+  font-size: 30rpx;
+  color: #666;
+  border-radius: 12rpx;
+  transition: all 0.3s ease;
+}
+
+.segment-item.active {
+  background-color: #FF6B4A;
+  color: white;
+  font-weight: 500;
+}
+
+/* 卡片通用类 */
+.card {
+  background: white;
+  border-radius: 24rpx;
+  margin: 0 40rpx 32rpx;
+  box-shadow: 0 4rpx 16rpx rgba(0,0,0,0.02);
+  padding: 32rpx;
+}
+
+/* Stats Card */
+.stats-card {
+  display: flex;
+}
+
+.stat-item {
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.stat-item:first-child {
+  padding-right: 32rpx;
+}
+
+.stat-item:last-child {
+  padding-left: 32rpx;
+  position: relative;
+}
+
+.stat-item:last-child::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 10%;
+  height: 80%;
+  width: 1rpx;
+  background-color: #EEE;
+}
+
+.stat-label {
+  font-size: 28rpx;
+  color: #666;
+}
+
+.stat-value {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #333;
+}
+
+.section-title {
+  font-size: 28rpx;
+  color: #999;
+  margin: 0 40rpx 16rpx;
+  display: block;
+}
+
+/* Record Item */
+.record-item {
+  display: flex;
+  align-items: center;
+  margin-bottom: 24rpx;
+}
+
+.record-icon {
+  width: 80rpx;
+  height: 80rpx;
+  border-radius: 50%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 40rpx;
+  margin-right: 24rpx;
+  background-color: #F8F9FA;
+}
+
+.missed-icon {
+  color: #FF3B30;
+}
+
+.record-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.record-date {
+  font-size: 30rpx;
+  color: #333;
+  font-weight: 500;
+  margin-bottom: 8rpx;
+}
+
+.record-desc {
+  font-size: 26rpx;
+  color: #999;
+}
+
+/* Status Tag */
+.status-tag {
+  font-size: 24rpx;
+  padding: 6rpx 16rpx;
+  border-radius: 30rpx;
+}
+
+.status-missed {
+  color: #FF3B30;
+  background-color: rgba(255, 59, 48, 0.1);
+}
+
+.status-summary {
+  color: #FF6B4A;
+}
+
+.status-pending {
+  color: #9A6700;
+  background-color: #FFF8DB;
+}
+
+.status-failed {
+  color: #B42318;
+  background-color: #FFECEB;
+}
+
+/* Content Recommendations */
+.content-item {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 24rpx;
+}
+
+.content-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16rpx;
+}
+
+.content-date {
+  font-size: 26rpx;
+  color: #999;
+}
+
+.tag-pending {
+  background-color: #FFF3E0;
+  color: #FF9800;
+}
+
+.tag-viewed {
+  background-color: #E8F5E9;
+  color: #4CAF50;
+  display: flex;
+  align-items: center;
+  gap: 4rpx;
+}
+
+.tag-viewed::before {
+  content: '✓';
+}
+
+.tag-rejected {
+  background-color: #F5F5F5;
+  color: #999;
+}
+
+.content-tags {
+  display: flex;
+  gap: 16rpx;
+  margin-bottom: 16rpx;
+}
+
+.topic-tag {
+  background-color: #FFE5D9;
+  color: #FF6B4A;
+  font-size: 22rpx;
+  padding: 4rpx 16rpx;
+  border-radius: 8rpx;
+}
+
+.content-title {
+  font-size: 32rpx;
+  color: #333;
+  font-weight: bold;
+}

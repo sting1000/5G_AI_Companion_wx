@@ -1,118 +1,171 @@
-.page {
+.container {
   min-height: 100vh;
-  padding-bottom: 60rpx;
-}
-
-/* 导航栏 */
-.nav-bar {
+  background-color: #F8F9FA;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 100rpx 32rpx 24rpx;
-  background: #ffffff;
-  border-bottom: 2rpx solid #E8E4DF;
+  flex-direction: column;
 }
 
-.nav-back {
-  font-size: 32rpx;
-  color: #FF6B4A;
-  padding: 8rpx 0;
+/* 顶部自定义导航栏 */
+.custom-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 100rpx 40rpx 20rpx;
+  background-color: #F8F9FA;
+}
+
+.nav-back, .nav-placeholder {
+  width: 60rpx;
+}
+
+.back-icon {
+  font-size: 40rpx;
+  font-weight: bold;
+  color: #333;
 }
 
 .nav-title {
-  font-size: 34rpx;
+  font-size: 36rpx;
   font-weight: 600;
-  color: #2D2A26;
+  color: #333;
 }
 
-.nav-placeholder {
-  width: 80rpx;
+.scroll-content {
+  flex: 1;
+  padding: 20rpx 0 200rpx;
 }
 
-/* 内容区 */
+/* 空状态 */
+.empty-state {
+  text-align: center;
+  margin-top: 100rpx;
+  color: #999;
+}
+
+/* 卡片 */
 .card {
-  margin: 24rpx 32rpx 0;
+  background: white;
+  border-radius: 24rpx;
+  margin: 0 40rpx 32rpx;
+  padding: 32rpx;
+  box-shadow: 0 4rpx 16rpx rgba(0,0,0,0.02);
 }
 
 .card-title {
   display: block;
-  font-size: 30rpx;
-  font-weight: 600;
-  color: #2D2A26;
-  margin-bottom: 20rpx;
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #333;
+  margin-bottom: 24rpx;
 }
 
-/* 元信息 */
-.meta-card {
-  padding: 28rpx 32rpx;
+.no-margin {
+  margin-bottom: 0;
 }
 
-.meta-row {
+/* 元数据卡片 */
+.meta-header {
   display: flex;
-  align-items: center;
   justify-content: space-between;
+  margin-bottom: 16rpx;
+}
+
+.meta-time-info {
+  display: flex;
+  flex-direction: column;
 }
 
 .meta-date {
-  display: block;
   font-size: 28rpx;
-  color: #8A8580;
+  color: #666;
+  margin-bottom: 8rpx;
 }
 
 .meta-duration {
-  display: block;
   font-size: 26rpx;
-  color: #8A8580;
-  margin-top: 4rpx;
+  color: #999;
 }
 
 .meta-mood {
   font-size: 48rpx;
 }
 
-/* 摘要 */
+.mood-rating {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  margin-top: 24rpx;
+}
+
+.rating-label {
+  font-size: 28rpx;
+  color: #666;
+}
+
+.stars {
+  display: flex;
+  gap: 8rpx;
+}
+
+.star {
+  font-size: 32rpx;
+  color: #E0E0E0;
+}
+
+.star.active {
+  color: #FFB300;
+}
+
+/* 概要卡片 */
 .summary-text {
-  display: block;
   font-size: 28rpx;
-  color: #2D2A26;
-  line-height: 1.8;
+  color: #333;
+  line-height: 1.6;
+  display: block;
+  margin-bottom: 24rpx;
 }
 
-.summary-loading {
-  display: block;
-  font-size: 28rpx;
-  color: #8A8580;
-  text-align: center;
-  padding: 32rpx 0;
+.summary-status {
+  display: inline-block;
+  margin-bottom: 20rpx;
+  font-size: 24rpx;
+  padding: 8rpx 18rpx;
+  border-radius: 999rpx;
 }
 
-/* 话题标签 */
+.status-pending {
+  color: #9A6700;
+  background-color: #FFF8DB;
+}
+
+.status-failed {
+  color: #B42318;
+  background-color: #FFECEB;
+}
+
 .topics {
   display: flex;
   flex-wrap: wrap;
-  gap: 12rpx;
-  margin-top: 20rpx;
+  gap: 16rpx;
 }
 
 .topic-tag {
-  padding: 8rpx 20rpx;
-  border-radius: 40rpx;
-  background: #FFF5F2;
+  background-color: #FFF5F2;
   color: #FF6B4A;
   font-size: 24rpx;
-  font-weight: 500;
+  padding: 8rpx 24rpx;
+  border-radius: 30rpx;
 }
 
 /* 重要提及 */
 .highlight-list {
   display: flex;
   flex-direction: column;
-  gap: 16rpx;
+  gap: 20rpx;
 }
 
 .highlight-item {
   display: flex;
-  align-items: flex-start;
   gap: 16rpx;
 }
 
@@ -120,64 +173,71 @@
   width: 12rpx;
   height: 12rpx;
   border-radius: 50%;
-  background: #FF6B4A;
+  background-color: #FF6B4A;
   margin-top: 14rpx;
   flex-shrink: 0;
 }
 
-.highlight-item text {
+.highlight-text {
   font-size: 28rpx;
-  color: #2D2A26;
-  line-height: 1.6;
+  color: #333;
+  line-height: 1.5;
 }
 
-/* 对话记录 */
-.messages {
+/* 兴趣信号卡片 */
+.signal-header {
   display: flex;
-  flex-direction: column;
-  gap: 20rpx;
-}
-
-.msg-row {
-  display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 12rpx;
+  margin-bottom: 24rpx;
 }
 
-.msg-user {
-  flex-direction: row-reverse;
+.signal-icon {
+  font-size: 36rpx;
 }
 
-.msg-label {
+.signal-tags {
+  display: flex;
+  gap: 16rpx;
+  margin-bottom: 24rpx;
+}
+
+.signal-tag {
+  background-color: #E8F8F5;
+  color: #2E7D32;
+  font-size: 24rpx;
+  padding: 8rpx 24rpx;
+  border-radius: 30rpx;
+}
+
+.signal-tip {
+  background-color: #F2FBF7;
+  color: #2E7D32;
+  padding: 20rpx;
+  border-radius: 12rpx;
+  font-size: 24rpx;
+  line-height: 1.5;
+}
+
+/* 底部操作栏 */
+.bottom-action {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 32rpx 40rpx 48rpx;
+  background: white;
+  box-shadow: 0 -4rpx 16rpx rgba(0,0,0,0.05);
+}
+
+.reply-btn {
+  background-color: #FF6B4A;
+  color: white;
+  height: 96rpx;
+  border-radius: 48rpx;
+  display: flex;
+  justify-content: center;
+  align-items: center;
   font-size: 32rpx;
-  flex-shrink: 0;
-  margin-top: 4rpx;
-}
-
-.msg-bubble {
-  max-width: 75%;
-  padding: 16rpx 24rpx;
-  border-radius: 20rpx;
-  font-size: 28rpx;
-  line-height: 1.6;
-}
-
-.bubble-ai {
-  background: #F0EDEA;
-  color: #2D2A26;
-  border-top-left-radius: 4rpx;
-}
-
-.bubble-user {
-  background: #FF6B4A;
-  color: #ffffff;
-  border-top-right-radius: 4rpx;
-}
-
-/* 空状态 */
-.empty-state {
-  text-align: center;
-  padding-top: 200rpx;
-  color: #8A8580;
-  font-size: 28rpx;
+  font-weight: bold;
 }

@@ -1,3 +1,5 @@
 {
-  "navigationBarTitleText": "通话摘要"
+  "navigationBarTitleText": "通话摘要",
+  "navigationStyle": "custom",
+  "backgroundColor": "#F8F9FA"
 }

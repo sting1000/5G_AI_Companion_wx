@@ -1,75 +1,88 @@
-<view class="page">
-  <!-- 顶部导航 -->
-  <view class="nav-bar">
+<view class="container">
+  <!-- 自定义顶部导航 -->
+  <view class="custom-nav">
     <view class="nav-back" bindtap="goBack">
-      <text>‹ 返回</text>
+      <text class="back-icon">←</text>
     </view>
     <text class="nav-title">通话摘要</text>
     <view class="nav-placeholder"></view>
   </view>
 
-  <block wx:if="{{notFound}}">
-    <view class="empty-state">
-      <text>未找到通话记录</text>
-    </view>
-  </block>
+  <scroll-view class="scroll-content" scroll-y>
+    <block wx:if="{{notFound}}">
+      <view class="empty-state">
+        <text>未找到通话记录</text>
+      </view>
+    </block>
 
-  <block wx:elif="{{record}}">
-    <!-- 元信息 -->
-    <view class="card meta-card">
-      <view class="meta-row">
-        <view>
-          <text class="meta-date">{{record.date}}</text>
-          <text class="meta-duration">时长 {{record.duration}}</text>
+    <block wx:elif="{{record}}">
+      <!-- 基础元数据卡片 -->
+      <view class="card meta-card">
+        <view class="meta-header">
+          <view class="meta-time-info">
+            <text class="meta-date">{{record.date}}</text>
+            <text class="meta-duration">时长 {{record.duration}}</text>
+          </view>
+          <text class="meta-mood">{{record.mood}}</text>
         </view>
-        <text class="meta-mood">{{record.mood}}</text>
-      </view>
-    </view>
-
-    <!-- 摘要 -->
-    <view class="card" wx:if="{{record.summary}}">
-      <text class="card-title">通话概要</text>
-      <text class="summary-text">{{record.summary}}</text>
-      <view class="topics" wx:if="{{record.topics.length > 0}}">
-        <text
-          class="topic-tag"
-          wx:for="{{record.topics}}"
-          wx:key="*this"
-        >{{item}}</text>
-      </view>
-    </view>
-
-    <view class="card" wx:else>
-      <text class="card-title">通话概要</text>
-      <text class="summary-loading">摘要生成中...</text>
-    </view>
-
-    <!-- 重要提及 -->
-    <view class="card" wx:if="{{record.highlights.length > 0}}">
-      <text class="card-title">重要提及</text>
-      <view class="highlight-list">
-        <view class="highlight-item" wx:for="{{record.highlights}}" wx:key="*this">
-          <view class="highlight-dot"></view>
-          <text>{{item}}</text>
-        </view>
-      </view>
-    </view>
-
-    <!-- 对话记录 -->
-    <view class="card" wx:if="{{record.messages.length > 0}}">
-      <text class="card-title">对话记录</text>
-      <view class="messages">
-        <view
-          class="msg-row {{item.role === 'user' ? 'msg-user' : 'msg-ai'}}"
-          wx:for="{{record.messages}}"
-          wx:key="index"
-        >
-          <text class="msg-label">{{item.role === 'user' ? '👤' : '👩'}}</text>
-          <view class="msg-bubble {{item.role === 'user' ? 'bubble-user' : 'bubble-ai'}}">
-            <text>{{item.content}}</text>
+        <view class="mood-rating">
+          <text class="rating-label">情绪评分</text>
+          <view class="stars">
+            <!-- 模拟 4 星 -->
+            <text class="star active">★</text>
+            <text class="star active">★</text>
+            <text class="star active">★</text>
+            <text class="star active">★</text>
+            <text class="star">★</text>
           </view>
         </view>
       </view>
-    </view>
-  </block>
+
+      <!-- 通话概要 -->
+      <view class="card summary-card">
+        <text class="card-title">通话概要</text>
+        <view class="summary-status status-pending" wx:if="{{record.summaryStatus === 'pending'}}">摘要生成中，请稍后刷新</view>
+        <view class="summary-status status-failed" wx:if="{{record.summaryStatus === 'failed'}}">{{record.summaryError || '摘要生成失败，请稍后重试'}}</view>
+        <text class="summary-text" wx:if="{{record.summary}}">{{record.summary}}</text>
+        <text class="summary-text summary-placeholder" wx:elif="{{record.summaryStatus === 'pending'}}">通话内容已保存，AI 正在整理摘要...</text>
+        <text class="summary-text summary-placeholder" wx:elif="{{record.summaryStatus === 'failed'}}">本次摘要暂不可用，但通话记录已保留。</text>
+        <text class="summary-text summary-placeholder" wx:else>通话时间较短，暂无摘要</text>
+        <view class="topics" wx:if="{{record.topics && record.topics.length > 0}}">
+          <text class="topic-tag" wx:for="{{record.topics}}" wx:key="*this">{{item}}</text>
+        </view>
+      </view>
+
+      <!-- 重要提及 -->
+      <view class="card highlight-card" wx:if="{{record.highlights && record.highlights.length > 0}}">
+        <text class="card-title">重要提及</text>
+        <view class="highlight-list">
+          <view class="highlight-item" wx:for="{{record.highlights}}" wx:key="*this">
+            <view class="highlight-dot"></view>
+            <text class="highlight-text">{{item}}</text>
+          </view>
+        </view>
+      </view>
+
+      <!-- 兴趣信号 -->
+      <view class="card signal-card" wx:if="{{record.topics && record.topics.length > 0}}">
+        <view class="signal-header">
+          <text class="signal-icon">📡</text>
+          <text class="card-title no-margin">兴趣信号</text>
+        </view>
+        <view class="signal-tags">
+          <text class="signal-tag" wx:for="{{record.topics}}" wx:key="*this">{{item}}</text>
+        </view>
+        <view class="signal-tip">
+          <text>AI将适时为老人推荐相关内容，帮助丰富日常生活。</text>
+        </view>
+      </view>
+    </block>
+  </scroll-view>
+
+  <!-- 底部固定吸底操作栏 -->
+  <view class="bottom-action">
+    <button class="reply-btn">
+      <text>回复关心</text>
+    </button>
+  </view>
 </view>
