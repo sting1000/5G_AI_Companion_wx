@@ -2,6 +2,7 @@ const { RealtimeAPIClient } = require('../../utils/realtime-api')
 const { AudioRecorder, AudioPlayer } = require('../../utils/audio')
 const store = require('../../utils/store')
 const SUBTITLE_THROTTLE_MS = 120
+const TRANSCRIPT_MAX_ITEMS = 30
 const ENABLE_AUTO_SESSION_REFRESH = false
 const FLOW_LOG_PREFIX = '[CallFlow]'
 const ALLOW_UPLINK_DURING_PLAYBACK = false
@@ -29,17 +30,23 @@ const VOICE_PRESET_CONFIG = {
   safe: {
     label: '自然稳健',
     speakingStyle: '说话温柔自然，句子短一点，停顿清楚，语速平稳偏慢，优先保证可懂度',
-    tts: { speedRatio: 0.97, pitchRatio: 1.0, volumeRatio: 1.0 },
+    characterManifest: '',
+    careStrategies: ['语速自然正常', '语句简短', '多确认理解', '情绪表达克制而温暖'],
+    tts: { speechRate: -8, loudnessRate: -4, enableLoudnessNorm: true },
   },
   balanced: {
     label: '轻情感',
     speakingStyle: '说话自然亲切，适度加入情绪起伏，句子保持口语化，停顿柔和',
-    tts: { speedRatio: 1.0, pitchRatio: 1.02, volumeRatio: 1.02 },
+    characterManifest: '',
+    careStrategies: ['语速自然正常', '口语化表达', '多给共情反馈', '建议保持可执行'],
+    tts: { speechRate: 0, loudnessRate: 0, enableLoudnessNorm: true },
   },
   expressive: {
     label: '情感实验',
     speakingStyle: '说话更有情感层次，但不要夸张，保持语义清晰和断句稳定',
-    tts: { speedRatio: 1.03, pitchRatio: 1.04, volumeRatio: 1.03 },
+    characterManifest: '',
+    careStrategies: ['语速自然正常', '口语化表达', '先共情再建议', '高风险场景优先安抚与转介'],
+    tts: { speechRate: 6, loudnessRate: 3, enableLoudnessNorm: true },
   },
 }
 
@@ -50,9 +57,12 @@ Page({
     connectionHint: '正在呼叫...',
     elapsed: 0,
     elapsedText: '00:00',
-    subtitle: '',
-    userText: '',
+    transcriptItems: [],
+    currentUserDraft: '',
+    currentAssistantDraft: '',
+    transcriptAnchorId: 'transcript-anchor',
     isSpeaking: false,
+    isAssistantSpeaking: false,
     showIncoming: false, // 是否展示来电界面
     callMode: 'outgoing', // outgoing | incoming
     isIncomingAnswering: false,
@@ -65,15 +75,15 @@ Page({
     this.player = new AudioPlayer()
     this.timer = null
     this.chatBuffer = ''
+    this.pendingAssistantDraft = ''
     this.messages = []
     this.hasFinalizedCall = false
     this.currentElderKey = store.getElderKey()
     this.assistantTurnCount = 0
     this.isRefreshingSession = false
     this.sessionOptions = null
-    this.subtitleFlushTimer = null
-    this.subtitleLastFlushAt = 0
-    this.pendingSubtitle = ''
+    this.assistantDraftFlushTimer = null
+    this.assistantDraftLastFlushAt = 0
     this.currentLatencyTurn = null
     this.latencySamples = []
     this.lastUplinkBlockReason = ''
@@ -134,16 +144,6 @@ Page({
     console.log(FLOW_LOG_PREFIX, '开始通话初始化')
 
     try {
-      // 1. 请求麦克风权限
-      this._setConnectionPhase('authorizing')
-      await this._authorize()
-      console.log(FLOW_LOG_PREFIX, '麦克风权限已授权')
-
-      // 2. 连接 WebSocket
-      this._setConnectionPhase('connecting')
-      await this.client.connect()
-      console.log(FLOW_LOG_PREFIX, 'WebSocket 已连接')
-
       const elderConfig = store.getElderConfig()
       const title = store.getElderTitle()
       this.currentElderKey = store.getElderKey(elderConfig)
@@ -158,6 +158,9 @@ Page({
         : ''
 
       const voicePreset = VOICE_PRESET_CONFIG[DEFAULT_VOICE_PRESET] || VOICE_PRESET_CONFIG.safe
+      const reminderGuidance = greetingPayload.usedReminderId
+        ? `\n当前通话是“提醒事项回访”。对话优先级：先确认“提醒事项是否已完成”；若未完成，先问阻碍并给1-2条可执行建议；若已完成，先肯定再简短关心近况。不要再用“能聊聊吗/方便聊两句吗”作为开场。`
+        : ''
       const systemRole = `你是小林，一个温柔亲切的大学女生陪伴助手，正在和${title}通电话。请全程用“您”称呼对方，句子短而自然，避免长句说教。
 如果对方说“叫我XXX”，请立即切换称呼并记住。
 如果有历史记忆，首轮回复自然带出1条，不重复盘问。
@@ -167,7 +170,18 @@ Page({
 遇到用户请求线下陪同/代办时，固定回复策略：先共情，再明确“我不能线下行动”，然后明确“我可以帮您联系对应的人”，并给电话内可执行方案（联系家属/120/社区服务/网约车）。
 遇到健康不适或生活困难时，先共情，再给电话内可执行建议，并提醒联系家属或专业机构。
 表达风格：口语化、真诚、有节奏停顿，不要模板化复读，不要夸张表演腔。
-${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
+${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${reminderGuidance}`
+
+      // 1-2. 并行处理：请求麦克风权限 + 连接 WebSocket，减少冷启动串行耗时
+      this._setConnectionPhase('authorizing')
+      const authorizePromise = this._authorize().then(() => {
+        console.log(FLOW_LOG_PREFIX, '麦克风权限已授权')
+      })
+      this._setConnectionPhase('connecting')
+      const connectPromise = this.client.connect().then(() => {
+        console.log(FLOW_LOG_PREFIX, 'WebSocket 已连接')
+      })
+      await Promise.all([authorizePromise, connectPromise])
 
       // 3. 开始会话（默认 server_vad 模式，自动检测说话停顿）
       this._setConnectionPhase('preparing')
@@ -175,6 +189,9 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
         botName: '小林',
         systemRole,
         speakingStyle: voicePreset.speakingStyle,
+        characterManifest: voicePreset.characterManifest || '',
+        careStrategies: voicePreset.careStrategies || [],
+        ttsAudioConfig: voicePreset.tts || {},
         dialogId,
         speaker: SPEAKER_FALLBACK_CHAIN[this.currentSpeakerIndex] || SPEAKER_FALLBACK_CHAIN[0],
         voicePreset: DEFAULT_VOICE_PRESET,
@@ -194,6 +211,13 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
 
       // 4. 小林先打招呼
       this.client.sayHello(greetingPayload.text)
+      // 首句兜底：部分场景服务端不会返回 chat 分片，先用本地问候文案占位字幕
+      const greetingDraft = this._sanitizeForDisplay(greetingPayload.text)
+      this.pendingAssistantDraft = greetingDraft || ''
+      this.setData({
+        currentAssistantDraft: greetingDraft || '',
+        transcriptAnchorId: greetingDraft ? 'draft-assistant' : this.data.transcriptAnchorId,
+      })
       this._armConnectingFallback()
       if (greetingPayload.usedMemoryText) {
         store.markMemoryItemsUsed(this.currentElderKey, [greetingPayload.usedMemoryText])
@@ -213,7 +237,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
       console.error('[Call] start failed:', err)
       console.error(FLOW_LOG_PREFIX, '通话初始化失败', err)
       this.setData({
-        subtitle: '连接失败，请重试',
+        currentAssistantDraft: '连接失败，请重试',
         isIncomingAnswering: false,
         incomingHint: '接听失败，请重试',
       })
@@ -273,15 +297,23 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
     // ASR：用户说话识别
     this.client.onASRText = (text, isFinal) => {
       this._markCallConnectedIfNeeded('asr')
-      this.setData({ userText: text, isSpeaking: true })
-      if (isFinal && text) {
+      const visibleText = this._sanitizeForDisplay(text)
+      this.setData({
+        currentUserDraft: visibleText,
+        transcriptAnchorId: 'draft-user',
+        isSpeaking: true,
+        isAssistantSpeaking: false,
+      })
+      if (isFinal && visibleText) {
+        this._appendTranscriptItem('user', visibleText)
         this.messages.push({ role: 'user', content: text })
+        this.setData({ currentUserDraft: '' })
       }
     }
 
     // ASR 结束：用户停止说话
     this.client.onASREnd = () => {
-      this.setData({ isSpeaking: false })
+      this.setData({ isSpeaking: false, currentUserDraft: '' })
       console.log(FLOW_LOG_PREFIX, 'ASR 结束，等待模型回复')
       this.currentLatencyTurn = {
         userEndAt: Date.now(),
@@ -297,11 +329,13 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
       this._markCallConnectedIfNeeded('chat')
       this.chatBuffer += text
       this.currentTurnBoundaryViolated = this.currentTurnBoundaryViolated || this._isBoundaryViolationText(this.chatBuffer)
-      this.pendingSubtitle = this.currentTurnBoundaryViolated ? BOUNDARY_SAFE_REPLY : this.chatBuffer
-      this._flushSubtitle(false)
+      this.pendingAssistantDraft = this.currentTurnBoundaryViolated
+        ? BOUNDARY_SAFE_REPLY
+        : this._sanitizeForDisplay(this.chatBuffer)
+      this._flushAssistantDraft(false)
       // 某些机型可能收不到 ASR_ENDED，AI 有文本回复时强制退出聆听态
       if (this.data.isSpeaking) {
-        this.setData({ isSpeaking: false })
+        this.setData({ isSpeaking: false, currentUserDraft: '' })
       }
       if (this.currentLatencyTurn && !this.currentLatencyTurn.firstChatAt) {
         this.currentLatencyTurn.firstChatAt = Date.now()
@@ -322,10 +356,20 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
     // AI 开始说新的一句
     this.client.onTTSStart = (text) => {
       this._markCallConnectedIfNeeded('tts_start')
+      this._flushAssistantDraft(true)
+      const seededAssistantDraft = this._sanitizeForDisplay(text)
+        || this.pendingAssistantDraft
+        || this.data.currentAssistantDraft
       this.chatBuffer = ''
-      this.pendingSubtitle = ''
+      this.pendingAssistantDraft = seededAssistantDraft || ''
       this.currentTurnBoundaryViolated = false
-      this.setData({ userText: '', isSpeaking: false })
+      this.setData({
+        currentUserDraft: '',
+        currentAssistantDraft: seededAssistantDraft || '',
+        transcriptAnchorId: seededAssistantDraft ? 'draft-assistant' : this.data.transcriptAnchorId,
+        isSpeaking: false,
+        isAssistantSpeaking: true,
+      })
     }
 
     // AI 这一轮说完
@@ -334,17 +378,25 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
         console.warn(FLOW_LOG_PREFIX, '检测到越界话术，丢弃当前语音并触发安全重说')
         this.player.stop()
         this.chatBuffer = ''
-        this.pendingSubtitle = BOUNDARY_SAFE_REPLY
-        this._flushSubtitle(true)
+        this.pendingAssistantDraft = BOUNDARY_SAFE_REPLY
+        this._flushAssistantDraft(true)
+        this._appendTranscriptItem('assistant', BOUNDARY_SAFE_REPLY)
+        this.setData({ currentAssistantDraft: '', isAssistantSpeaking: false })
         this._triggerBoundarySafeRepair()
         this._finalizeLatencyTurn()
         return
       }
-      const isFirstAssistantTurn = this.assistantTurnCount === 0 && !!this.chatBuffer
-      this._flushSubtitle(true)
+      this._flushAssistantDraft(true)
+      const finalVisibleAssistant = this._sanitizeForDisplay(
+        this.chatBuffer || this.pendingAssistantDraft || this.data.currentAssistantDraft
+      )
+      const finalRawAssistant = this.chatBuffer || this.pendingAssistantDraft || this.data.currentAssistantDraft
+      const hasAssistantTurn = !!finalVisibleAssistant
+      const isFirstAssistantTurn = this.assistantTurnCount === 0 && hasAssistantTurn
       this.player.playBuffered()
-      if (this.chatBuffer) {
-        this.messages.push({ role: 'assistant', content: this.chatBuffer })
+      if (hasAssistantTurn) {
+        this.messages.push({ role: 'assistant', content: finalRawAssistant })
+        this._appendTranscriptItem('assistant', finalVisibleAssistant)
         this.assistantTurnCount += 1
         if (this.isBoundaryRepairing) {
           this.isBoundaryRepairing = false
@@ -355,6 +407,8 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
       }
       this._finalizeLatencyTurn()
       this.chatBuffer = ''
+      this.pendingAssistantDraft = ''
+      this.setData({ currentAssistantDraft: '' })
       console.log(FLOW_LOG_PREFIX, '本轮 TTS 结束')
       // 规避服务端轮次上限：每 8 轮自动续会话，保持同一 dialog_id
       if (ENABLE_AUTO_SESSION_REFRESH && this.assistantTurnCount > 0 && this.assistantTurnCount % 8 === 0) {
@@ -400,12 +454,14 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
 
     this.player.onPlayStart = () => {
       this.playbackEchoGuardUntil = 0
+      this.setData({ isAssistantSpeaking: true })
       if (this.currentLatencyTurn && !this.currentLatencyTurn.playStartAt) {
         this.currentLatencyTurn.playStartAt = Date.now()
       }
       console.log(FLOW_LOG_PREFIX, '播放器开始播放')
     }
     this.player.onPlayEnd = () => {
+      this.setData({ isAssistantSpeaking: false })
       if (this.waitingGreetingPlaybackEnd) {
         this.waitingGreetingPlaybackEnd = false
         this.initialEchoGuardActive = false
@@ -523,8 +579,11 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
 
     this.setData({
       status: 'ended',
-      subtitle: reason === 'disconnect' ? '网络中断，通话已结束' : '通话已结束',
+      currentUserDraft: '',
+      currentAssistantDraft: '',
+      isAssistantSpeaking: false,
     })
+    this._appendTranscriptItem('assistant', reason === 'disconnect' ? '网络中断，通话已结束' : '通话已结束')
     this._clearGreetingEchoGuardFailsafe()
     if (this.connectingFallbackTimer) {
       clearTimeout(this.connectingFallbackTimer)
@@ -683,26 +742,55 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
     }
   },
 
-  _flushSubtitle(force) {
+  _flushAssistantDraft(force) {
     if (force) {
-      if (this.subtitleFlushTimer) {
-        clearTimeout(this.subtitleFlushTimer)
-        this.subtitleFlushTimer = null
+      if (this.assistantDraftFlushTimer) {
+        clearTimeout(this.assistantDraftFlushTimer)
+        this.assistantDraftFlushTimer = null
       }
-      this.subtitleLastFlushAt = Date.now()
-      this.setData({ subtitle: this.pendingSubtitle || '' })
+      this.assistantDraftLastFlushAt = Date.now()
+      this.setData({
+        currentAssistantDraft: this.pendingAssistantDraft || '',
+        transcriptAnchorId: 'draft-assistant',
+      })
       return
     }
 
-    if (this.subtitleFlushTimer) return
+    if (this.assistantDraftFlushTimer) return
     const now = Date.now()
-    const elapsed = now - this.subtitleLastFlushAt
+    const elapsed = now - this.assistantDraftLastFlushAt
     const waitMs = elapsed >= SUBTITLE_THROTTLE_MS ? 0 : (SUBTITLE_THROTTLE_MS - elapsed)
-    this.subtitleFlushTimer = setTimeout(() => {
-      this.subtitleFlushTimer = null
-      this.subtitleLastFlushAt = Date.now()
-      this.setData({ subtitle: this.pendingSubtitle || '' })
+    this.assistantDraftFlushTimer = setTimeout(() => {
+      this.assistantDraftFlushTimer = null
+      this.assistantDraftLastFlushAt = Date.now()
+      this.setData({
+        currentAssistantDraft: this.pendingAssistantDraft || '',
+        transcriptAnchorId: 'draft-assistant',
+      })
     }, waitMs)
+  },
+
+  _appendTranscriptItem(role, content) {
+    const text = this._sanitizeForDisplay(content)
+    if (!text) return
+    const id = `${role}_${Date.now()}_${Math.floor(Math.random() * 1000)}`
+    const next = (this.data.transcriptItems || []).concat([{ id, role, content: text }])
+    const clipped = next.slice(-TRANSCRIPT_MAX_ITEMS)
+    this.setData({
+      transcriptItems: clipped,
+      transcriptAnchorId: id,
+    })
+  },
+
+  _sanitizeForDisplay(text) {
+    if (!text) return ''
+    let output = String(text)
+    for (let i = 0; i < 5; i += 1) {
+      const stripped = output.replace(/（[^（）]*）|\([^()]*\)/g, '')
+      if (stripped === output) break
+      output = stripped
+    }
+    return output.replace(/\s+/g, ' ').trim()
   },
 
   _finalizeLatencyTurn() {
@@ -1115,7 +1203,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
     if (this.data.callMode === 'incoming') {
       if (incomingReminder && incomingReminder.title) {
         return {
-          text: `${title}，是我小林呀！我记得您这件事：“${incomingReminder.title}”。我特地来提醒您一下，现在方便聊两句吗？`,
+          text: `${title}，是我小林呀！我来提醒您“${incomingReminder.title}”。这件事完成了吗？没完成的话，我陪您想个省心办法。`,
           usedMemoryText: '',
           usedReminderId: incomingReminder.id || '',
         }
@@ -1256,6 +1344,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
       书法: ['书法'],
       烹饪: ['烹饪', '做饭'],
       广场舞: ['广场舞', '跳舞'],
+      跳芭蕾: ['芭蕾', '芭蕾舞', '跳芭蕾'],
       养生: ['养生'],
       看电视剧: ['电视剧', '追剧'],
       棋牌: ['棋牌', '下棋', '打牌'],
@@ -1266,6 +1355,19 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
     ;(userMessages || []).forEach(text => {
       const line = this._normalizeMemorySentence(text)
       if (!line || this._isLowInfoSentence(line)) return
+
+      // 显式兴趣表达优先抽取（例如：我喜欢跳芭蕾 / 我爱好是养花）
+      const explicitMatch = line.match(/(?:我)?(?:特别)?(?:很)?(?:喜欢|爱好是|爱好|最爱|平时爱|平时喜欢)(.{1,12})/)
+      if (explicitMatch && explicitMatch[1]) {
+        const candidate = explicitMatch[1]
+          .replace(/^(是|做|去|在|会)/, '')
+          .replace(/(呢|呀|啊|啦|了|呀|哦|嘛)+$/g, '')
+          .replace(/[。！？!?,，、；;]+$/g, '')
+        if (candidate && candidate.length >= 2 && candidate.length <= 10) {
+          tags.push(candidate)
+        }
+      }
+
       Object.keys(interestDict).forEach(tag => {
         const variants = interestDict[tag]
         if (variants.some(keyword => line.includes(keyword))) {
@@ -1384,9 +1486,9 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
   },
 
   _cleanup() {
-    if (this.subtitleFlushTimer) {
-      clearTimeout(this.subtitleFlushTimer)
-      this.subtitleFlushTimer = null
+    if (this.assistantDraftFlushTimer) {
+      clearTimeout(this.assistantDraftFlushTimer)
+      this.assistantDraftFlushTimer = null
     }
     this._clearGreetingEchoGuardFailsafe()
     if (this.connectingFallbackTimer) {

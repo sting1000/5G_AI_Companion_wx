@@ -410,9 +410,95 @@ function _normalizeReminderText(text) {
   return String(text || '').trim()
 }
 
+function _normalizeReminderTitle(text) {
+  const raw = _normalizeReminderText(text)
+  if (!raw) return ''
+
+  // 先去掉“提醒我/记得提醒我”等第一人称提醒前缀
+  let title = raw
+    .replace(/^[，。！？、\s]+/, '')
+    .replace(/^(请)?(帮我)?(记得)?(到时候)?(一定)?(提醒我一下|提醒一下我|提醒我|提醒下我|提醒下|记得提醒我|叫我|告诉我|通知我)[，。！？、\s]*/u, '')
+    .replace(/^[，。！？、\s]+/, '')
+
+  // 再去掉开头的时间短语（支持组合：明天下午2点 / 周一上午十点 / 每天9:00）
+  const timeWordPrefix = /^(?:(今天|今晚|明天|后天|大后天|下周[一二三四五六日天]?|本周[一二三四五六日天]?|周[一二三四五六日天]|每天|每周|每月|每个?周[一二三四五六日天]|每个?月|\d{1,2}月\d{1,2}[日号]?|凌晨|早上|上午|中午|下午|晚上|夜里|夜间|清晨)[，。！？、\s]*)+/u
+  const timeClockPrefix = /^(\d{1,2}([:：]\d{1,2})?|[零一二两三四五六七八九十]{1,3})(点(半|[0-5]?\d分?)?)?[，。！？、\s]*/u
+  let withTimeRemoved = title
+    .replace(timeWordPrefix, '')
+    .replace(/^[，。！？、\s]+/, '')
+  withTimeRemoved = withTimeRemoved
+    .replace(timeClockPrefix, '')
+    .replace(/^[，。！？、\s]+/, '')
+  // 兜底：处理极端匹配下残留的“点/点半”前缀（如误成“点吃药”）
+  withTimeRemoved = withTimeRemoved
+    .replace(/^(?:[零一二两三四五六七八九十\d]{0,2})点(半|[0-5]?\d分?)?/, '')
+    .replace(/^[，。！？、\s]+/, '')
+
+  // 只有在去掉时间后仍有有效内容时才采用，避免误删成空
+  if (withTimeRemoved && withTimeRemoved.length >= 2) {
+    title = withTimeRemoved
+  }
+
+  return title || raw
+}
+
+function _removeReminderRelatedMemory(reminder, elderKey) {
+  const scopedKey = elderKey || getElderKey()
+  const title = _normalizeMemoryText(reminder && reminder.title)
+  const evidence = _normalizeMemoryText(reminder && reminder.evidence)
+  const remindDate = _normalizeMemoryText(reminder && reminder.remindDate)
+  const timeOfDay = _normalizeMemoryText(reminder && reminder.timeOfDay)
+  const tokens = [title, evidence, remindDate, timeOfDay].filter(Boolean)
+  if (tokens.length === 0) return false
+
+  const hasRelatedToken = (text) => {
+    const normalized = _normalizeMemoryText(text)
+    if (!normalized) return false
+    return tokens.some(token => {
+      if (!token) return false
+      if (token.length <= 2) return normalized === token
+      return normalized.includes(token) || token.includes(normalized)
+    })
+  }
+
+  const bundle = getMemoryBundle(scopedKey)
+  const nextXiaolinFollowUps = (bundle.xiaolinMemory && bundle.xiaolinMemory.followUps || [])
+    .filter(text => !hasRelatedToken(text))
+  const nextRecentEvents = (bundle.elderMemory && bundle.elderMemory.recentEvents || [])
+    .filter(text => !hasRelatedToken(text))
+  const nextMemoryItems = (bundle.memoryItems || [])
+    .filter(item => {
+      if (!item || !item.text) return false
+      if (!(item.type === 'followUp' || item.type === 'recentEvent')) return true
+      return !hasRelatedToken(item.text)
+    })
+
+  const changed = nextXiaolinFollowUps.length !== (bundle.xiaolinMemory && bundle.xiaolinMemory.followUps || []).length
+    || nextRecentEvents.length !== (bundle.elderMemory && bundle.elderMemory.recentEvents || []).length
+    || nextMemoryItems.length !== (bundle.memoryItems || []).length
+  if (!changed) return false
+
+  saveMemoryBundle(Object.assign({}, bundle, {
+    elderMemory: Object.assign({}, bundle.elderMemory, {
+      recentEvents: nextRecentEvents,
+      lastUpdatedAt: new Date().toISOString(),
+    }),
+    xiaolinMemory: Object.assign({}, bundle.xiaolinMemory, {
+      followUps: nextXiaolinFollowUps,
+      memoryUpdatedAt: new Date().toISOString(),
+      lastUpdatedAt: new Date().toISOString(),
+    }),
+    memoryMeta: Object.assign({}, bundle.memoryMeta, {
+      memoryUpdatedAt: new Date().toISOString(),
+    }),
+    memoryItems: nextMemoryItems,
+  }), scopedKey)
+  return true
+}
+
 function _normalizeReminder(reminder) {
   const now = new Date().toISOString()
-  const title = _normalizeReminderText(reminder && reminder.title)
+  const title = _normalizeReminderTitle(reminder && reminder.title)
   const timeOfDay = String((reminder && reminder.timeOfDay) || '09:00')
   const scheduleType = String((reminder && reminder.scheduleType) || 'daily')
   const remindDate = _normalizeReminderText(reminder && reminder.remindDate)
@@ -492,10 +578,14 @@ function deleteReminder(reminderId, elderKey) {
   if (!reminderId) return false
   const reminderMap = _getReminderMap()
   const list = getReminders(scopedKey)
+  const removed = list.find(item => item.id === reminderId) || null
   const nextList = list.filter(item => item.id !== reminderId)
   if (nextList.length === list.length) return false
   reminderMap[scopedKey] = nextList
   _saveReminderMap(reminderMap)
+  if (removed) {
+    _removeReminderRelatedMemory(removed, scopedKey)
+  }
   return true
 }
 
@@ -564,7 +654,7 @@ function upsertExtractedReminderCandidates(candidates, elderKey, options) {
   let skippedLowConfidence = 0
 
   input.forEach(raw => {
-    const title = _normalizeReminderText(raw && raw.title)
+    const title = _normalizeReminderTitle(raw && raw.title)
     const confidenceRaw = Number(raw && raw.confidence)
     const confidence = Math.max(0, Math.min(1, Number.isFinite(confidenceRaw) ? confidenceRaw : 0))
     if (!title || confidence < autoThreshold) {

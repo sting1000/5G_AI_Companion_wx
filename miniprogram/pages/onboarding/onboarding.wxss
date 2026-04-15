@@ -5,66 +5,9 @@
   flex-direction: column;
 }
 
-/* 步骤条 */
-.stepper {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 40rpx 40rpx 0;
-  margin-bottom: 20rpx;
-}
-
-.step-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.step-circle {
-  width: 56rpx;
-  height: 56rpx;
-  border-radius: 50%;
-  background-color: #E0E0E0;
-  color: white;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  font-size: 28rpx;
-  font-weight: bold;
-  margin-bottom: 12rpx;
-  transition: all 0.3s;
-}
-
-.step-text {
-  font-size: 24rpx;
-  color: #999;
-  transition: all 0.3s;
-}
-
-.step-line {
-  flex: 1;
-  height: 2rpx;
-  background-color: #E0E0E0;
-  margin: 0 16rpx 36rpx;
-  transition: all 0.3s;
-}
-
-.step-item.active .step-circle {
-  background-color: #FF6B4A;
-}
-
-.step-item.active .step-text {
-  color: #FF6B4A;
-  font-weight: 500;
-}
-
-.step-line.active {
-  background-color: #FF6B4A;
-}
-
 /* 头部 */
 .header {
-  padding: 32rpx 40rpx;
+  padding: 88rpx 40rpx 32rpx;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -211,83 +154,6 @@ picker {
   font-size: 30rpx;
 }
 
-/* 第二步组件 */
-.time-picker-box {
-  background-color: #F8F9FA;
-  height: 88rpx;
-  border-radius: 16rpx;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 24rpx;
-  font-size: 32rpx;
-}
-
-.freq-segment {
-  display: flex;
-  background-color: #F8F9FA;
-  border-radius: 16rpx;
-  padding: 8rpx;
-}
-
-.freq-item {
-  flex: 1;
-  text-align: center;
-  padding: 16rpx 0;
-  font-size: 28rpx;
-  color: #666;
-  border-radius: 12rpx;
-}
-
-.freq-item.active {
-  background-color: #FF6B4A;
-  color: white;
-}
-
-.switch-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.switch-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 24rpx 0;
-  border-bottom: 1rpx solid #F0F0F0;
-  font-size: 30rpx;
-  color: #333;
-}
-
-.switch-item.no-border {
-  border-bottom: none;
-}
-
-.label-space-between {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 24rpx;
-}
-
-.label-title {
-  font-size: 28rpx;
-  font-weight: bold;
-  color: #333;
-}
-
-.add-btn {
-  color: #FF6B4A;
-  font-size: 28rpx;
-}
-
-.empty-event {
-  color: #999;
-  font-size: 28rpx;
-  text-align: center;
-  padding: 32rpx 0;
-}
-
 /* 底部操作栏 */
 .bottom-bar {
   position: fixed;
@@ -320,7 +186,7 @@ picker {
 }
 
 .btn-primary {
-  flex: 2;
+  flex: 1;
   background-color: #FF6B4A;
   color: white;
 }

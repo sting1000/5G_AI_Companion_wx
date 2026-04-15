@@ -78,7 +78,7 @@
 /* 字幕 */
 .subtitle-area {
   width: 100%;
-  min-height: 160rpx;
+  min-height: 220rpx;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -87,9 +87,59 @@
 .subtitle-box {
   background: rgba(255, 255, 255, 0.1);
   border-radius: 24rpx;
-  padding: 28rpx 36rpx;
+  padding: 24rpx 28rpx;
   width: 100%;
   text-align: center;
+}
+
+.transcript-scroll {
+  max-height: 320rpx;
+  text-align: left;
+  box-sizing: border-box;
+}
+
+.transcript-item {
+  border-radius: 18rpx;
+  padding: 14rpx 18rpx;
+  margin-bottom: 14rpx;
+}
+
+.transcript-item:last-child {
+  margin-bottom: 0;
+}
+
+.transcript-item-user {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1rpx solid rgba(255, 255, 255, 0.12);
+}
+
+.transcript-item-assistant {
+  background: rgba(255, 107, 74, 0.14);
+  border: 1rpx solid rgba(255, 107, 74, 0.24);
+}
+
+.transcript-item-draft {
+  opacity: 0.9;
+}
+
+.transcript-role {
+  display: block;
+  font-size: 22rpx;
+  color: rgba(255, 255, 255, 0.66);
+  margin-bottom: 6rpx;
+}
+
+.transcript-content {
+  display: block;
+  font-size: 30rpx;
+  color: #FFFFFF;
+  line-height: 1.55;
+  word-break: break-all;
+}
+
+.transcript-anchor {
+  width: 100%;
+  height: 2rpx;
 }
 
 .subtitle-ai {
@@ -126,7 +176,7 @@
 .subtitle-hint {
   display: block;
   font-size: 28rpx;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.68);
 }
 
 .phase-steps {
@@ -167,60 +217,68 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 24rpx;
+  gap: 20rpx;
+  width: 100%;
 }
 
-/* 麦克风指示器 */
-.mic-indicator {
-  width: 120rpx;
-  height: 120rpx;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.08);
+/* 状态卡片（非按钮） */
+.status-card {
+  width: 100%;
+  border-radius: 24rpx;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1rpx solid rgba(255, 255, 255, 0.14);
   display: flex;
   align-items: center;
-  justify-content: center;
-  position: relative;
-  transition: background 0.3s;
+  gap: 16rpx;
+  padding: 20rpx 24rpx;
+  box-sizing: border-box;
 }
 
-.mic-active {
-  background: rgba(255, 107, 74, 0.2);
+.status-dot {
+  width: 16rpx;
+  height: 16rpx;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
-.mic-waiting {
+.status-dot-listening {
+  background: #66BB6A;
+  box-shadow: 0 0 10rpx rgba(102, 187, 106, 0.7);
+}
+
+.status-dot-speaking {
+  background: #FF8A65;
+  box-shadow: 0 0 12rpx rgba(255, 138, 101, 0.85);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.status-dot-assistant {
+  background: #FF7043;
+  box-shadow: 0 0 12rpx rgba(255, 112, 67, 0.85);
+  animation: pulse 1.3s ease-in-out infinite;
+}
+
+.status-dot-waiting {
+  background: #FFD54F;
+  box-shadow: 0 0 10rpx rgba(255, 213, 79, 0.75);
   animation: waiting-breathe 1.4s ease-in-out infinite;
 }
 
-.mic-ring {
-  position: absolute;
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  border: 3rpx solid rgba(255, 107, 74, 0.3);
-  opacity: 0;
-  transition: opacity 0.3s;
+.status-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
 }
 
-.mic-active .mic-ring {
-  opacity: 1;
-  animation: pulse 1.5s ease-in-out infinite;
+.status-title {
+  font-size: 28rpx;
+  color: #FFFFFF;
+  font-weight: 600;
 }
 
-@keyframes pulse {
-  0% { transform: scale(1); opacity: 0.6; }
-  100% { transform: scale(1.5); opacity: 0; }
-}
-
-@keyframes waiting-breathe {
-  0%, 100% { transform: scale(1); opacity: 0.9; }
-  50% { transform: scale(1.06); opacity: 1; }
-}
-
-.mic-icon { font-size: 48rpx; }
-
-.mic-label {
+.status-desc {
   font-size: 24rpx;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.72);
 }
 
 /* 挂断 */
@@ -244,8 +302,18 @@
 
 .hangup-label {
   font-size: 24rpx;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.62);
   margin-top: 12rpx;
+}
+
+@keyframes pulse {
+  0% { transform: scale(1); opacity: 0.7; }
+  100% { transform: scale(1.45); opacity: 0.2; }
+}
+
+@keyframes waiting-breathe {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.1); opacity: 1; }
 }
 
 /* ===== 模拟来电界面 ===== */

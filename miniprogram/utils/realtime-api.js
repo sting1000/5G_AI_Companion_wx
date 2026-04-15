@@ -232,6 +232,14 @@ function logDebug(...args) {
   console.log(...args)
 }
 
+function clampNumber(value, min, max) {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return null
+  if (num < min) return min
+  if (num > max) return max
+  return Math.round(num)
+}
+
 /**
  * RealtimeAPI 客户端
  */
@@ -324,24 +332,49 @@ class RealtimeAPIClient {
    * @param {string} options.botName - 角色名称
    * @param {string} options.systemRole - 系统人设
    * @param {string} options.speakingStyle - 说话风格
+   * @param {string} options.characterManifest - 角色描述（SC/SC2.0可用）
    * @param {string} options.dialogId - 对话 ID（用于跨通话记忆）
    * @param {string} options.speaker - TTS 音色
+   * @param {object} options.ttsAudioConfig - TTS 声学配置
+   * @param {number} options.ttsAudioConfig.speechRate - 语速 [-50,100]
+   * @param {number} options.ttsAudioConfig.loudnessRate - 音量 [-50,100]
+   * @param {boolean} options.ttsAudioConfig.enableLoudnessNorm - 开启响度均衡
    */
   startSession(options = {}) {
     return new Promise((resolve, reject) => {
       this.sessionId = generateUUID()
       this._firstChatPacketSeen = false
       this._firstTTSPacketSeen = false
+      const ttsAudioConfig = options.ttsAudioConfig || {}
+      const speechRate = clampNumber(ttsAudioConfig.speechRate, -50, 100)
+      const loudnessRate = clampNumber(ttsAudioConfig.loudnessRate, -50, 100)
+      const enableLoudnessNorm = typeof ttsAudioConfig.enableLoudnessNorm === 'boolean'
+        ? ttsAudioConfig.enableLoudnessNorm
+        : false
+      const dialogExtra = {
+        model: '2.2.0.0',
+        strict_audit: false,
+        enable_loudness_norm: enableLoudnessNorm,
+      }
+      const ttsExtra = {}
+      const ttsPayloadAudioConfig = {
+        format: 'pcm_s16le',
+        sample_rate: 16000,
+        channel: 1,
+      }
+      if (speechRate !== null) {
+        ttsPayloadAudioConfig.speech_rate = speechRate
+      }
+      if (loudnessRate !== null) {
+        ttsPayloadAudioConfig.loudness_rate = loudnessRate
+      }
 
       const payload = {
         tts: {
           speaker: options.speaker || 'saturn_zh_female_tiexinnvyou_tob',
           voice_type: options.speaker || 'saturn_zh_female_tiexinnvyou_tob',
-          audio_config: {
-            format: 'pcm_s16le',
-            sample_rate: 16000,
-            channel: 1,
-          },
+          audio_config: ttsPayloadAudioConfig,
+          extra: ttsExtra,
         },
         asr: {
           extra: {},
@@ -350,11 +383,9 @@ class RealtimeAPIClient {
           bot_name: options.botName || '小林',
           system_role: options.systemRole || '',
           speaking_style: options.speakingStyle || '',
+          character_manifest: options.characterManifest || '',
           dialog_id: options.dialogId || '',
-          extra: {
-            model: '2.2.0.0',
-            strict_audit: false,
-          },
+          extra: dialogExtra,
         },
       }
 

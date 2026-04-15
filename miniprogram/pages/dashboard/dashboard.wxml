@@ -32,22 +32,8 @@
       </view>
       <view class="stat-divider"></view>
       <view class="stat-item">
-        <text class="stat-value">{{totalInterests}}</text>
-        <text class="stat-label">识别兴趣</text>
-      </view>
-    </view>
-
-    <!-- 发现兴趣信号卡片 -->
-    <view class="card signal-card" wx:if="{{hasSignal}}">
-      <view class="signal-header">
-        <view class="signal-icon">📡</view>
-        <view class="signal-title-box">
-          <text class="signal-title">发现兴趣信号</text>
-          <text class="signal-desc">妈妈对「{{latestSignal}}」感兴趣</text>
-        </view>
-      </view>
-      <view class="signal-action">
-        <text>小林将在下次通话中自然地聊到相关话题</text>
+        <text class="stat-value">{{totalDurationText}}</text>
+        <text class="stat-label">通话总时长</text>
       </view>
     </view>
 
@@ -57,31 +43,39 @@
         <view class="signal-icon">💡</view>
         <view class="signal-title-box">
           <text class="signal-title">开始第一次陪伴通话</text>
-          <text class="signal-desc">点击下方按钮，让小林和{{elderName}}聊聊天吧</text>
+          <text class="signal-desc">点击下方按钮，和小林一起聊聊天吧</text>
         </view>
       </view>
     </view>
 
-    <!-- 倒计时卡片（有通话记录后显示） -->
-    <view class="card countdown-card" wx:if="{{hasCallHistory}}">
-      <view class="countdown-title">
-        <text>🕒 距下次通话</text>
+    <!-- 发现兴趣信号卡片 -->
+    <view class="card signal-card" wx:if="{{hasSignal}}">
+      <view class="signal-header">
+        <view class="signal-icon">📡</view>
+        <view class="signal-title-box">
+          <text class="signal-title">发现兴趣信号</text>
+          <text class="signal-desc">近期识别的兴趣标签</text>
+        </view>
       </view>
-      <view class="countdown-timer">
-        <view class="time-box">
-          <text class="time-num">02</text>
-          <text class="time-unit">时</text>
+      <view class="tag-list">
+        <text class="tag-item interest-tag" wx:for="{{interestTags}}" wx:key="*this">{{item}}</text>
+      </view>
+    </view>
+
+    <!-- 健康信号卡片 -->
+    <view class="card signal-card health-signal-card" wx:if="{{hasCallHistory || hasHealthSignal}}">
+      <view class="signal-header">
+        <view class="signal-icon">🩺</view>
+        <view class="signal-title-box">
+          <text class="signal-title">发现健康信号</text>
+          <text class="signal-desc">来自健康备注与对话线索</text>
         </view>
-        <text class="time-colon">:</text>
-        <view class="time-box">
-          <text class="time-num">11</text>
-          <text class="time-unit">分</text>
-        </view>
-        <text class="time-colon">:</text>
-        <view class="time-box">
-          <text class="time-num">37</text>
-          <text class="time-unit">秒</text>
-        </view>
+      </view>
+      <view class="tag-list" wx:if="{{healthTags.length > 0}}">
+        <text class="tag-item health-tag" wx:for="{{healthTags}}" wx:key="*this">{{item}}</text>
+      </view>
+      <view class="signal-action" wx:else>
+        <text>暂无健康标签，可在配置页补充健康备注</text>
       </view>
     </view>
   </view>

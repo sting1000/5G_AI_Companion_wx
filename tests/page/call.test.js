@@ -55,4 +55,39 @@ describe('call 页面离线关键分支', () => {
 
     await expect(page._authorize()).rejects.toThrow('用户拒绝麦克风权限')
   })
+
+  test('首句仅走 SAY_HELLO/TTS 时也会落字幕和消息', () => {
+    const page = loadPage()
+    page._markCallConnectedIfNeeded = jest.fn()
+    page.client = {}
+    page.recorder = {}
+    page.player = {
+      appendChunk: jest.fn(),
+      playBuffered: jest.fn(),
+      stop: jest.fn(),
+      playing: false,
+    }
+    page.messages = []
+    page.chatBuffer = ''
+    page.pendingAssistantDraft = '您好呀，我是小林。'
+    page.currentTurnBoundaryViolated = false
+    page.assistantTurnCount = 0
+    page.isBoundaryRepairing = false
+    page.currentLatencyTurn = null
+    page.setData({
+      currentAssistantDraft: '您好呀，我是小林。',
+      transcriptItems: [],
+    })
+
+    page._setupCallbacks()
+    page.client.onTTSStart('')
+    page.client.onTTSEnd()
+
+    expect(page.messages).toHaveLength(1)
+    expect(page.messages[0].role).toBe('assistant')
+    expect(page.messages[0].content).toBe('您好呀，我是小林。')
+    expect(page.data.transcriptItems).toHaveLength(1)
+    expect(page.data.transcriptItems[0].role).toBe('assistant')
+    expect(page.data.transcriptItems[0].content).toBe('您好呀，我是小林。')
+  })
 })

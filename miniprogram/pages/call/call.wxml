@@ -17,10 +17,25 @@
 
   <!-- 字幕区 -->
   <view class="subtitle-area">
-    <view class="subtitle-box" wx:if="{{subtitle || userText}}">
-      <text class="subtitle-user" wx:if="{{userText}}">🎤 {{userText}}</text>
-      <text class="subtitle-ai" wx:if="{{subtitle}}">{{subtitle}}</text>
-    </view>
+    <scroll-view class="subtitle-box transcript-scroll" scroll-y scroll-into-view="{{transcriptAnchorId}}" wx:if="{{transcriptItems.length > 0 || currentUserDraft || currentAssistantDraft}}">
+      <view
+        wx:for="{{transcriptItems}}"
+        wx:key="id"
+        id="{{item.id}}"
+        class="transcript-item transcript-item-{{item.role}}">
+        <text class="transcript-role">{{item.role === 'user' ? '您' : '小林'}}</text>
+        <text class="transcript-content">{{item.content}}</text>
+      </view>
+      <view class="transcript-item transcript-item-user transcript-item-draft" wx:if="{{currentUserDraft}}" id="draft-user">
+        <text class="transcript-role">您</text>
+        <text class="transcript-content">{{currentUserDraft}}</text>
+      </view>
+      <view class="transcript-item transcript-item-assistant transcript-item-draft" wx:if="{{currentAssistantDraft}}" id="draft-assistant">
+        <text class="transcript-role">小林</text>
+        <text class="transcript-content">{{currentAssistantDraft}}</text>
+      </view>
+      <view class="transcript-anchor" id="{{transcriptAnchorId}}"></view>
+    </scroll-view>
     <view class="subtitle-box" wx:elif="{{status === 'connecting'}}">
       <text class="connecting-main-hint">{{connectionHint}}</text>
       <text class="connecting-sub-hint">请稍等，马上为您接通</text>
@@ -32,11 +47,13 @@
 
   <!-- 底部：声波指示 + 挂断 -->
   <view class="bottom-area">
-    <view class="mic-indicator {{isSpeaking ? 'mic-active' : ''}} {{status === 'connecting' ? 'mic-waiting' : ''}}">
-      <view class="mic-ring"></view>
-      <text class="mic-icon">🎙️</text>
+    <view class="status-card">
+      <view class="status-dot {{status === 'connecting' ? 'status-dot-waiting' : (isAssistantSpeaking ? 'status-dot-assistant' : (isSpeaking ? 'status-dot-speaking' : 'status-dot-listening'))}}"></view>
+      <view class="status-copy">
+        <text class="status-title">{{status === 'connecting' ? '连接中...' : (isAssistantSpeaking ? '小林正在回复' : (isSpeaking ? '您说话中' : '正在聆听'))}}</text>
+        <text class="status-desc">{{status === 'connecting' ? connectionHint : (isAssistantSpeaking ? '请稍听，小林马上说完' : '免按键通话，直接说话即可')}}</text>
+      </view>
     </view>
-    <text class="mic-label">{{status === 'connecting' ? '正在为你准备更顺滑的开场...' : (isSpeaking ? '正在聆听...' : '等待说话')}}</text>
 
     <view class="hangup-btn" catchtap="onHangup">
       <text class="hangup-icon">📞</text>

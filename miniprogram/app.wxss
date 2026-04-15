@@ -7,52 +7,155 @@ page {
   line-height: 1.6;
 }
 
-/* 颜色变量 */
+/* 设计 token（阶段一保守模式：仅收口，不重塑视觉） */
 :root {
-  --coral-50: #FFF5F2;
-  --coral-100: #FFE8E0;
-  --coral-500: #FF6B4A;
-  --coral-600: #E55A3A;
-  --warm-bg: #FBF8F4;
-  --warm-text: #2D2A26;
-  --warm-muted: #8A8580;
-  --warm-border: #E8E4DF;
+  --color-bg-page: #FBF8F4;
+  --color-bg-card: #FFFFFF;
+  --color-bg-subtle: #F7F5F2;
+  --color-text-primary: #2D2A26;
+  --color-text-secondary: #66615C;
+  --color-text-muted: #8A8580;
+  --color-border: #E8E4DF;
+  --color-brand: #FF6B4A;
+  --color-brand-pressed: #E55A3A;
+  --color-success-soft: #EAF8ED;
+  --color-success-text: #2E7D32;
+  --color-warning-soft: #FFF8DB;
+  --color-warning-text: #9A6700;
+  --color-danger-soft: #FFECEB;
+  --color-danger-text: #B42318;
+  --radius-input: 16rpx;
+  --radius-card: 24rpx;
+  --radius-pill: 48rpx;
+  --space-page-x: 40rpx;
+  --space-card: 32rpx;
+  --space-gap-sm: 16rpx;
+  --space-gap-md: 24rpx;
+  --space-gap-lg: 32rpx;
+  --font-title: 36rpx;
+  --font-body: 30rpx;
+  --font-caption: 24rpx;
+  --shadow-card: 0 4rpx 16rpx rgba(0, 0, 0, 0.04);
 }
 
-/* 通用卡片 */
-.card {
-  background: #ffffff;
-  border-radius: 24rpx;
-  padding: 32rpx;
-  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.04);
+/* 通用基础类 */
+.ui-card {
+  background: var(--color-bg-card);
+  border-radius: var(--radius-card);
+  padding: var(--space-card);
+  box-shadow: var(--shadow-card);
 }
 
-/* 主按钮 */
-.btn-primary {
-  background: #FF6B4A;
-  color: #ffffff;
+.ui-section-title {
+  display: block;
+  font-size: 32rpx;
+  line-height: 1.4;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.ui-state-hint {
+  display: block;
+  font-size: var(--font-caption);
+  color: var(--color-text-muted);
+  line-height: 1.5;
+}
+
+.ui-empty {
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 28rpx;
+  padding: 48rpx 24rpx;
+}
+
+.ui-btn-primary {
+  background: var(--color-brand);
+  color: #FFFFFF;
   border: none;
-  border-radius: 24rpx;
-  padding: 24rpx 0;
+  border-radius: var(--radius-pill);
   font-size: 32rpx;
   font-weight: 600;
   text-align: center;
   width: 100%;
+  min-height: 96rpx;
+  line-height: 96rpx;
+  box-sizing: border-box;
+}
+
+.ui-btn-primary:active {
+  background: var(--color-brand-pressed);
+}
+
+.ui-btn-primary[disabled] {
+  opacity: 0.55;
+}
+
+.ui-btn-secondary {
+  background: #FFFFFF;
+  color: var(--color-text-secondary);
+  border: 2rpx solid var(--color-border);
+  border-radius: var(--radius-pill);
+  font-size: 32rpx;
+  font-weight: 600;
+  text-align: center;
+  width: 100%;
+  min-height: 96rpx;
+  line-height: 96rpx;
+  box-sizing: border-box;
+}
+
+.ui-btn-secondary:active {
+  background: var(--color-bg-subtle);
+}
+
+.ui-btn-secondary[disabled] {
+  opacity: 0.55;
+}
+
+/* 兼容旧类名，避免全量替换导致视觉突变 */
+.card {
+  background: var(--color-bg-card);
+  border-radius: var(--radius-card);
+  padding: var(--space-card);
+  box-shadow: var(--shadow-card);
+}
+
+.btn-primary {
+  background: var(--color-brand);
+  color: #FFFFFF;
+  border: none;
+  border-radius: var(--radius-pill);
+  min-height: 96rpx;
+  line-height: 96rpx;
+  font-size: 32rpx;
+  font-weight: 600;
+  text-align: center;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .btn-primary:active {
-  background: #E55A3A;
+  background: var(--color-brand-pressed);
 }
 
-/* 次要按钮 */
+.btn-primary[disabled] {
+  opacity: 0.55;
+}
+
 .btn-secondary {
-  background: #ffffff;
-  color: #8A8580;
-  border: 2rpx solid #E8E4DF;
-  border-radius: 24rpx;
-  padding: 24rpx 0;
+  background: #FFFFFF;
+  color: var(--color-text-secondary);
+  border: 2rpx solid var(--color-border);
+  border-radius: var(--radius-pill);
+  min-height: 96rpx;
+  line-height: 96rpx;
   font-size: 32rpx;
   font-weight: 600;
   text-align: center;
   width: 100%;
+  box-sizing: border-box;
+}
+
+.btn-secondary:active {
+  background: var(--color-bg-subtle);
 }

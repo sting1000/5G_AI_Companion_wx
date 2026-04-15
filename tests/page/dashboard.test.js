@@ -53,8 +53,10 @@ describe('dashboard 页面离线流程', () => {
     expect(page.data.configured).toBe(true)
     expect(page.data.hasCallHistory).toBe(true)
     expect(page.data.totalCalls).toBe(1)
-    expect(page.data.totalInterests).toBe(2)
-    expect(page.data.latestSignal).toBe('书法')
+    expect(page.data.totalDurationText).toBe('0秒')
+    expect(page.data.hasSignal).toBe(true)
+    expect(page.data.interestTags).toEqual(['太极', '书法'])
+    expect(page.data.hasHealthSignal).toBe(false)
   })
 
   test('goSimulatedIncoming 会拼接 reminder query', () => {

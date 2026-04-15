@@ -32,21 +32,24 @@ describe('onboarding 页面离线流程', () => {
     expect(wx.showToast).toHaveBeenCalled()
   })
 
-  test('nextStep 在 step1 且校验通过时进入 step2', () => {
+  test('nextStep 校验通过后会直接保存并跳转 dashboard', () => {
     const storeMock = createStoreMock()
     const page = loadPageWithStore(storeMock)
     page.setData({ parentName: '王阿姨', phone: '13800138000' })
 
     page.nextStep()
-    expect(page.data.currentStep).toBe(2)
+    expect(storeMock.saveElderConfig).toHaveBeenCalled()
+    expect(storeMock.initMemoryBundle).toHaveBeenCalled()
+    expect(wx.reLaunch).toHaveBeenCalledWith({
+      url: '/pages/dashboard/dashboard',
+    })
   })
 
-  test('step2 完成后会保存配置并 reLaunch 到 dashboard', () => {
+  test('nextStep 会按选中兴趣与健康信息写入 profile', () => {
     const storeMock = createStoreMock()
     const page = loadPageWithStore(storeMock)
 
     page.setData({
-      currentStep: 2,
       parentName: '王阿姨',
       phone: '13800138000',
       health: '血压偏高',

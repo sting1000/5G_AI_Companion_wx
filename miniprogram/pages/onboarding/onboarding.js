@@ -2,7 +2,6 @@ const store = require('../../utils/store')
 
 Page({
   data: {
-    currentStep: 1, // 当前步骤: 1, 2
     titleOptions: ['阿姨', '叔叔', '爷爷', '奶奶'],
     titleIndex: 0,
     // 表单数据
@@ -76,23 +75,12 @@ Page({
     })
   },
 
-  // ===== 步骤导航 =====
   nextStep() {
-    if (this.data.currentStep === 1) {
-      if (this.validateStep1()) {
-        this.setData({ currentStep: 2 })
-      }
-    } else if (this.data.currentStep === 2) {
+    if (this.validateStep1()) {
       this.saveConfig()
       wx.reLaunch({
         url: '/pages/dashboard/dashboard'
       })
-    }
-  },
-
-  prevStep() {
-    if (this.data.currentStep > 1) {
-      this.setData({ currentStep: this.data.currentStep - 1 })
     }
   },
 

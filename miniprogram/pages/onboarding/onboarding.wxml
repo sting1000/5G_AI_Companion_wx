@@ -1,159 +1,76 @@
 <view class="container">
-  <!-- 步骤条 -->
-  <view class="stepper">
-    <view class="step-item {{currentStep >= 1 ? 'active' : ''}}">
-      <view class="step-circle">1</view>
-      <text class="step-text">父母信息</text>
-    </view>
-    <view class="step-line {{currentStep >= 2 ? 'active' : ''}}"></view>
-    <view class="step-item {{currentStep >= 2 ? 'active' : ''}}">
-      <view class="step-circle">2</view>
-      <text class="step-text">通话计划</text>
-    </view>
-  </view>
-
-  <!-- 头部信息 -->
-  <view class="header" wx:if="{{currentStep === 1}}">
+  <view class="header">
     <text class="page-title">为父母配置AI陪伴</text>
     <text class="page-subtitle">填写父母的基本信息，帮助AI更好地陪伴他们</text>
   </view>
-  <view class="header" wx:if="{{currentStep === 2}}">
-    <text class="page-title">设置陪伴通话计划</text>
-    <text class="page-subtitle">安排最适合父母的通话时间</text>
-  </view>
 
   <view class="form-content">
-    <!-- 第一步：父母信息 -->
-    <block wx:if="{{currentStep === 1}}">
-      <view class="card form-card">
-        <view class="form-item">
-          <view class="label-row">
-            <text class="label">父母姓名</text>
-            <text class="field-required">必填</text>
-          </view>
-          <view class="name-row">
-            <input class="input name-input"
-              placeholder="请输入姓名"
-              value="{{parentName}}"
-              bindinput="onNameInput" />
-            <picker mode="selector"
-              range="{{titleOptions}}"
-              value="{{titleIndex}}"
-              bindchange="onTitleChange">
-              <view class="picker-value">{{titleOptions[titleIndex]}} ▾</view>
-            </picker>
-          </view>
-          <text class="field-error" wx:if="{{errors.parentName}}">{{errors.parentName}}</text>
+    <view class="card form-card">
+      <view class="form-item">
+        <view class="label-row">
+          <text class="label">父母姓名</text>
+          <text class="field-required">必填</text>
         </view>
-        
-        <view class="form-item">
-          <view class="label-row">
-            <text class="label">手机号码</text>
-            <text class="field-optional">选填</text>
-          </view>
-          <input class="input"
-            type="number"
-            placeholder="请输入11位手机号"
-            value="{{phone}}"
-            bindinput="onPhoneInput" />
-          <text class="field-error" wx:if="{{errors.phone}}">{{errors.phone}}</text>
+        <view class="name-row">
+          <input class="input name-input"
+            placeholder="请输入姓名"
+            value="{{parentName}}"
+            bindinput="onNameInput" />
+          <picker mode="selector"
+            range="{{titleOptions}}"
+            value="{{titleIndex}}"
+            bindchange="onTitleChange">
+            <view class="picker-value">{{titleOptions[titleIndex]}} ▾</view>
+          </picker>
         </view>
+        <text class="field-error" wx:if="{{errors.parentName}}">{{errors.parentName}}</text>
       </view>
 
-      <view class="card form-card">
-        <view class="form-item">
-          <view class="label-row">
-            <text class="label">兴趣爱好</text>
-            <text class="field-optional">选填</text>
-          </view>
-          <view class="tags-container">
-            <text wx:for="{{interestTags}}"
-              wx:key="name"
-              class="interest-tag {{item.selected ? 'active' : ''}}"
-              data-idx="{{index}}"
-              catchtap="toggleInterest">{{item.name}}</text>
-          </view>
+      <view class="form-item">
+        <view class="label-row">
+          <text class="label">手机号码</text>
+          <text class="field-optional">选填</text>
+        </view>
+        <input class="input"
+          type="number"
+          placeholder="请输入11位手机号"
+          value="{{phone}}"
+          bindinput="onPhoneInput" />
+        <text class="field-error" wx:if="{{errors.phone}}">{{errors.phone}}</text>
+      </view>
+    </view>
+
+    <view class="card form-card">
+      <view class="form-item">
+        <view class="label-row">
+          <text class="label">兴趣爱好</text>
+          <text class="field-optional">选填</text>
+        </view>
+        <view class="tags-container">
+          <text wx:for="{{interestTags}}"
+            wx:key="name"
+            class="interest-tag {{item.selected ? 'active' : ''}}"
+            data-idx="{{index}}"
+            catchtap="toggleInterest">{{item.name}}</text>
         </view>
       </view>
+    </view>
 
-      <view class="card form-card">
-        <view class="form-item">
-          <view class="label-row">
-            <text class="label">健康情况备注</text>
-            <text class="field-optional">选填</text>
-          </view>
-          <textarea class="textarea"
-            placeholder="例如：膝盖不好，高血压"
-            value="{{health}}"
-            bindinput="onHealthInput" />
+    <view class="card form-card">
+      <view class="form-item">
+        <view class="label-row">
+          <text class="label">健康情况备注</text>
+          <text class="field-optional">选填</text>
         </view>
+        <textarea class="textarea"
+          placeholder="例如：膝盖不好，高血压"
+          value="{{health}}"
+          bindinput="onHealthInput" />
       </view>
-    </block>
-
-    <!-- 第二步：通话计划 -->
-    <block wx:if="{{currentStep === 2}}">
-      <view class="card form-card">
-        <view class="form-item">
-          <view class="label-with-icon">
-            <text>🕒 每日通话时间</text>
-          </view>
-          <view class="time-picker-box">
-            <text>15:00</text>
-            <text>🕐</text>
-          </view>
-        </view>
-
-        <view class="form-item">
-          <text class="label">通话频率</text>
-          <view class="freq-segment">
-            <view class="freq-item active">每天</view>
-            <view class="freq-item">每2天</view>
-            <view class="freq-item">每3天</view>
-          </view>
-        </view>
-      </view>
-
-      <view class="card form-card">
-        <view class="form-item">
-          <view class="label-with-icon">
-            <text>📅 特殊关怀日</text>
-          </view>
-          <view class="switch-list">
-            <view class="switch-item">
-              <text>春节</text>
-              <switch checked color="#FF6B4A" />
-            </view>
-            <view class="switch-item">
-              <text>中秋</text>
-              <switch checked color="#FF6B4A" />
-            </view>
-            <view class="switch-item">
-              <text>重阳节</text>
-              <switch checked color="#FF6B4A" />
-            </view>
-            <view class="switch-item no-border">
-              <text>生日</text>
-              <switch checked color="#FF6B4A" />
-            </view>
-          </view>
-        </view>
-      </view>
-
-      <view class="card form-card">
-        <view class="form-item">
-          <view class="label-space-between">
-            <text class="label-title">自定义事件</text>
-            <text class="add-btn">+ 添加</text>
-          </view>
-          <view class="empty-event">暂无自定义事件</view>
-        </view>
-      </view>
-    </block>
+    </view>
   </view>
 
-  <!-- 底部按钮区 -->
   <view class="bottom-bar">
-    <button class="btn btn-secondary" wx:if="{{currentStep > 1}}" bindtap="prevStep">上一步</button>
-    <button class="btn btn-primary {{currentStep === 1 ? 'full-width' : ''}}" bindtap="nextStep">{{currentStep === 2 ? '完成配置' : '下一步'}}</button>
+    <button class="btn btn-primary full-width" bindtap="nextStep">完成配置</button>
   </view>
 </view>
