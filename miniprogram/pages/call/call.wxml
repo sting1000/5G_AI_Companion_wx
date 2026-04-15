@@ -1,7 +1,7 @@
 <view class="call-page" wx:if="{{!showIncoming}}">
   <!-- 计时器 -->
   <view class="timer-area">
-    <text class="timer-label">{{status === 'connecting' ? '正在连接...' : '通话中'}}</text>
+    <text class="timer-label">{{status === 'connecting' ? connectionHint : '通话中'}}</text>
     <text class="timer-text">{{elapsedText}}</text>
   </view>
 
@@ -22,7 +22,8 @@
       <text class="subtitle-ai" wx:if="{{subtitle}}">{{subtitle}}</text>
     </view>
     <view class="subtitle-box" wx:elif="{{status === 'connecting'}}">
-      <text class="subtitle-ai">正在连接小林...</text>
+      <text class="connecting-main-hint">{{connectionHint}}</text>
+      <text class="connecting-sub-hint">请稍等，马上为您接通</text>
     </view>
     <view class="subtitle-box" wx:else>
       <text class="subtitle-hint">正在聆听，直接说话即可</text>
@@ -31,11 +32,11 @@
 
   <!-- 底部：声波指示 + 挂断 -->
   <view class="bottom-area">
-    <view class="mic-indicator {{isSpeaking ? 'mic-active' : ''}}">
+    <view class="mic-indicator {{isSpeaking ? 'mic-active' : ''}} {{status === 'connecting' ? 'mic-waiting' : ''}}">
       <view class="mic-ring"></view>
       <text class="mic-icon">🎙️</text>
     </view>
-    <text class="mic-label">{{isSpeaking ? '正在聆听...' : '等待说话'}}</text>
+    <text class="mic-label">{{status === 'connecting' ? '正在为你准备更顺滑的开场...' : (isSpeaking ? '正在聆听...' : '等待说话')}}</text>
 
     <view class="hangup-btn" catchtap="onHangup">
       <text class="hangup-icon">📞</text>
@@ -53,21 +54,21 @@
     <text class="incoming-name">小林</text>
     <text class="incoming-desc">来电</text>
     <view class="incoming-ring-text">
-      <text>正在响铃...</text>
+      <text>{{incomingHint}}</text>
     </view>
   </view>
   <view class="incoming-actions">
     <view class="incoming-action-group">
-      <view class="decline-btn" catchtap="onDecline">
+      <view class="decline-btn {{isIncomingAnswering ? 'incoming-btn-disabled' : ''}}" catchtap="onDecline">
         <text>📞</text>
       </view>
       <text class="incoming-action-label">拒绝</text>
     </view>
     <view class="incoming-action-group">
-      <view class="accept-btn" catchtap="onAccept">
+      <view class="accept-btn {{isIncomingAnswering ? 'incoming-btn-disabled' : ''}}" catchtap="onAccept">
         <text>📞</text>
       </view>
-      <text class="incoming-action-label">接听</text>
+      <text class="incoming-action-label">{{isIncomingAnswering ? '接听中' : '接听'}}</text>
     </view>
   </view>
 </view>

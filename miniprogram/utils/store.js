@@ -11,6 +11,7 @@ const KEYS = {
   PROFILE: 'elderProfile',
   MEMORY_MAP: 'elderMemoryMap',
   REMINDER_MAP: 'elderReminderMap',
+  GREETING_COOLDOWN_MAP: 'greetingCooldownMap',
 }
 
 const REMINDER_STATUS = {
@@ -20,6 +21,7 @@ const REMINDER_STATUS = {
 }
 
 const DEFAULT_REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000
+const DEFAULT_GREETING_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000
 
 function _safeGetApp() {
   try {
@@ -74,6 +76,7 @@ function getDefaultMemoryBundle() {
       version: 2,
       updatedFromCallId: '',
       memoryUpdatedAt: '',
+      usageLog: [],
     },
     memoryItems: [],
   }
@@ -110,15 +113,27 @@ function _memoryItemId(type, text) {
 function _buildMemoryItem(type, text, source, confidence, now, evidence) {
   const cleanText = _normalizeMemoryText(text)
   if (!cleanText) return null
+  const safeConfidence = Math.max(0, Math.min(1, Number(confidence || 0.6)))
+  const nowTs = Date.parse(now || '') || Date.now()
   return {
     id: _memoryItemId(type, cleanText),
     type,
     text: cleanText,
     source: source || 'summary',
-    confidence: Math.max(0, Math.min(1, Number(confidence || 0.6))),
+    confidence: safeConfidence,
+    layer: _resolveMemoryLayer(type),
     stability: type === 'interest' || type === 'healthNote' ? 'stable' : 'semi_stable',
+    sensitivity: _resolveMemorySensitivity(type, safeConfidence),
+    lastConfirmedAt: '',
     createdAt: now,
     lastUsedAt: '',
+    triggerCount: 0,
+    score: _computeMemoryScore({
+      confidence: safeConfidence,
+      createdAt: now,
+      lastUsedAt: '',
+      triggerCount: 0,
+    }, nowTs),
     evidence: evidence || cleanText,
   }
 }
@@ -131,8 +146,53 @@ function _isRecent(iso, days) {
   return ageMs <= days * 24 * 60 * 60 * 1000
 }
 
+function _resolveMemoryLayer(type) {
+  if (type === 'healthNote') return 'health'
+  if (type === 'followUp' || type === 'recentEvent') return 'event'
+  if (type === 'interest') return 'persona'
+  if (type === 'tabooTopic') return 'ai_strategy'
+  return 'event'
+}
+
+function _resolveMemorySensitivity(type, confidence) {
+  if (type !== 'healthNote') return 'normal'
+  return Number(confidence || 0) >= 0.85 ? 'sensitive' : 'normal'
+}
+
+function _computeRecencyWeight(createdAt, nowTs) {
+  const createdTs = Date.parse(createdAt || '')
+  if (!createdTs) return 0.8
+  const ageDays = Math.max(0, (nowTs - createdTs) / (24 * 60 * 60 * 1000))
+  if (ageDays <= 3) return 1
+  if (ageDays <= 14) return 0.85
+  if (ageDays <= 45) return 0.65
+  return 0.45
+}
+
+function _computeReuseWeight(lastUsedAt, triggerCount, nowTs) {
+  const usedTs = Date.parse(lastUsedAt || '')
+  let base = 0.9
+  if (usedTs) {
+    const ageDays = Math.max(0, (nowTs - usedTs) / (24 * 60 * 60 * 1000))
+    if (ageDays <= 2) base = 1
+    else if (ageDays <= 14) base = 0.9
+    else base = 0.75
+  }
+  const countBoost = Math.min(0.12, (Number(triggerCount || 0) || 0) * 0.02)
+  return Math.min(1.15, base + countBoost)
+}
+
+function _computeMemoryScore(item, nowTs) {
+  const confidence = Math.max(0.2, Math.min(1, Number(item.confidence || 0.6)))
+  const recencyWeight = _computeRecencyWeight(item.createdAt, nowTs)
+  const reuseWeight = _computeReuseWeight(item.lastUsedAt, item.triggerCount, nowTs)
+  const score = confidence * recencyWeight * reuseWeight
+  return Number(score.toFixed(4))
+}
+
 function _mergeMemoryItems(existingItems, deltaItems) {
   const now = new Date().toISOString()
+  const nowTs = Date.now()
   const allItems = []
     .concat(existingItems || [])
     .concat(deltaItems || [])
@@ -149,12 +209,17 @@ function _mergeMemoryItems(existingItems, deltaItems) {
       type,
       text,
       confidence: Math.max(0, Math.min(1, Number(item.confidence || MEMORY_TYPE_CONFIDENCE[type] || 0.6))),
+      layer: item.layer || _resolveMemoryLayer(type),
       source: item.source || 'summary',
       createdAt: item.createdAt || now,
       lastUsedAt: item.lastUsedAt || '',
+      triggerCount: Number(item.triggerCount || 0) || 0,
       stability: item.stability || (type === 'interest' || type === 'healthNote' ? 'stable' : 'semi_stable'),
+      sensitivity: item.sensitivity || _resolveMemorySensitivity(type, item.confidence),
+      lastConfirmedAt: item.lastConfirmedAt || '',
       evidence: item.evidence || text,
     })
+    normalizedItem.score = _computeMemoryScore(normalizedItem, nowTs)
     const current = mergedMap[key]
     if (!current) {
       mergedMap[key] = normalizedItem
@@ -183,6 +248,7 @@ function _mergeMemoryItems(existingItems, deltaItems) {
   Object.keys(byType).forEach(type => {
     const limit = MEMORY_TYPE_LIMIT[type] || 10
     const sorted = byType[type].sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score
       if (b.confidence !== a.confidence) return b.confidence - a.confidence
       return Date.parse(b.createdAt || '') - Date.parse(a.createdAt || '')
     })
@@ -332,6 +398,14 @@ function _saveReminderMap(reminderMap) {
   wx.setStorageSync(KEYS.REMINDER_MAP, reminderMap)
 }
 
+function _getGreetingCooldownMap() {
+  return wx.getStorageSync(KEYS.GREETING_COOLDOWN_MAP) || {}
+}
+
+function _saveGreetingCooldownMap(map) {
+  wx.setStorageSync(KEYS.GREETING_COOLDOWN_MAP, map)
+}
+
 function _normalizeReminderText(text) {
   return String(text || '').trim()
 }
@@ -343,6 +417,9 @@ function _normalizeReminder(reminder) {
   const scheduleType = String((reminder && reminder.scheduleType) || 'daily')
   const remindDate = _normalizeReminderText(reminder && reminder.remindDate)
   const weekdays = Array.isArray(reminder && reminder.weekdays) ? reminder.weekdays : []
+  const confidenceRaw = Number(reminder && reminder.confidence)
+  const fallbackConfidence = reminder && reminder.source === 'call_extract' ? 0.8 : 1
+  const safeConfidence = Number.isFinite(confidenceRaw) ? confidenceRaw : fallbackConfidence
   return {
     id: reminder && reminder.id ? reminder.id : `reminder_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     title: title || '未命名提醒',
@@ -353,6 +430,8 @@ function _normalizeReminder(reminder) {
     remindDate: remindDate || '',
     weekdays: weekdays.slice(0, 7),
     source: reminder && reminder.source ? reminder.source : 'manual',
+    confidence: Math.max(0, Math.min(1, safeConfidence)),
+    evidence: _normalizeReminderText(reminder && reminder.evidence),
     status: reminder && reminder.status ? reminder.status : REMINDER_STATUS.PENDING,
     elderKey: reminder && reminder.elderKey ? reminder.elderKey : getElderKey(),
     triggerCount: Number(reminder && reminder.triggerCount) > 0 ? Number(reminder.triggerCount) : 0,
@@ -470,6 +549,92 @@ function pickNextIncomingReminder(elderKey, options) {
     return Date.parse(a.createdAt || '') - Date.parse(b.createdAt || '')
   })
   return sorted[0] || null
+}
+
+function upsertExtractedReminderCandidates(candidates, elderKey, options) {
+  const scopedKey = elderKey || getElderKey()
+  const opts = options || {}
+  const autoThreshold = typeof opts.autoThreshold === 'number' ? opts.autoThreshold : 0.78
+  const reminderMap = _getReminderMap()
+  const list = getReminders(scopedKey)
+  const now = new Date().toISOString()
+  const input = Array.isArray(candidates) ? candidates : []
+  let inserted = 0
+  let updated = 0
+  let skippedLowConfidence = 0
+
+  input.forEach(raw => {
+    const title = _normalizeReminderText(raw && raw.title)
+    const confidenceRaw = Number(raw && raw.confidence)
+    const confidence = Math.max(0, Math.min(1, Number.isFinite(confidenceRaw) ? confidenceRaw : 0))
+    if (!title || confidence < autoThreshold) {
+      skippedLowConfidence += 1
+      return
+    }
+    const normalizedTitle = _normalizeMemoryText(title)
+    const scheduleType = String((raw && raw.scheduleType) || 'daily')
+    const timeOfDay = String((raw && raw.timeOfDay) || '09:00')
+    const hitIndex = list.findIndex(item => {
+      return _normalizeMemoryText(item.title) === normalizedTitle
+        && String(item.scheduleType || 'daily') === scheduleType
+        && String(item.timeOfDay || '09:00') === timeOfDay
+    })
+    if (hitIndex >= 0) {
+      const merged = _normalizeReminder(Object.assign({}, list[hitIndex], {
+        confidence: Math.max(confidence, Number(list[hitIndex].confidence || 0)),
+        evidence: raw && raw.evidence ? String(raw.evidence) : list[hitIndex].evidence,
+        source: 'call_extract',
+        status: REMINDER_STATUS.PENDING,
+        updatedAt: now,
+        elderKey: scopedKey,
+      }))
+      list[hitIndex] = merged
+      updated += 1
+      return
+    }
+    list.unshift(_normalizeReminder({
+      title,
+      scheduleType,
+      timeOfDay,
+      remindDate: raw && raw.remindDate ? String(raw.remindDate) : '',
+      source: 'call_extract',
+      confidence,
+      evidence: raw && raw.evidence ? String(raw.evidence) : title,
+      status: REMINDER_STATUS.PENDING,
+      elderKey: scopedKey,
+      createdAt: now,
+      updatedAt: now,
+    }))
+    inserted += 1
+  })
+
+  reminderMap[scopedKey] = list
+  _saveReminderMap(reminderMap)
+  return { inserted, updated, skippedLowConfidence }
+}
+
+function markGreetingMemoryUsed(elderKey, text) {
+  const scopedKey = elderKey || getElderKey()
+  const normalized = _normalizeMemoryText(text)
+  if (!normalized) return false
+  const map = _getGreetingCooldownMap()
+  if (!map[scopedKey]) map[scopedKey] = {}
+  map[scopedKey][normalized] = new Date().toISOString()
+  _saveGreetingCooldownMap(map)
+  return true
+}
+
+function isGreetingMemoryCooling(elderKey, text, cooldownMs) {
+  const scopedKey = elderKey || getElderKey()
+  const normalized = _normalizeMemoryText(text)
+  if (!normalized) return false
+  const map = _getGreetingCooldownMap()
+  const ts = map[scopedKey] && map[scopedKey][normalized]
+  if (!ts) return false
+  const lastTs = Date.parse(ts)
+  if (!lastTs) return false
+  const windowMs = typeof cooldownMs === 'number' ? cooldownMs : DEFAULT_GREETING_COOLDOWN_MS
+  return Date.now() - lastTs < windowMs
 }
 
 function getMockTimeWeatherContext() {
@@ -633,11 +798,24 @@ function buildMemoryPrompt(elderKey, options) {
   const excludeSet = new Set((opts.excludeTexts || []).map(_normalizeMemoryText).filter(Boolean))
   const maxItems = typeof opts.maxItems === 'number' ? opts.maxItems : 3
   const minConfidence = typeof opts.minConfidence === 'number' ? opts.minConfidence : 0.6
+  const cooldownMs = typeof opts.cooldownMs === 'number' ? opts.cooldownMs : 12 * 60 * 60 * 1000
+  const typeBudget = Object.assign({
+    followUp: 1,
+    recentEvent: 1,
+    interest: 1,
+  }, opts.typeBudget || {})
+  const nowTs = Date.now()
 
   const memoryItems = (bundle.memoryItems || [])
     .filter(item => item && item.text)
     .filter(item => item.confidence >= minConfidence)
     .filter(item => !excludeSet.has(_normalizeMemoryText(item.text)))
+    .filter(item => {
+      if (!item.lastUsedAt) return true
+      const usedTs = Date.parse(item.lastUsedAt)
+      if (!usedTs) return true
+      return nowTs - usedTs >= cooldownMs
+    })
     .filter(item => {
       if (item.type === 'interest' || item.type === 'healthNote') return true
       return _isRecent(item.createdAt, 45)
@@ -647,17 +825,23 @@ function buildMemoryPrompt(elderKey, options) {
     const pickedTypes = {}
     const selected = memoryItems
       .sort((a, b) => {
-        const typeRank = { followUp: 3, recentEvent: 2, interest: 1 }
+        const typeRank = { followUp: 4, recentEvent: 3, interest: 2, healthNote: 1 }
         const ar = typeRank[a.type] || 0
         const br = typeRank[b.type] || 0
         if (br !== ar) return br - ar
+        const as = Number(a.score || _computeMemoryScore(a, nowTs))
+        const bs = Number(b.score || _computeMemoryScore(b, nowTs))
+        if (bs !== as) return bs - as
         if (b.confidence !== a.confidence) return b.confidence - a.confidence
         return Date.parse(b.createdAt || '') - Date.parse(a.createdAt || '')
       })
       .filter(item => {
         if (!(item.type === 'followUp' || item.type === 'recentEvent' || item.type === 'interest')) return false
-        if (pickedTypes[item.type]) return false
-        pickedTypes[item.type] = true
+        const budget = Number(typeBudget[item.type] || 0)
+        if (budget <= 0) return false
+        if (!pickedTypes[item.type]) pickedTypes[item.type] = 0
+        if (pickedTypes[item.type] >= budget) return false
+        pickedTypes[item.type] += 1
         return true
       })
       .slice(0, maxItems)
@@ -699,16 +883,38 @@ function markMemoryItemsUsed(elderKey, texts) {
   const usedSet = new Set([].concat(texts || []).map(_normalizeMemoryText).filter(Boolean))
   if (usedSet.size === 0) return false
   const now = new Date().toISOString()
+  const nowTs = Date.parse(now) || Date.now()
   let changed = false
   const nextItems = (bundle.memoryItems || []).map(item => {
     if (usedSet.has(_normalizeMemoryText(item.text))) {
       changed = true
-      return Object.assign({}, item, { lastUsedAt: now })
+      const nextTriggerCount = Number(item.triggerCount || 0) + 1
+      const next = Object.assign({}, item, {
+        lastUsedAt: now,
+        triggerCount: nextTriggerCount,
+      })
+      next.score = _computeMemoryScore(next, nowTs)
+      return next
     }
     return item
   })
   if (!changed) return false
-  saveMemoryBundle(Object.assign({}, bundle, { memoryItems: nextItems }), scopedKey)
+  const previousLog = Array.isArray(bundle.memoryMeta && bundle.memoryMeta.usageLog)
+    ? bundle.memoryMeta.usageLog
+    : []
+  const logEntry = {
+    at: now,
+    usedTexts: Array.from(usedSet),
+    hit: true,
+  }
+  const usageLog = previousLog.concat([logEntry]).slice(-120)
+  saveMemoryBundle(Object.assign({}, bundle, {
+    memoryItems: nextItems,
+    memoryMeta: Object.assign({}, bundle.memoryMeta, {
+      usageLog,
+      memoryUpdatedAt: now,
+    }),
+  }), scopedKey)
   return true
 }
 
@@ -747,6 +953,7 @@ function clearAllRuntimeData() {
   wx.removeStorageSync(KEYS.PROFILE)
   wx.removeStorageSync(KEYS.MEMORY_MAP)
   wx.removeStorageSync(KEYS.REMINDER_MAP)
+  wx.removeStorageSync(KEYS.GREETING_COOLDOWN_MAP)
 
   const app = _safeGetApp()
   if (app && app.globalData) {
@@ -782,6 +989,9 @@ module.exports = {
   markReminderTriggered,
   markReminderDone,
   pickNextIncomingReminder,
+  upsertExtractedReminderCandidates,
+  markGreetingMemoryUsed,
+  isGreetingMemoryCooling,
   getMockTimeWeatherContext,
   getProfile,
   updateProfile,

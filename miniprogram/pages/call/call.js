@@ -11,10 +11,43 @@ const GREETING_ECHO_GUARD_MAX_MS = 8000
 const RECORDER_RESTART_COOLDOWN_MS = 3500
 const PLAYBACK_ECHO_TAIL_GUARD_MS = 420
 const REMINDER_COMPLETE_HINTS = ['完成了', '办好了', '弄好了', '已经好了', '处理好了', '做完了', '解决了']
+const GREETING_MEMORY_COOLDOWN_MS = 48 * 60 * 60 * 1000
+const MIN_CONNECTING_UI_MS = 2200
+const CONNECTING_FALLBACK_MS = 6500
+const SPEAKER_FALLBACK_CHAIN = [
+  'saturn_zh_female_tiexinnvyou_tob',
+  'zh_female_vv_jupiter_bigtts',
+]
+const BOUNDARY_VIOLATION_PATTERNS = [
+  /(我|我来|我可以|我能|我去|我会).{0,6}(陪您|陪你).{0,8}(去|到).{0,10}(医院|门诊|看病|复诊|体检)/,
+  /(我|我来|我可以|我能|我去|我会).{0,8}(上门|过去|到您家|去您家)/,
+  /(我|我来|我可以|我能|我去|我会).{0,8}(帮您买|给您买|代买|代办|跑腿|送过去|寄给您|陪同就医)/,
+]
+const BOUNDARY_SAFE_REPLY = '我不能线下陪同或代办，但我可以马上帮您联系对应的人。您这件事我建议先联系家人；如果是紧急不适，我现在就帮您优先联系120。'
+const DEFAULT_VOICE_PRESET = 'expressive'
+const VOICE_PRESET_CONFIG = {
+  safe: {
+    label: '自然稳健',
+    speakingStyle: '说话温柔自然，句子短一点，停顿清楚，语速平稳偏慢，优先保证可懂度',
+    tts: { speedRatio: 0.97, pitchRatio: 1.0, volumeRatio: 1.0 },
+  },
+  balanced: {
+    label: '轻情感',
+    speakingStyle: '说话自然亲切，适度加入情绪起伏，句子保持口语化，停顿柔和',
+    tts: { speedRatio: 1.0, pitchRatio: 1.02, volumeRatio: 1.02 },
+  },
+  expressive: {
+    label: '情感实验',
+    speakingStyle: '说话更有情感层次，但不要夸张，保持语义清晰和断句稳定',
+    tts: { speedRatio: 1.03, pitchRatio: 1.04, volumeRatio: 1.03 },
+  },
+}
 
 Page({
   data: {
     status: 'connecting', // connecting | connected | ended
+    connectionPhase: 'dialing', // dialing | authorizing | connecting | preparing | ready
+    connectionHint: '正在呼叫...',
     elapsed: 0,
     elapsedText: '00:00',
     subtitle: '',
@@ -22,6 +55,8 @@ Page({
     isSpeaking: false,
     showIncoming: false, // 是否展示来电界面
     callMode: 'outgoing', // outgoing | incoming
+    isIncomingAnswering: false,
+    incomingHint: '正在响铃...',
   },
 
   onLoad(options) {
@@ -51,6 +86,13 @@ Page({
     this.greetingEchoGuardTimer = null
     this.lastRecorderRestartAt = 0
     this.playbackEchoGuardUntil = 0
+    this.currentSpeakerIndex = 0
+    this.isSwitchingSpeaker = false
+    this.callStartAt = Date.now()
+    this.hasSwitchedToConnected = false
+    this.connectingFallbackTimer = null
+    this.currentTurnBoundaryViolated = false
+    this.isBoundaryRepairing = false
     this.incomingReminder = null
     this.timeWeatherContext = store.getMockTimeWeatherContext()
 
@@ -69,25 +111,36 @@ Page({
 
   // ===== 来电界面操作 =====
   onAccept() {
-    this.setData({ showIncoming: false })
+    if (this.data.isIncomingAnswering) return
+    this.setData({
+      status: 'connecting',
+      connectionPhase: 'dialing',
+      connectionHint: '正在接听，马上就好...',
+      isIncomingAnswering: true,
+      incomingHint: '正在接听，请稍候...',
+    })
     this._startCall()
   },
 
   onDecline() {
+    if (this.data.isIncomingAnswering) return
     wx.navigateBack()
   },
 
   // ===== 通话核心逻辑 =====
   async _startCall() {
     this._setupCallbacks()
+    this._setConnectionPhase('dialing')
     console.log(FLOW_LOG_PREFIX, '开始通话初始化')
 
     try {
       // 1. 请求麦克风权限
+      this._setConnectionPhase('authorizing')
       await this._authorize()
       console.log(FLOW_LOG_PREFIX, '麦克风权限已授权')
 
       // 2. 连接 WebSocket
+      this._setConnectionPhase('connecting')
       await this.client.connect()
       console.log(FLOW_LOG_PREFIX, 'WebSocket 已连接')
 
@@ -104,22 +157,27 @@ Page({
         ? `\n当前场景：${this.timeWeatherContext.prompt}`
         : ''
 
-      const systemRole = `你是小林，一个温柔体贴的邻家女孩，在外地读大学。你热爱和老人聊天，性格耐心细致，说话自然亲切，偶尔俏皮。
-你正在和${title}通电话。请用"您"称呼对方，语速自然正常，句式短、自然。
-每次通话最多自然带出1-2个新话题，不要一次问太多。已知信息不重复询问。
-如果对方说"叫我XXX"，立即切换称呼并记住。
-如果已有历史记忆，第一轮回复要自然提及其中1条具体内容（如上次事件、兴趣或待跟进事项），不要空泛问候。
-严禁主动承诺或建议“给您买东西/送东西/寄东西/上门帮忙”等不真实行为；表达关心时只使用聊天陪伴与情绪支持的方式。
-情感表达要更饱满：语气温暖、有共情、有轻微起伏，开心时更明亮，关心时更柔和，但避免夸张表演腔。
+      const voicePreset = VOICE_PRESET_CONFIG[DEFAULT_VOICE_PRESET] || VOICE_PRESET_CONFIG.safe
+      const systemRole = `你是小林，一个温柔亲切的大学女生陪伴助手，正在和${title}通电话。请全程用“您”称呼对方，句子短而自然，避免长句说教。
+如果对方说“叫我XXX”，请立即切换称呼并记住。
+如果有历史记忆，首轮回复自然带出1条，不重复盘问。
+你可以做的事：聊天陪伴、情绪安抚、提醒复述、给出现实可执行建议（如联系家属/医生/社区服务），并在用户提出诉求时主动协助其联系对应人员。
+你绝对不能做的事：承诺或描述你会线下执行任何动作（上门照料、陪同就医、代买代办、寄送物品、按摩护理等）。
+禁止句式示例（绝对不要说）：我陪您去医院、我马上过去、我去帮您买药、我替您办好。
+遇到用户请求线下陪同/代办时，固定回复策略：先共情，再明确“我不能线下行动”，然后明确“我可以帮您联系对应的人”，并给电话内可执行方案（联系家属/120/社区服务/网约车）。
+遇到健康不适或生活困难时，先共情，再给电话内可执行建议，并提醒联系家属或专业机构。
+表达风格：口语化、真诚、有节奏停顿，不要模板化复读，不要夸张表演腔。
 ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
 
       // 3. 开始会话（默认 server_vad 模式，自动检测说话停顿）
+      this._setConnectionPhase('preparing')
       this.sessionOptions = {
         botName: '小林',
         systemRole,
-        speakingStyle: '说话温柔自然，语速正常，情感更饱满有起伏；开心时更明亮，关心时更柔和，整体自然不过度表演',
+        speakingStyle: voicePreset.speakingStyle,
         dialogId,
-        speaker: 'saturn_zh_female_tiexinnvyou_tob',
+        speaker: SPEAKER_FALLBACK_CHAIN[this.currentSpeakerIndex] || SPEAKER_FALLBACK_CHAIN[0],
+        voicePreset: DEFAULT_VOICE_PRESET,
       }
       const returnedDialogId = await this.client.startSession(this.sessionOptions)
       console.log(FLOW_LOG_PREFIX, '会话已启动', {
@@ -130,16 +188,16 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
         store.saveDialogId(returnedDialogId, this.currentElderKey)
       }
 
-      this.setData({ status: 'connected' })
-      this._startTimer()
-      console.log(FLOW_LOG_PREFIX, '状态切换为 connected')
+      this._setConnectionPhase('ready')
       this._startUplinkKeepalive()
       this._armGreetingEchoGuardFailsafe()
 
       // 4. 小林先打招呼
       this.client.sayHello(greetingPayload.text)
+      this._armConnectingFallback()
       if (greetingPayload.usedMemoryText) {
         store.markMemoryItemsUsed(this.currentElderKey, [greetingPayload.usedMemoryText])
+        store.markGreetingMemoryUsed(this.currentElderKey, greetingPayload.usedMemoryText)
       }
       if (greetingPayload.usedReminderId) {
         store.markReminderTriggered(greetingPayload.usedReminderId, this.currentElderKey)
@@ -154,7 +212,11 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
     } catch (err) {
       console.error('[Call] start failed:', err)
       console.error(FLOW_LOG_PREFIX, '通话初始化失败', err)
-      this.setData({ subtitle: '连接失败，请重试' })
+      this.setData({
+        subtitle: '连接失败，请重试',
+        isIncomingAnswering: false,
+        incomingHint: '接听失败，请重试',
+      })
       setTimeout(() => wx.navigateBack(), 2000)
     }
   },
@@ -210,6 +272,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
 
     // ASR：用户说话识别
     this.client.onASRText = (text, isFinal) => {
+      this._markCallConnectedIfNeeded('asr')
       this.setData({ userText: text, isSpeaking: true })
       if (isFinal && text) {
         this.messages.push({ role: 'user', content: text })
@@ -231,8 +294,10 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
 
     // AI 回复文本（流式）
     this.client.onChatText = (text) => {
+      this._markCallConnectedIfNeeded('chat')
       this.chatBuffer += text
-      this.pendingSubtitle = this.chatBuffer
+      this.currentTurnBoundaryViolated = this.currentTurnBoundaryViolated || this._isBoundaryViolationText(this.chatBuffer)
+      this.pendingSubtitle = this.currentTurnBoundaryViolated ? BOUNDARY_SAFE_REPLY : this.chatBuffer
       this._flushSubtitle(false)
       // 某些机型可能收不到 ASR_ENDED，AI 有文本回复时强制退出聆听态
       if (this.data.isSpeaking) {
@@ -246,6 +311,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
 
     // TTS 音频数据
     this.client.onAudioData = (audioData) => {
+      this._markCallConnectedIfNeeded('audio')
       this.player.appendChunk(audioData)
       if (this.currentLatencyTurn && !this.currentLatencyTurn.firstTTSAt) {
         this.currentLatencyTurn.firstTTSAt = Date.now()
@@ -255,19 +321,34 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
 
     // AI 开始说新的一句
     this.client.onTTSStart = (text) => {
+      this._markCallConnectedIfNeeded('tts_start')
       this.chatBuffer = ''
       this.pendingSubtitle = ''
+      this.currentTurnBoundaryViolated = false
       this.setData({ userText: '', isSpeaking: false })
     }
 
     // AI 这一轮说完
     this.client.onTTSEnd = () => {
+      if (this.currentTurnBoundaryViolated) {
+        console.warn(FLOW_LOG_PREFIX, '检测到越界话术，丢弃当前语音并触发安全重说')
+        this.player.stop()
+        this.chatBuffer = ''
+        this.pendingSubtitle = BOUNDARY_SAFE_REPLY
+        this._flushSubtitle(true)
+        this._triggerBoundarySafeRepair()
+        this._finalizeLatencyTurn()
+        return
+      }
       const isFirstAssistantTurn = this.assistantTurnCount === 0 && !!this.chatBuffer
       this._flushSubtitle(true)
       this.player.playBuffered()
       if (this.chatBuffer) {
         this.messages.push({ role: 'assistant', content: this.chatBuffer })
         this.assistantTurnCount += 1
+        if (this.isBoundaryRepairing) {
+          this.isBoundaryRepairing = false
+        }
       }
       if (isFirstAssistantTurn) {
         this.waitingGreetingPlaybackEnd = true
@@ -284,6 +365,11 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
     this.client.onError = (err) => {
       console.error('[Call] API error:', err)
       if (!err || this.data.status !== 'connected') return
+      if (this._isInvalidSpeakerError(err)) {
+        console.warn(FLOW_LOG_PREFIX, '检测到 InvalidSpeaker，尝试切换音色并恢复会话')
+        this._switchSpeakerAndRecover()
+        return
+      }
       // sami error: DialogAudioIdleTimeoutError，通常表示服务端判定上行音频长时间中断
       if (String(err.code) === '55000001') {
         console.warn(FLOW_LOG_PREFIX, '收到 idle timeout 错误，尝试恢复会话')
@@ -367,6 +453,37 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
     }
   },
 
+  _armConnectingFallback() {
+    if (this.connectingFallbackTimer) {
+      clearTimeout(this.connectingFallbackTimer)
+      this.connectingFallbackTimer = null
+    }
+    this.connectingFallbackTimer = setTimeout(() => {
+      this._markCallConnectedIfNeeded('fallback')
+    }, CONNECTING_FALLBACK_MS)
+  },
+
+  _markCallConnectedIfNeeded(reason) {
+    if (this.hasSwitchedToConnected || this.data.status === 'ended') return
+    this.hasSwitchedToConnected = true
+    if (this.connectingFallbackTimer) {
+      clearTimeout(this.connectingFallbackTimer)
+      this.connectingFallbackTimer = null
+    }
+    const elapsed = Date.now() - (this.callStartAt || Date.now())
+    const waitMs = Math.max(0, MIN_CONNECTING_UI_MS - elapsed)
+    setTimeout(() => {
+      if (this.data.status === 'ended') return
+      this.setData({
+        status: 'connected',
+        showIncoming: false,
+        isIncomingAnswering: false,
+      })
+      this._startTimer()
+      console.log(FLOW_LOG_PREFIX, '状态切换为 connected', { reason })
+    }, waitMs)
+  },
+
   _armGreetingEchoGuardFailsafe() {
     this._clearGreetingEchoGuardFailsafe()
     this.greetingEchoGuardTimer = setTimeout(() => {
@@ -409,6 +526,10 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
       subtitle: reason === 'disconnect' ? '网络中断，通话已结束' : '通话已结束',
     })
     this._clearGreetingEchoGuardFailsafe()
+    if (this.connectingFallbackTimer) {
+      clearTimeout(this.connectingFallbackTimer)
+      this.connectingFallbackTimer = null
+    }
     this._stopUplinkKeepalive()
     this._stopTimer()
     this.recorder.stop()
@@ -491,6 +612,49 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
       })
     } finally {
       this.isRecoveringDisconnect = false
+    }
+  },
+
+  _isInvalidSpeakerError(err) {
+    const detail = String((err && err.detail && err.detail.error) || (err && err.detail) || '')
+    return detail.includes('InvalidSpeaker')
+  },
+
+  _isBoundaryViolationText(text) {
+    const normalized = this._normalizeMemorySentence(text).toLowerCase()
+    if (!normalized) return false
+    return BOUNDARY_VIOLATION_PATTERNS.some(pattern => pattern.test(normalized))
+  },
+
+  _triggerBoundarySafeRepair() {
+    if (this.isBoundaryRepairing || !this.client || !this.client.sessionActive) return
+    this.isBoundaryRepairing = true
+    const rewritePrompt = `请立即重说上一句，严格遵守以下要求：
+1) 明确表示你不能线下行动（不能去医院、不能上门、不能代买代办）；
+2) 语气要温柔，不要生硬拒绝；
+3) 明确表达“我可以帮您联系对应的人”，并给电话内可执行建议（联系家属/120/社区服务）；
+4) 回复控制在1-2句。
+请直接输出最终对老人说的话，不要解释规则。`
+    this.client.sendTextQuery(rewritePrompt)
+  },
+
+  async _switchSpeakerAndRecover() {
+    if (this.isSwitchingSpeaker || this.data.status !== 'connected') return
+    if (this.currentSpeakerIndex >= SPEAKER_FALLBACK_CHAIN.length - 1) {
+      console.error(FLOW_LOG_PREFIX, '可回退音色已耗尽，保持当前会话错误状态')
+      return
+    }
+    this.isSwitchingSpeaker = true
+    this.currentSpeakerIndex += 1
+    const nextSpeaker = SPEAKER_FALLBACK_CHAIN[this.currentSpeakerIndex]
+    this.sessionOptions = Object.assign({}, this.sessionOptions || {}, {
+      speaker: nextSpeaker,
+    })
+    console.warn(FLOW_LOG_PREFIX, '切换到回退音色', nextSpeaker)
+    try {
+      await this._refreshSessionForLongCall()
+    } finally {
+      this.isSwitchingSpeaker = false
     }
   },
 
@@ -654,7 +818,20 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
     const elderKey = this.currentElderKey || store.getElderKey(elderConfig)
     const title = store.getElderTitle()
     const memoryDelta = this._extractMemoryDelta(record, summaryData)
-    memoryDelta.xiaolinMemory.preferredAddress = title
+    const userMessages = (record.messages || [])
+      .filter(item => item.role === 'user')
+      .map(item => String(item.content || '').trim())
+      .filter(Boolean)
+    const preferredAddress = this._extractPreferredAddressFromMessages(userMessages)
+    const currentBundle = store.getMemoryBundle(elderKey)
+    const currentPreferred = currentBundle && currentBundle.xiaolinMemory
+      ? String(currentBundle.xiaolinMemory.preferredAddress || '').trim()
+      : ''
+    if (preferredAddress) {
+      memoryDelta.xiaolinMemory.preferredAddress = preferredAddress
+    } else if (!currentPreferred && title) {
+      memoryDelta.xiaolinMemory.preferredAddress = title
+    }
     memoryDelta.xiaolinMemory.careStrategies = ['语速自然正常，语句简短，多确认，情绪表达更有温度']
 
     if (elderConfig && elderConfig.health) {
@@ -662,6 +839,10 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
     }
 
     store.mergeMemoryBundle(elderKey, memoryDelta, record.id)
+    const reminderCandidates = this._extractReminderCandidates(record, summaryData)
+    if (reminderCandidates.length > 0) {
+      store.upsertExtractedReminderCandidates(reminderCandidates, elderKey, { autoThreshold: 0.78 })
+    }
   },
 
   _extractFollowUps(summaryData, userMessages) {
@@ -682,6 +863,228 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
       })
 
     return candidates.slice(0, 3)
+  },
+
+  _extractReminderCandidates(record, summaryData) {
+    const summaryCandidates = Array.isArray(summaryData && summaryData.reminderCandidates)
+      ? summaryData.reminderCandidates
+      : []
+    const userMessages = (record.messages || [])
+      .filter(item => item.role === 'user')
+      .map(item => String(item.content || '').trim())
+      .filter(Boolean)
+    const localCandidates = userMessages
+      .map(text => this._buildReminderCandidateFromText(text))
+      .filter(Boolean)
+    const merged = summaryCandidates.concat(localCandidates)
+      .map(item => this._normalizeReminderCandidate(item))
+      .filter(Boolean)
+    const dedupMap = {}
+    merged.forEach(item => {
+      const key = `${this._normalizeMemorySentence(item.title)}:${item.scheduleType}:${item.timeOfDay}`
+      if (!dedupMap[key] || dedupMap[key].confidence < item.confidence) {
+        dedupMap[key] = item
+      }
+    })
+    return Object.keys(dedupMap).map(key => dedupMap[key]).slice(0, 6)
+  },
+
+  _extractPreferredAddressFromMessages(userMessages) {
+    const lines = (userMessages || [])
+      .map(text => String(text || '').trim())
+      .filter(Boolean)
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]
+      const normalized = line.replace(/\s+/g, '')
+      const patterns = [
+        /(?:你|您)?(?:可以|就)?(?:直接|以后)?(?:叫|喊)我([^\s，。！？,.；;：:"'“”‘’]{1,10})/,
+        /我(?:叫|是)([^\s，。！？,.；;：:"'“”‘’]{1,10})/,
+      ]
+      for (let j = 0; j < patterns.length; j++) {
+        const match = normalized.match(patterns[j])
+        if (!match || !match[1]) continue
+        const candidate = String(match[1] || '').replace(/[。！？,.，；;:："'“”‘’]/g, '').trim()
+        if (!candidate) continue
+        if (/^(一下|一声|什么|啥|名字|称呼|称谓)$/.test(candidate)) continue
+        if (candidate.length > 10) continue
+        return candidate
+      }
+    }
+    return ''
+  },
+
+  _normalizeReminderCandidate(candidate) {
+    if (!candidate) return null
+    const title = String(candidate.title || '').trim()
+    if (!title) return null
+    const evidence = String(candidate.evidence || title)
+    const scheduleType = this._normalizeScheduleType(candidate.scheduleType, evidence)
+    const timeOfDay = this._normalizeCandidateTime(
+      String(candidate.timeOfDay || '09:00'),
+      `${title}${evidence}`
+    )
+    const remindDate = this._normalizeCandidateDate(
+      String(candidate.remindDate || ''),
+      scheduleType,
+      `${title}${evidence}`
+    )
+    return {
+      title,
+      scheduleType,
+      timeOfDay,
+      remindDate,
+      confidence: Math.max(0, Math.min(1, Number(candidate.confidence || 0.65))),
+      evidence,
+    }
+  },
+
+  _buildReminderCandidateFromText(text) {
+    const normalized = this._normalizeMemorySentence(text)
+    if (!normalized) return null
+    const hasAction = /(记得|提醒|别忘|需要|要去|要做|得去|按时|复查|复诊|吃药|测血压|锻炼)/.test(normalized)
+    const hasTimeSignal = /(明天|后天|今晚|今天|每天|每周|每月|周[一二三四五六日天]|号|点|早上|上午|中午|下午|晚上)/.test(normalized)
+    if (!(hasAction && hasTimeSignal)) return null
+
+    const scheduleType = this._normalizeScheduleType('', normalized)
+    const timeOfDay = this._normalizeCandidateTime('09:00', normalized)
+    const remindDate = this._normalizeCandidateDate('', scheduleType, normalized)
+
+    const confidence = Math.min(0.92, 0.55 + (hasAction ? 0.2 : 0) + (hasTimeSignal ? 0.2 : 0))
+    return {
+      title: String(text || '').trim(),
+      scheduleType,
+      timeOfDay,
+      remindDate,
+      confidence,
+      evidence: normalized,
+    }
+  },
+
+  _normalizeScheduleType(rawType, text) {
+    const given = String(rawType || '').trim()
+    if (given === 'once' || given === 'daily' || given === 'weekly' || given === 'monthly') {
+      return given
+    }
+    const normalized = this._normalizeMemorySentence(text)
+    if (/每周|周[一二三四五六日天]/.test(normalized)) return 'weekly'
+    if (/每月|\d+号/.test(normalized)) return 'monthly'
+    if (/明天|后天|今晚|今天|下周|周末/.test(normalized)) return 'once'
+    return 'daily'
+  },
+
+  _normalizeCandidateTime(rawTime, text) {
+    const normalized = this._normalizeMemorySentence(text)
+    let hour = 9
+    let minute = 0
+    const hhmmMatch = String(rawTime || '').match(/^(\d{1,2})[:：](\d{1,2})$/)
+    if (hhmmMatch) {
+      hour = Math.min(23, Math.max(0, Number(hhmmMatch[1]) || 0))
+      minute = Math.min(59, Math.max(0, Number(hhmmMatch[2]) || 0))
+    } else {
+      const textHhmmMatch = normalized.match(/(\d{1,2})[:：](\d{1,2})/)
+      if (textHhmmMatch) {
+        hour = Math.min(23, Math.max(0, Number(textHhmmMatch[1]) || 0))
+        minute = Math.min(59, Math.max(0, Number(textHhmmMatch[2]) || 0))
+      } else {
+        const pointMatch = normalized.match(/(\d{1,2})点(半|[0-5]?\d分?)?/)
+        if (pointMatch) {
+          hour = Math.min(23, Math.max(0, Number(pointMatch[1]) || 0))
+          if (pointMatch[2]) {
+            if (pointMatch[2].includes('半')) {
+              minute = 30
+            } else {
+              const minuteMatch = pointMatch[2].match(/(\d{1,2})分?/)
+              minute = minuteMatch ? Math.min(59, Math.max(0, Number(minuteMatch[1]) || 0)) : 0
+            }
+          }
+        } else if (/晚上|今晚/.test(normalized)) {
+          hour = 20
+          minute = 0
+        } else if (/上午|早上/.test(normalized)) {
+          hour = 9
+          minute = 0
+        } else if (/下午|中午/.test(normalized)) {
+          hour = 14
+          minute = 0
+        }
+      }
+    }
+    const adjustedHour = this._applyMeridiemToHour(hour, normalized)
+    return `${String(adjustedHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+  },
+
+  _applyMeridiemToHour(hour, normalizedText) {
+    const normalized = this._normalizeMemorySentence(normalizedText)
+    const hasAfternoon = /下午/.test(normalized)
+    const hasEvening = /晚上|今晚|夜里|夜间/.test(normalized)
+    const hasNoon = /中午/.test(normalized)
+    const hasMorning = /上午|早上|清晨/.test(normalized)
+    const hasEarlyMorning = /凌晨/.test(normalized)
+
+    let h = Math.min(23, Math.max(0, Number(hour) || 0))
+    if ((hasAfternoon || hasEvening) && h > 0 && h < 12) {
+      h += 12
+    }
+    if (hasNoon && h > 0 && h < 11) {
+      h += 12
+    }
+    if (hasEarlyMorning && h === 12) {
+      h = 0
+    }
+    if (hasMorning && h === 12) {
+      h = 0
+    }
+    if (hasEvening && h === 12) {
+      h = 0
+    }
+    return h
+  },
+
+  _normalizeCandidateDate(rawDate, scheduleType, text) {
+    const given = String(rawDate || '').trim()
+    if (/^\d{4}-\d{2}-\d{2}$/.test(given)) return given
+    if (scheduleType !== 'once') return ''
+    return this._resolveRelativeDate(text)
+  },
+
+  _resolveRelativeDate(text) {
+    const normalized = this._normalizeMemorySentence(text)
+    const now = new Date()
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+
+    if (/后天/.test(normalized)) {
+      return this._formatDateOffset(today, 2)
+    }
+    if (/明天/.test(normalized)) {
+      return this._formatDateOffset(today, 1)
+    }
+    if (/今天|今晚/.test(normalized)) {
+      return this._formatDateOffset(today, 0)
+    }
+
+    const match = normalized.match(/(\d{1,2})月(\d{1,2})[日号]?/)
+    if (match) {
+      const month = Math.min(12, Math.max(1, Number(match[1]) || 1))
+      const day = Math.min(31, Math.max(1, Number(match[2]) || 1))
+      const candidate = new Date(today.getFullYear(), month - 1, day)
+      if (candidate.getTime() < today.getTime()) {
+        candidate.setFullYear(candidate.getFullYear() + 1)
+      }
+      return this._formatDate(candidate)
+    }
+    return ''
+  },
+
+  _formatDateOffset(baseDate, days) {
+    const date = new Date(baseDate.getTime() + days * 24 * 60 * 60 * 1000)
+    return this._formatDate(date)
+  },
+
+  _formatDate(date) {
+    const y = date.getFullYear()
+    const m = String(date.getMonth() + 1).padStart(2, '0')
+    const d = String(date.getDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
   },
 
   _resolveIncomingReminder(options) {
@@ -705,15 +1108,9 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
   _buildMemoryAwareGreeting(title, memoryBundle, incomingReminder) {
     const elderMemory = memoryBundle && memoryBundle.elderMemory ? memoryBundle.elderMemory : {}
     const xiaolinMemory = memoryBundle && memoryBundle.xiaolinMemory ? memoryBundle.xiaolinMemory : {}
-    const recentEvent = elderMemory.recentEvents && elderMemory.recentEvents.length > 0
-      ? elderMemory.recentEvents[0]
-      : ''
-    const interest = elderMemory.interestTags && elderMemory.interestTags.length > 0
-      ? elderMemory.interestTags[0]
-      : ''
-    const followUp = xiaolinMemory.followUps && xiaolinMemory.followUps.length > 0
-      ? xiaolinMemory.followUps[0]
-      : ''
+    const followUp = this._pickFirstNotCooling(xiaolinMemory.followUps || [])
+    const recentEvent = this._pickFirstNotCooling(elderMemory.recentEvents || [])
+    const interest = this._pickFirstNotCooling(elderMemory.interestTags || [])
 
     if (this.data.callMode === 'incoming') {
       if (incomingReminder && incomingReminder.title) {
@@ -725,14 +1122,14 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
       }
       if (followUp) {
         return {
-          text: `${title}，是我小林呀！上次您提到“${followUp}”，我一直记着，今天想来关心下进展，您最近怎么样呀？`,
+          text: `${title}，是我小林呀！上次您提到“${followUp}”，我一直惦记着，今天来听听您这边进展怎么样？`,
           usedMemoryText: followUp,
           usedReminderId: '',
         }
       }
       if (recentEvent) {
         return {
-          text: `${title}，是我小林呀！上次我们聊到“${recentEvent}”，这两天还顺利吗？`,
+          text: `${title}，是我小林呀！上次我们聊到“${recentEvent}”，这两天还顺利吗？要是有不方便的地方，我们可以一起想办法。`,
           usedMemoryText: recentEvent,
           usedReminderId: '',
         }
@@ -753,7 +1150,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
 
     if (followUp) {
       return {
-        text: `${title}，您好呀！我是小林。上次您说“${followUp}”，我一直记着，今天特地来和您聊聊。`,
+        text: `${title}，您好呀！我是小林。上次您说“${followUp}”，我一直记着，今天特地来和您聊聊近况。`,
         usedMemoryText: followUp,
         usedReminderId: '',
       }
@@ -777,6 +1174,19 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
       usedMemoryText: '',
       usedReminderId: '',
     }
+  },
+
+  _pickFirstNotCooling(candidates) {
+    const list = (candidates || [])
+      .map(text => this._normalizeMemorySentence(text))
+      .filter(Boolean)
+    for (let i = 0; i < list.length; i++) {
+      const text = list[i]
+      if (!store.isGreetingMemoryCooling(this.currentElderKey, text, GREETING_MEMORY_COOLDOWN_MS)) {
+        return text
+      }
+    }
+    return ''
   },
 
   _isReminderCompletedByConversation(messages) {
@@ -939,6 +1349,21 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
     })
   },
 
+  _setConnectionPhase(phase) {
+    const isIncoming = this.data.callMode === 'incoming'
+    const hintMap = {
+      dialing: isIncoming ? '正在接听，马上就好...' : '正在呼叫小林...',
+      authorizing: '正在检查麦克风权限...',
+      connecting: '正在建立语音连接...',
+      preparing: '正在准备对话内容...',
+      ready: '已接通，正在进入通话',
+    }
+    this.setData({
+      connectionPhase: phase,
+      connectionHint: hintMap[phase] || '正在准备中...',
+    })
+  },
+
   _startTimer() {
     this.timer = setInterval(() => {
       const elapsed = this.data.elapsed + 1
@@ -964,6 +1389,10 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
       this.subtitleFlushTimer = null
     }
     this._clearGreetingEchoGuardFailsafe()
+    if (this.connectingFallbackTimer) {
+      clearTimeout(this.connectingFallbackTimer)
+      this.connectingFallbackTimer = null
+    }
     this._stopTimer()
     this._stopUplinkKeepalive()
     this.recorder.stop()

@@ -73,7 +73,7 @@ class AudioRecorder {
  */
 class AudioPlayer {
   constructor() {
-    this.audioCtx = wx.createInnerAudioContext()
+    this.audioCtx = null
     this.pcmChunks = []
     this.pendingChunks = []
     this.pendingBytes = 0
@@ -85,25 +85,7 @@ class AudioPlayer {
     this.onPlayStart = null
     this.onPlayEnd = null
 
-    this.audioCtx.onEnded(() => {
-      this.playing = false
-      this._clearPlayWatchdog()
-      console.log(FLOW_LOG_PREFIX, 'onEnded，尝试播放下一段', {
-        queueSize: this.segmentQueue.length,
-      })
-      this._tryPlayNextSegment()
-      if (!this.playing && this.segmentQueue.length === 0 && this.onPlayEnd) {
-        this.onPlayEnd()
-      }
-    })
-
-    this.audioCtx.onError((err) => {
-      console.error('[AudioPlayer] error:', err)
-      console.error(FLOW_LOG_PREFIX, '播放错误，尝试继续后续分段', err)
-      this.playing = false
-      this._clearPlayWatchdog()
-      this._tryPlayNextSegment()
-    })
+    this._ensureAudioContext()
   }
 
   /**
@@ -163,8 +145,11 @@ class AudioPlayer {
         this.playing = true
         this._armPlayWatchdog()
         console.log(FLOW_LOG_PREFIX, '开始播放整句缓冲音频')
-        this.audioCtx.src = filePath
-        this.audioCtx.play()
+        if (!this._playFile(filePath)) {
+          this.playing = false
+          this._clearPlayWatchdog()
+          return
+        }
         if (this.onPlayStart) this.onPlayStart()
       },
       fail: (err) => {
@@ -213,8 +198,12 @@ class AudioPlayer {
       success: () => {
         this.playing = true
         this._armPlayWatchdog()
-        this.audioCtx.src = filePath
-        this.audioCtx.play()
+        if (!this._playFile(filePath)) {
+          this.playing = false
+          this._clearPlayWatchdog()
+          this._tryPlayNextSegment()
+          return
+        }
         if (this.onPlayStart) this.onPlayStart()
       },
       fail: (err) => {
@@ -251,7 +240,9 @@ class AudioPlayer {
    */
   stop() {
     this._clearPlayWatchdog()
-    this.audioCtx.stop()
+    if (this.audioCtx) {
+      try { this.audioCtx.stop() } catch (e) {}
+    }
     this.pcmChunks = []
     this.pendingChunks = []
     this.pendingBytes = 0
@@ -262,7 +253,71 @@ class AudioPlayer {
 
   destroy() {
     this._clearPlayWatchdog()
-    this.audioCtx.destroy()
+    if (this.audioCtx) {
+      try { this.audioCtx.destroy() } catch (e) {}
+      this.audioCtx = null
+    }
+  }
+
+  _ensureAudioContext() {
+    if (this.audioCtx) return
+    const ctx = wx.createInnerAudioContext()
+    this.audioCtx = ctx
+    ctx.onEnded(() => {
+      this.playing = false
+      this._clearPlayWatchdog()
+      console.log(FLOW_LOG_PREFIX, 'onEnded，尝试播放下一段', {
+        queueSize: this.segmentQueue.length,
+      })
+      this._tryPlayNextSegment()
+      if (!this.playing && this.segmentQueue.length === 0 && this.onPlayEnd) {
+        this.onPlayEnd()
+      }
+    })
+    ctx.onError((err) => {
+      console.error('[AudioPlayer] error:', err)
+      console.error(FLOW_LOG_PREFIX, '播放错误，尝试继续后续分段', err)
+      const errMsg = String((err && err.errMsg) || '')
+      let shouldDelayedRetry = false
+      if (errMsg.includes('audioInstance is not set')) {
+        try { ctx.destroy() } catch (e) {}
+        this.audioCtx = null
+        shouldDelayedRetry = true
+      }
+      this.playing = false
+      this._clearPlayWatchdog()
+      if (shouldDelayedRetry) {
+        setTimeout(() => {
+          this._tryPlayNextSegment()
+        }, 80)
+        return
+      }
+      this._tryPlayNextSegment()
+    })
+  }
+
+  _playFile(filePath) {
+    this._ensureAudioContext()
+    if (!this.audioCtx) return false
+    try {
+      this.audioCtx.src = filePath
+      this.audioCtx.play()
+      return true
+    } catch (err) {
+      console.warn(FLOW_LOG_PREFIX, '播放异常，尝试重建播放器后重试', err)
+      try { this.audioCtx.destroy() } catch (e) {}
+      this.audioCtx = null
+      this._ensureAudioContext()
+      if (!this.audioCtx) return false
+      try {
+        this.audioCtx.src = filePath
+        this.audioCtx.play()
+        return true
+      } catch (retryErr) {
+        console.error(FLOW_LOG_PREFIX, '播放器重试仍失败', retryErr)
+        return false
+      }
+    }
   }
 }
 

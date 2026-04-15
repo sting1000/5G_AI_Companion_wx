@@ -99,6 +99,23 @@
   line-height: 1.6;
 }
 
+.connecting-main-hint {
+  display: block;
+  font-size: 36rpx;
+  color: #ffffff;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.connecting-sub-hint {
+  display: block;
+  margin-top: 14rpx;
+  font-size: 24rpx;
+  color: rgba(255, 255, 255, 0.72);
+  text-align: center;
+}
+
 .subtitle-user {
   display: block;
   font-size: 28rpx;
@@ -110,6 +127,39 @@
   display: block;
   font-size: 28rpx;
   color: rgba(255, 255, 255, 0.4);
+}
+
+.phase-steps {
+  margin-top: 24rpx;
+  display: flex;
+  justify-content: space-between;
+  gap: 18rpx;
+}
+
+.phase-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.phase-dot {
+  width: 16rpx;
+  height: 16rpx;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  transition: all 0.2s ease;
+}
+
+.phase-dot-active {
+  background: #FF8A65;
+  box-shadow: 0 0 10rpx rgba(255, 138, 101, 0.7);
+}
+
+.phase-text {
+  font-size: 22rpx;
+  color: rgba(255, 255, 255, 0.55);
 }
 
 /* 底部操作 */
@@ -137,6 +187,10 @@
   background: rgba(255, 107, 74, 0.2);
 }
 
+.mic-waiting {
+  animation: waiting-breathe 1.4s ease-in-out infinite;
+}
+
 .mic-ring {
   position: absolute;
   width: 100%;
@@ -155,6 +209,11 @@
 @keyframes pulse {
   0% { transform: scale(1); opacity: 0.6; }
   100% { transform: scale(1.5); opacity: 0; }
+}
+
+@keyframes waiting-breathe {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.06); opacity: 1; }
 }
 
 .mic-icon { font-size: 48rpx; }
@@ -289,6 +348,10 @@
 }
 
 .accept-btn:active { background: #388E3C; }
+
+.incoming-btn-disabled {
+  opacity: 0.55;
+}
 
 .incoming-action-label {
   font-size: 24rpx;

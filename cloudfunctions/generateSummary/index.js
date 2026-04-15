@@ -45,7 +45,17 @@ ${transcript}
   "topics": ["话题标签1", "话题标签2"],
   "highlights": ["重要提及1", "重要提及2"],
   "mood": "开心/平静/低落/焦虑",
-  "moodEmoji": "😊/😌/😢/😟"
+  "moodEmoji": "😊/😌/😢/😟",
+  "reminderCandidates": [
+    {
+      "title": "提醒内容",
+      "scheduleType": "once/daily/weekly/monthly",
+      "timeOfDay": "HH:mm",
+      "remindDate": "YYYY-MM-DD或空字符串",
+      "confidence": 0.0,
+      "evidence": "原话摘录"
+    }
+  ]
 }`
 
     const response = await callArkAPI(apiKey, prompt)
@@ -142,6 +152,7 @@ function generateLocalSummary(messages, elderName) {
       highlights: userMessages.slice(0, 3),
       mood: '开心',
       moodEmoji: '😊',
+      reminderCandidates: [],
     },
   }
 }
