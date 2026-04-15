@@ -10,7 +10,16 @@ const KEYS = {
   CALL_HISTORY: 'callHistory',
   PROFILE: 'elderProfile',
   MEMORY_MAP: 'elderMemoryMap',
+  REMINDER_MAP: 'elderReminderMap',
 }
+
+const REMINDER_STATUS = {
+  PENDING: 'pending',
+  TRIGGERED: 'triggered',
+  DONE: 'done',
+}
+
+const DEFAULT_REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000
 
 function _safeGetApp() {
   try {
@@ -315,6 +324,181 @@ function _saveMemoryMap(memoryMap) {
   wx.setStorageSync(KEYS.MEMORY_MAP, memoryMap)
 }
 
+function _getReminderMap() {
+  return wx.getStorageSync(KEYS.REMINDER_MAP) || {}
+}
+
+function _saveReminderMap(reminderMap) {
+  wx.setStorageSync(KEYS.REMINDER_MAP, reminderMap)
+}
+
+function _normalizeReminderText(text) {
+  return String(text || '').trim()
+}
+
+function _normalizeReminder(reminder) {
+  const now = new Date().toISOString()
+  const title = _normalizeReminderText(reminder && reminder.title)
+  const timeOfDay = String((reminder && reminder.timeOfDay) || '09:00')
+  const scheduleType = String((reminder && reminder.scheduleType) || 'daily')
+  const remindDate = _normalizeReminderText(reminder && reminder.remindDate)
+  const weekdays = Array.isArray(reminder && reminder.weekdays) ? reminder.weekdays : []
+  return {
+    id: reminder && reminder.id ? reminder.id : `reminder_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    title: title || '未命名提醒',
+    note: _normalizeReminderText(reminder && reminder.note),
+    type: reminder && reminder.type ? reminder.type : 'general',
+    scheduleType,
+    timeOfDay,
+    remindDate: remindDate || '',
+    weekdays: weekdays.slice(0, 7),
+    source: reminder && reminder.source ? reminder.source : 'manual',
+    status: reminder && reminder.status ? reminder.status : REMINDER_STATUS.PENDING,
+    elderKey: reminder && reminder.elderKey ? reminder.elderKey : getElderKey(),
+    triggerCount: Number(reminder && reminder.triggerCount) > 0 ? Number(reminder.triggerCount) : 0,
+    createdAt: reminder && reminder.createdAt ? reminder.createdAt : now,
+    updatedAt: reminder && reminder.updatedAt ? reminder.updatedAt : now,
+    lastTriggeredAt: reminder && reminder.lastTriggeredAt ? reminder.lastTriggeredAt : '',
+    completedAt: reminder && reminder.completedAt ? reminder.completedAt : '',
+  }
+}
+
+function getReminders(elderKey) {
+  const scopedKey = elderKey || getElderKey()
+  const reminderMap = _getReminderMap()
+  const list = reminderMap[scopedKey] || []
+  return list
+    .map(_normalizeReminder)
+    .sort((a, b) => Date.parse(b.updatedAt || '') - Date.parse(a.updatedAt || ''))
+}
+
+function saveReminder(reminder, elderKey) {
+  const scopedKey = elderKey || getElderKey()
+  const reminderMap = _getReminderMap()
+  const list = getReminders(scopedKey)
+  const normalized = _normalizeReminder(Object.assign({}, reminder, { elderKey: scopedKey }))
+  const idx = list.findIndex(item => item.id === normalized.id)
+  if (idx >= 0) {
+    list[idx] = Object.assign({}, list[idx], normalized, {
+      updatedAt: new Date().toISOString(),
+    })
+  } else {
+    list.unshift(normalized)
+  }
+  reminderMap[scopedKey] = list
+  _saveReminderMap(reminderMap)
+  return normalized
+}
+
+function updateReminder(reminderId, updates, elderKey) {
+  const scopedKey = elderKey || getElderKey()
+  if (!reminderId) return null
+  const reminderMap = _getReminderMap()
+  const list = getReminders(scopedKey)
+  const idx = list.findIndex(item => item.id === reminderId)
+  if (idx < 0) return null
+  const next = _normalizeReminder(Object.assign({}, list[idx], updates || {}, {
+    id: reminderId,
+    elderKey: scopedKey,
+    updatedAt: new Date().toISOString(),
+  }))
+  list[idx] = next
+  reminderMap[scopedKey] = list
+  _saveReminderMap(reminderMap)
+  return next
+}
+
+function deleteReminder(reminderId, elderKey) {
+  const scopedKey = elderKey || getElderKey()
+  if (!reminderId) return false
+  const reminderMap = _getReminderMap()
+  const list = getReminders(scopedKey)
+  const nextList = list.filter(item => item.id !== reminderId)
+  if (nextList.length === list.length) return false
+  reminderMap[scopedKey] = nextList
+  _saveReminderMap(reminderMap)
+  return true
+}
+
+function markReminderTriggered(reminderId, elderKey) {
+  const current = updateReminder(reminderId, {
+    status: REMINDER_STATUS.TRIGGERED,
+    lastTriggeredAt: new Date().toISOString(),
+  }, elderKey)
+  if (!current) return null
+  const nextCount = Number(current.triggerCount || 0) + 1
+  return updateReminder(reminderId, { triggerCount: nextCount }, elderKey)
+}
+
+function markReminderDone(reminderId, elderKey) {
+  return updateReminder(reminderId, {
+    status: REMINDER_STATUS.DONE,
+    completedAt: new Date().toISOString(),
+  }, elderKey)
+}
+
+function pickNextIncomingReminder(elderKey, options) {
+  const scopedKey = elderKey || getElderKey()
+  const opts = options || {}
+  const cooldownMs = typeof opts.cooldownMs === 'number'
+    ? opts.cooldownMs
+    : DEFAULT_REMINDER_COOLDOWN_MS
+  const nowTs = Date.now()
+  const reminders = getReminders(scopedKey).filter(item => item.status !== REMINDER_STATUS.DONE)
+  if (reminders.length === 0) return null
+
+  const available = reminders.filter(item => {
+    if (!item.lastTriggeredAt) return true
+    const lastTs = Date.parse(item.lastTriggeredAt)
+    if (!lastTs) return true
+    return nowTs - lastTs >= cooldownMs
+  })
+
+  const source = available.length > 0 ? available : reminders
+  const sorted = source.sort((a, b) => {
+    const statusRank = {
+      [REMINDER_STATUS.PENDING]: 2,
+      [REMINDER_STATUS.TRIGGERED]: 1,
+      [REMINDER_STATUS.DONE]: 0,
+    }
+    const ar = statusRank[a.status] || 0
+    const br = statusRank[b.status] || 0
+    if (br !== ar) return br - ar
+    const aTs = Date.parse(a.lastTriggeredAt || '') || 0
+    const bTs = Date.parse(b.lastTriggeredAt || '') || 0
+    if (aTs !== bTs) return aTs - bTs
+    return Date.parse(a.createdAt || '') - Date.parse(b.createdAt || '')
+  })
+  return sorted[0] || null
+}
+
+function getMockTimeWeatherContext() {
+  const now = new Date()
+  const hour = now.getHours()
+  let timePeriod = '白天'
+  if (hour < 11) timePeriod = '上午'
+  else if (hour < 14) timePeriod = '中午'
+  else if (hour < 18) timePeriod = '下午'
+  else if (hour < 22) timePeriod = '晚上'
+  else timePeriod = '深夜'
+
+  const weatherPool = [
+    { text: '晴，微风，体感舒适', temp: '21-26°C' },
+    { text: '多云，气温平稳', temp: '19-24°C' },
+    { text: '小雨，出门注意带伞', temp: '17-22°C' },
+  ]
+  const weather = weatherPool[now.getDate() % weatherPool.length]
+  const dateText = `${now.getMonth() + 1}月${now.getDate()}日`
+  const prompt = `当前是${dateText}${timePeriod}，天气${weather.text}（${weather.temp}）。可自然结合天气与作息开启话题。`
+  return {
+    dateText,
+    timePeriod,
+    weatherText: weather.text,
+    temperature: weather.temp,
+    prompt,
+  }
+}
+
 function getMemoryBundle(elderKey) {
   const scopedKey = elderKey || getElderKey()
   const memoryMap = _getMemoryMap()
@@ -562,6 +746,7 @@ function clearAllRuntimeData() {
   wx.removeStorageSync(KEYS.CALL_HISTORY)
   wx.removeStorageSync(KEYS.PROFILE)
   wx.removeStorageSync(KEYS.MEMORY_MAP)
+  wx.removeStorageSync(KEYS.REMINDER_MAP)
 
   const app = _safeGetApp()
   if (app && app.globalData) {
@@ -590,6 +775,14 @@ module.exports = {
   buildMemoryPrompt,
   markMemoryItemsUsed,
   getMemoryDebugSnapshot,
+  getReminders,
+  saveReminder,
+  updateReminder,
+  deleteReminder,
+  markReminderTriggered,
+  markReminderDone,
+  pickNextIncomingReminder,
+  getMockTimeWeatherContext,
   getProfile,
   updateProfile,
   clearAllRuntimeData,

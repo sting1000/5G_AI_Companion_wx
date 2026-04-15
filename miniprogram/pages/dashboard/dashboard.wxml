@@ -92,5 +92,8 @@
       <text class="btn-icon">📞</text>
       <text>立即通话</text>
     </button>
+    <button class="call-btn-secondary" bindtap="goSimulatedIncoming">
+      <text>模拟呼入</text>
+    </button>
   </view>
 </view>

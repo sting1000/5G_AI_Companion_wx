@@ -10,6 +10,7 @@ const UPLINK_IDLE_TRIGGER_MS = 1800
 const GREETING_ECHO_GUARD_MAX_MS = 8000
 const RECORDER_RESTART_COOLDOWN_MS = 3500
 const PLAYBACK_ECHO_TAIL_GUARD_MS = 420
+const REMINDER_COMPLETE_HINTS = ['完成了', '办好了', '弄好了', '已经好了', '处理好了', '做完了', '解决了']
 
 Page({
   data: {
@@ -50,9 +51,12 @@ Page({
     this.greetingEchoGuardTimer = null
     this.lastRecorderRestartAt = 0
     this.playbackEchoGuardUntil = 0
+    this.incomingReminder = null
+    this.timeWeatherContext = store.getMockTimeWeatherContext()
 
     // incoming 模式：先显示来电界面
     if (options.mode === 'incoming') {
+      this.incomingReminder = this._resolveIncomingReminder(options)
       this.setData({ showIncoming: true, callMode: 'incoming' })
     } else {
       this._startCall()
@@ -92,10 +96,13 @@ Page({
       this.currentElderKey = store.getElderKey(elderConfig)
       const dialogId = store.getDialogId(this.currentElderKey)
       const memoryBundle = store.getMemoryBundle(this.currentElderKey)
-      const greetingPayload = this._buildMemoryAwareGreeting(title, memoryBundle)
+      const greetingPayload = this._buildMemoryAwareGreeting(title, memoryBundle, this.incomingReminder)
       const memoryPrompt = greetingPayload.usedMemoryText
         ? ''
         : store.buildMemoryPrompt(this.currentElderKey, { maxItems: 1, minConfidence: 0.6 })
+      const contextPrompt = this.timeWeatherContext && this.timeWeatherContext.prompt
+        ? `\n当前场景：${this.timeWeatherContext.prompt}`
+        : ''
 
       const systemRole = `你是小林，一个温柔体贴的邻家女孩，在外地读大学。你热爱和老人聊天，性格耐心细致，说话自然亲切，偶尔俏皮。
 你正在和${title}通电话。请用"您"称呼对方，语速自然正常，句式短、自然。
@@ -104,7 +111,7 @@ Page({
 如果已有历史记忆，第一轮回复要自然提及其中1条具体内容（如上次事件、兴趣或待跟进事项），不要空泛问候。
 严禁主动承诺或建议“给您买东西/送东西/寄东西/上门帮忙”等不真实行为；表达关心时只使用聊天陪伴与情绪支持的方式。
 情感表达要更饱满：语气温暖、有共情、有轻微起伏，开心时更明亮，关心时更柔和，但避免夸张表演腔。
-${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}`
+${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}`
 
       // 3. 开始会话（默认 server_vad 模式，自动检测说话停顿）
       this.sessionOptions = {
@@ -133,6 +140,9 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}`
       this.client.sayHello(greetingPayload.text)
       if (greetingPayload.usedMemoryText) {
         store.markMemoryItemsUsed(this.currentElderKey, [greetingPayload.usedMemoryText])
+      }
+      if (greetingPayload.usedReminderId) {
+        store.markReminderTriggered(greetingPayload.usedReminderId, this.currentElderKey)
       }
 
       // 5. 开始录音，持续流式发送（麦克风常开模式）
@@ -412,6 +422,9 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}`
     const record = this._buildCallRecord()
     if (this.messages.length > 0 || this.data.elapsed > 5) {
       store.addCallRecord(record)
+      if (this.incomingReminder && this._isReminderCompletedByConversation(record.messages)) {
+        store.markReminderDone(this.incomingReminder.id, this.currentElderKey)
+      }
       if (this.messages.length > 0) {
         this._generateSummary(record)
       }
@@ -671,7 +684,25 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}`
     return candidates.slice(0, 3)
   },
 
-  _buildMemoryAwareGreeting(title, memoryBundle) {
+  _resolveIncomingReminder(options) {
+    const elderKey = this.currentElderKey || store.getElderKey()
+    const reminderId = options && options.reminderId ? decodeURIComponent(options.reminderId) : ''
+    const reminderText = options && options.reminderText ? decodeURIComponent(options.reminderText) : ''
+    if (reminderId || reminderText) {
+      let resolvedTitle = reminderText || ''
+      if (!resolvedTitle && reminderId) {
+        const found = store.getReminders(elderKey).find(item => item.id === reminderId)
+        resolvedTitle = found ? found.title : ''
+      }
+      return {
+        id: reminderId || '',
+        title: resolvedTitle,
+      }
+    }
+    return store.pickNextIncomingReminder(elderKey) || null
+  },
+
+  _buildMemoryAwareGreeting(title, memoryBundle, incomingReminder) {
     const elderMemory = memoryBundle && memoryBundle.elderMemory ? memoryBundle.elderMemory : {}
     const xiaolinMemory = memoryBundle && memoryBundle.xiaolinMemory ? memoryBundle.xiaolinMemory : {}
     const recentEvent = elderMemory.recentEvents && elderMemory.recentEvents.length > 0
@@ -685,27 +716,38 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}`
       : ''
 
     if (this.data.callMode === 'incoming') {
+      if (incomingReminder && incomingReminder.title) {
+        return {
+          text: `${title}，是我小林呀！我记得您这件事：“${incomingReminder.title}”。我特地来提醒您一下，现在方便聊两句吗？`,
+          usedMemoryText: '',
+          usedReminderId: incomingReminder.id || '',
+        }
+      }
       if (followUp) {
         return {
           text: `${title}，是我小林呀！上次您提到“${followUp}”，我一直记着，今天想来关心下进展，您最近怎么样呀？`,
           usedMemoryText: followUp,
+          usedReminderId: '',
         }
       }
       if (recentEvent) {
         return {
           text: `${title}，是我小林呀！上次我们聊到“${recentEvent}”，这两天还顺利吗？`,
           usedMemoryText: recentEvent,
+          usedReminderId: '',
         }
       }
       if (interest) {
         return {
           text: `${title}，是我小林呀！还记得您对“${interest}”挺感兴趣，最近有没有新发现呀？`,
           usedMemoryText: interest,
+          usedReminderId: '',
         }
       }
       return {
         text: `${title}，是我小林呀！想您了就给您打个电话，您最近怎么样呀？`,
         usedMemoryText: '',
+        usedReminderId: '',
       }
     }
 
@@ -713,24 +755,37 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}`
       return {
         text: `${title}，您好呀！我是小林。上次您说“${followUp}”，我一直记着，今天特地来和您聊聊。`,
         usedMemoryText: followUp,
+        usedReminderId: '',
       }
     }
     if (recentEvent) {
       return {
         text: `${title}，您好呀！我是小林。上次您提到“${recentEvent}”，后来怎么样啦？`,
         usedMemoryText: recentEvent,
+        usedReminderId: '',
       }
     }
     if (interest) {
       return {
         text: `${title}，您好呀！我是小林。之前您聊到“${interest}”，我想着今天再和您多聊几句。`,
         usedMemoryText: interest,
+        usedReminderId: '',
       }
     }
     return {
       text: `${title}，您好呀！我是小林，今天过得怎么样？`,
       usedMemoryText: '',
+      usedReminderId: '',
     }
+  },
+
+  _isReminderCompletedByConversation(messages) {
+    const userTexts = (messages || [])
+      .filter(item => item.role === 'user')
+      .map(item => String(item.content || ''))
+      .join(' ')
+    if (!userTexts) return false
+    return REMINDER_COMPLETE_HINTS.some(keyword => userTexts.includes(keyword))
   },
 
   _extractMemoryDelta(record, summaryData) {

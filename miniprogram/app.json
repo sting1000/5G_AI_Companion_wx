@@ -1,6 +1,7 @@
 {
   "pages": [
     "pages/dashboard/dashboard",
+    "pages/reminders/reminders",
     "pages/records/records",
     "pages/settings/settings",
     "pages/onboarding/onboarding",
@@ -31,6 +32,12 @@
         "text": "通话记录",
         "iconPath": "assets/icons/records.png",
         "selectedIconPath": "assets/icons/records-active.png"
+      },
+      {
+        "pagePath": "pages/reminders/reminders",
+        "text": "提醒事项",
+        "iconPath": "assets/icons/reminders.png",
+        "selectedIconPath": "assets/icons/reminders-active.png"
       },
       {
         "pagePath": "pages/settings/settings",

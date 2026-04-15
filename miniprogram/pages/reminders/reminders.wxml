@@ -1,0 +1,91 @@
+<view class="container">
+  <view class="header-title">提醒事项</view>
+
+  <view class="list" wx:if="{{reminders.length > 0}}">
+    <view
+      class="swipe-row"
+      wx:for="{{reminders}}"
+      wx:key="id"
+      data-id="{{item.id}}"
+      bindtouchstart="onItemTouchStart"
+      bindtouchmove="onItemTouchMove"
+      bindtouchend="onItemTouchEnd"
+    >
+      <view class="incoming-action" data-id="{{item.id}}" catchtap="onTriggerIncoming">呼入</view>
+      <view class="delete-action" data-id="{{item.id}}" catchtap="onDeleteReminder">删除</view>
+      <view class="card-content" style="transform: translateX({{item.swipeX}}px);" data-id="{{item.id}}" bindtap="onTapReminder">
+        <view class="card-top">
+          <view class="title-wrap">
+            <view
+              class="status-dot {{item.statusClass}}"
+              data-id="{{item.id}}"
+              catchtap="onToggleDone"
+            >
+              <text class="status-icon">{{item.statusIcon}}</text>
+            </view>
+            <text class="card-title">{{item.title}}</text>
+          </view>
+          <text class="status">{{item.statusText}}</text>
+        </view>
+        <text class="card-subtitle">{{item.scheduleText}}</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="empty" wx:else>
+    <text>还没有提醒事项，点击底部按钮快速新建</text>
+  </view>
+
+  <view class="editor-mask" wx:if="{{showEditor}}" bindtap="onCloseEditor">
+    <view class="editor" catchtap="onEditorTap">
+      <text class="editor-title">{{editingId ? '编辑提醒' : '新建提醒'}}</text>
+      <input
+        class="input"
+        placeholder="提醒标题（必填）"
+        value="{{titleInput}}"
+        bindinput="onTitleInput"
+        bindconfirm="onTitleConfirm"
+        confirm-type="done"
+      />
+
+      <view class="section-label">频率</view>
+      <view class="schedule-chips">
+        <view
+          class="chip {{scheduleType === item.id ? 'chip-active' : ''}}"
+          wx:for="{{scheduleOptions}}"
+          wx:key="id"
+          data-type="{{item.id}}"
+          catchtap="onPickSchedule"
+        >
+          {{item.label}}
+        </view>
+      </view>
+
+      <view class="row">
+        <view class="field">
+          <text class="section-label">时间</text>
+          <picker mode="time" value="{{timeOfDay}}" bindchange="onPickTime">
+            <view class="picker">{{timeOfDay}}</view>
+          </picker>
+        </view>
+        <view class="field" wx:if="{{scheduleType === 'once'}}">
+          <text class="section-label">日期</text>
+          <picker mode="date" value="{{remindDate}}" bindchange="onPickDate">
+            <view class="picker">{{remindDate || '选择日期'}}</view>
+          </picker>
+        </view>
+      </view>
+
+      <view class="editor-actions">
+        <button class="editor-btn cancel" bindtap="onCloseEditor">取消</button>
+        <button class="editor-btn save" bindtap="onSaveReminder">保存</button>
+      </view>
+    </view>
+  </view>
+
+  <view class="bottom-action" wx:if="{{!showEditor}}">
+    <button class="call-btn-large" bindtap="onOpenCreate">
+      <text>新建提醒</text>
+    </button>
+  </view>
+</view>

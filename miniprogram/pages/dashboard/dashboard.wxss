@@ -291,7 +291,7 @@
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 32rpx 40rpx 48rpx;
+  padding: 24rpx 40rpx 32rpx;
   background: linear-gradient(to top, rgba(248, 249, 250, 1) 50%, rgba(248, 249, 250, 0));
 }
 
@@ -306,6 +306,17 @@
   font-size: 32rpx;
   font-weight: bold;
   box-shadow: 0 8rpx 24rpx rgba(255, 107, 74, 0.3);
+}
+
+.call-btn-secondary {
+  margin-top: 16rpx;
+  height: 88rpx;
+  border-radius: 44rpx;
+  border: 2rpx solid #ff6b4a;
+  background: #ffffff;
+  color: #ff6b4a;
+  font-size: 30rpx;
+  font-weight: 500;
 }
 
 .btn-icon {

@@ -93,4 +93,23 @@ Page({
       url: '/pages/call/call'
     })
   },
+
+  goReminders() {
+    wx.switchTab({
+      url: '/pages/reminders/reminders',
+    })
+  },
+
+  goSimulatedIncoming() {
+    const elderKey = store.getElderKey()
+    const picked = store.pickNextIncomingReminder(elderKey)
+    const query = ['mode=incoming', 'triggerSource=manual']
+    if (picked) {
+      query.push(`reminderId=${encodeURIComponent(picked.id)}`)
+      query.push(`reminderText=${encodeURIComponent(picked.title || '')}`)
+    }
+    wx.navigateTo({
+      url: `/pages/call/call?${query.join('&')}`,
+    })
+  },
 })
