@@ -62,6 +62,24 @@ describe('dashboard 页面离线流程', () => {
     expect(page.data.hasHealthSignal).toBe(false)
   })
 
+  test('最近通话摘要仍在生成时，首页展示分析中状态', () => {
+    jest.useFakeTimers()
+    const storeMock = createStoreMock({
+      getCallHistory: jest.fn(() => [{
+        id: 'call_pending_1',
+        date: '2026-04-16 09:00',
+        summaryStatus: 'pending',
+        mood: '😟',
+        moodLabel: '焦虑',
+      }]),
+    })
+    const page = loadPageWithStore(storeMock)
+
+    page.onShow()
+    expect(page.data.lastMood).toBe('⏳')
+    expect(page.data.lastMoodLabel).toBe('分析中')
+  })
+
   test('goSimulatedIncoming 会拼接 reminder query', () => {
     const storeMock = createStoreMock({
       pickNextIncomingReminder: jest.fn(() => ({

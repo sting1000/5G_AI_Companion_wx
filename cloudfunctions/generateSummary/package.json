@@ -3,5 +3,7 @@
   "version": "1.0.0",
   "description": "调用火山方舟 LLM 生成通话摘要",
   "main": "index.js",
-  "dependencies": {}
+  "dependencies": {
+    "wx-server-sdk": "latest"
+  }
 }

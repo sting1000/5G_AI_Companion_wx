@@ -26,14 +26,9 @@
           <text class="meta-mood">{{record.mood}}</text>
         </view>
         <view class="mood-rating">
-          <text class="rating-label">情绪评分</text>
+          <text class="rating-label">情绪评分（{{record.moodLabel || '平静'}}）</text>
           <view class="stars">
-            <!-- 模拟 4 星 -->
-            <text class="star active">★</text>
-            <text class="star active">★</text>
-            <text class="star active">★</text>
-            <text class="star active">★</text>
-            <text class="star">★</text>
+            <text class="star {{item.active ? 'active' : ''}}" wx:for="{{record.moodStars}}" wx:key="value">★</text>
           </view>
         </view>
       </view>
@@ -63,26 +58,20 @@
         </view>
       </view>
 
-      <!-- 兴趣信号 -->
+      <!-- 信号卡片 -->
       <view class="card signal-card" wx:if="{{record.topics && record.topics.length > 0}}">
         <view class="signal-header">
-          <text class="signal-icon">📡</text>
-          <text class="card-title no-margin">兴趣信号</text>
+          <text class="signal-icon">{{record.signalIcon || '📡'}}</text>
+          <text class="card-title no-margin">{{record.signalTitle || '兴趣信号'}}</text>
         </view>
         <view class="signal-tags">
           <text class="signal-tag" wx:for="{{record.topics}}" wx:key="*this">{{item}}</text>
         </view>
         <view class="signal-tip">
-          <text>AI将适时为老人推荐相关内容，帮助丰富日常生活。</text>
+          <text>{{record.signalTip}}</text>
         </view>
       </view>
     </block>
   </scroll-view>
 
-  <!-- 底部固定吸底操作栏 -->
-  <view class="bottom-action">
-    <button class="reply-btn">
-      <text>回复关心</text>
-    </button>
-  </view>
 </view>

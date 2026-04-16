@@ -38,6 +38,15 @@ Page({
     this._loadElderInfo(config)
     this._loadCallHistory()
     this._loadProfile()
+    this._armSummaryRefreshIfNeeded()
+  },
+
+  onHide() {
+    this._clearSummaryRefreshTimer()
+  },
+
+  onUnload() {
+    this._clearSummaryRefreshTimer()
   },
 
   // 加载老人基本信息
@@ -58,11 +67,17 @@ Page({
     }, 0)
     if (history.length > 0) {
       const latest = history[0]
+      const moodLabel = latest.summaryStatus === 'pending'
+        ? '分析中'
+        : (latest.moodLabel || '平静')
+      const mood = latest.summaryStatus === 'pending'
+        ? '⏳'
+        : (latest.mood || '😌')
       this.setData({
         hasCallHistory: true,
         lastCallTime: '上次通话：' + (latest.date || '未知'),
-        lastMood: latest.mood || '😊',
-        lastMoodLabel: latest.moodLabel || '开心',
+        lastMood: mood,
+        lastMoodLabel: moodLabel,
         totalCalls: history.length,
         totalDurationText: this._formatDuration(totalDurationSeconds),
       })
@@ -75,6 +90,29 @@ Page({
         totalCalls: 0,
         totalDurationText: '0秒',
       })
+    }
+  },
+
+  _armSummaryRefreshIfNeeded() {
+    this._clearSummaryRefreshTimer()
+    const history = store.getCallHistory()
+    const latest = history[0]
+    if (!latest || latest.summaryStatus !== 'pending') return
+    let tickCount = 0
+    this.summaryRefreshTimer = setInterval(() => {
+      tickCount += 1
+      this._loadCallHistory()
+      const refreshed = store.getCallHistory()[0]
+      if (!refreshed || refreshed.summaryStatus !== 'pending' || tickCount >= 10) {
+        this._clearSummaryRefreshTimer()
+      }
+    }, 2000)
+  },
+
+  _clearSummaryRefreshTimer() {
+    if (this.summaryRefreshTimer) {
+      clearInterval(this.summaryRefreshTimer)
+      this.summaryRefreshTimer = null
     }
   },
 

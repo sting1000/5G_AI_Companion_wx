@@ -32,7 +32,7 @@
 
 .scroll-content {
   flex: 1;
-  padding: 20rpx 0 200rpx;
+  padding: 20rpx 0 40rpx;
 }
 
 /* 空状态 */
@@ -144,6 +144,12 @@
   background-color: var(--color-danger-soft);
 }
 
+.summary-source {
+  margin-bottom: 16rpx;
+  font-size: 24rpx;
+  color: var(--color-text-muted);
+}
+
 .topics {
   display: flex;
   flex-wrap: wrap;
@@ -220,25 +226,3 @@
   line-height: 1.5;
 }
 
-/* 底部操作栏 */
-.bottom-action {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding: 32rpx 40rpx 48rpx;
-  background: #FFFFFF;
-  box-shadow: 0 -4rpx 16rpx rgba(0,0,0,0.05);
-}
-
-.reply-btn {
-  background-color: var(--color-brand);
-  color: #FFFFFF;
-  height: 96rpx;
-  border-radius: 48rpx;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  font-size: 32rpx;
-  font-weight: bold;
-}
