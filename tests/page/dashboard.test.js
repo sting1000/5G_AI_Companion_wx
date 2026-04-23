@@ -149,4 +149,30 @@ describe('dashboard 页面离线流程', () => {
     expect(page.data.hasHealthSignal).toBe(true)
     expect(page.data.healthTags).toEqual(expect.arrayContaining(['心脏病', '胸闷']))
   })
+
+  test('高血压命中时不再额外打出血压波动', () => {
+    const storeMock = createStoreMock({
+      getMemoryBundle: jest.fn(() => ({
+        elderMemory: {
+          healthNotes: [],
+        },
+        memoryItems: [],
+      })),
+      getProfile: jest.fn(() => ({
+        hobbies: [],
+        health: '',
+      })),
+      getElderConfig: jest.fn(() => ({
+        parentName: '王阿姨',
+        phone: '13800138000',
+        health: '高血压',
+      })),
+    })
+    const page = loadPageWithStore(storeMock)
+
+    page.onShow()
+    expect(page.data.hasHealthSignal).toBe(true)
+    expect(page.data.healthTags).toContain('高血压')
+    expect(page.data.healthTags).not.toContain('血压波动')
+  })
 })

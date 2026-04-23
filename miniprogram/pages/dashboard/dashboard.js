@@ -240,8 +240,14 @@ Page({
         matchedKeywords: keywords.filter(keyword => compact.includes(keyword)),
       }))
       .filter(item => item.matchedKeywords.length > 0)
-    const matched = matchedMeta.map(item => item.tag)
-    const matchedKeywordList = matchedMeta.reduce((all, item) => all.concat(item.matchedKeywords), [])
+    const hasHypertension = matchedMeta.some(item => item.tag === '高血压')
+    const filteredMatchedMeta = matchedMeta.filter(item => {
+      // “高血压”应优先于“血压波动”，避免单条备注重复打标签
+      if (hasHypertension && item.tag === '血压波动') return false
+      return true
+    })
+    const matched = filteredMatchedMeta.map(item => item.tag)
+    const matchedKeywordList = filteredMatchedMeta.reduce((all, item) => all.concat(item.matchedKeywords), [])
 
     const fallbackTags = text
       .split(/[，。,、；;！!？?\n]/)

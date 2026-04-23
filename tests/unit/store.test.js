@@ -47,6 +47,147 @@ describe('store 离线规则', () => {
     expect(list[0].source).toBe('call_extract')
   })
 
+  test('提醒候选会归一化“提醒张叔叔吃药/吃药”为同一条', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:dedup-reminder'
+    store.upsertExtractedReminderCandidates([
+      { title: '提醒张叔叔吃药', confidence: 0.9, scheduleType: 'daily', timeOfDay: '09:00' },
+      { title: '吃药', confidence: 0.92, scheduleType: 'daily', timeOfDay: '09:00' },
+    ], elderKey)
+
+    const list = store.getReminders(elderKey)
+    expect(list).toHaveLength(1)
+    expect(list[0].title).toBe('吃药')
+    expect(list[0].confidence).toBe(0.92)
+  })
+
+  test('提醒标题会去掉“九点钟”时间词', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:dedup-reminder-clock'
+    store.upsertExtractedReminderCandidates([
+      {
+        title: '叫我明天早上九点钟吃药',
+        confidence: 0.9,
+        scheduleType: 'once',
+        timeOfDay: '09:00',
+      },
+      {
+        title: '吃药',
+        confidence: 0.92,
+        scheduleType: 'once',
+        timeOfDay: '09:00',
+      },
+    ], elderKey)
+
+    const list = store.getReminders(elderKey)
+    expect(list).toHaveLength(1)
+    expect(list[0].title).toBe('吃药')
+    expect(list[0].confidence).toBe(0.92)
+  })
+
+  test('提醒候选会归一化“后天早上九点去看电影/看电影”为同一条', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:dedup-reminder-movie'
+    store.upsertExtractedReminderCandidates([
+      {
+        title: '提醒我后天早上九点去看电影',
+        confidence: 0.9,
+        scheduleType: 'once',
+        timeOfDay: '09:00',
+      },
+      {
+        title: '看电影',
+        confidence: 0.92,
+        scheduleType: 'once',
+        timeOfDay: '09:00',
+      },
+    ], elderKey)
+
+    const list = store.getReminders(elderKey)
+    expect(list).toHaveLength(1)
+    expect(list[0].title).toBe('看电影')
+    expect(list[0].confidence).toBe(0.92)
+  })
+
+  test('提醒候选缺少时间线索时，会按标题+周期合并避免回访重复新增', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:dedup-reminder-no-time-cue'
+    store.saveReminder({
+      title: '起床',
+      scheduleType: 'daily',
+      timeOfDay: '07:30',
+    }, elderKey)
+
+    const result = store.upsertExtractedReminderCandidates([
+      {
+        title: '起床',
+        confidence: 0.9,
+        scheduleType: 'daily',
+        evidence: '我来提醒您起床，这件事完成了吗',
+      },
+    ], elderKey)
+
+    expect(result.inserted).toBe(0)
+    expect(result.updated).toBe(1)
+    const list = store.getReminders(elderKey)
+    expect(list).toHaveLength(1)
+    expect(list[0].title).toBe('起床')
+    expect(list[0].timeOfDay).toBe('07:30')
+  })
+
+  test('提醒候选会忽略提醒前的口语前缀，只保留提醒后内容', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:dedup-reminder-prefix'
+    store.upsertExtractedReminderCandidates([
+      {
+        title: '嗯那个再提醒我后天早上九点去看电影',
+        confidence: 0.91,
+        scheduleType: 'once',
+        timeOfDay: '09:00',
+      },
+      {
+        title: '看电影',
+        confidence: 0.89,
+        scheduleType: 'once',
+        timeOfDay: '09:00',
+      },
+    ], elderKey)
+
+    const list = store.getReminders(elderKey)
+    expect(list).toHaveLength(1)
+    expect(list[0].title).toBe('看电影')
+    expect(list[0].confidence).toBe(0.91)
+  })
+
+  test('提醒候选在整句更口语化时也会只取提醒后正文', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:dedup-reminder-spoken'
+    store.upsertExtractedReminderCandidates([
+      {
+        title: '就是那个，到时候记得提醒我明天上午九点去医院复查',
+        confidence: 0.9,
+        scheduleType: 'once',
+        timeOfDay: '09:00',
+      },
+      {
+        title: '医院复查',
+        confidence: 0.88,
+        scheduleType: 'once',
+        timeOfDay: '09:00',
+      },
+    ], elderKey)
+
+    const list = store.getReminders(elderKey)
+    expect(list).toHaveLength(1)
+    expect(list[0].title).toBe('医院复查')
+  })
+
   test('提醒状态流转: triggered -> done', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
     const store = loadStore()
@@ -65,6 +206,35 @@ describe('store 离线规则', () => {
     const done = store.markReminderDone(reminder.id, elderKey)
     expect(done.status).toBe('done')
     expect(done.completedAt).toBeTruthy()
+  })
+
+  test('摘要候选更新命中已完成提醒时，不会把 done 改回 pending', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:done-preserve'
+    const reminder = store.saveReminder({
+      title: '吃降压药',
+      scheduleType: 'daily',
+      timeOfDay: '09:00',
+      status: 'done',
+    }, elderKey)
+
+    const result = store.upsertExtractedReminderCandidates([
+      {
+        title: '每天九点吃降压药',
+        confidence: 0.91,
+        scheduleType: 'daily',
+        timeOfDay: '09:00',
+        evidence: '提醒回访',
+      },
+    ], elderKey)
+
+    expect(result.inserted).toBe(0)
+    expect(result.updated).toBe(1)
+    const list = store.getReminders(elderKey)
+    const current = list.find(item => item.id === reminder.id)
+    expect(current).toBeTruthy()
+    expect(current.status).toBe('done')
   })
 
   test('问候记忆冷却窗口生效', () => {
@@ -143,5 +313,43 @@ describe('store 离线规则', () => {
     expect(prompt).toContain('昨天去公园散步')
     expect(prompt).not.toContain('过得还行吧')
     expect(prompt).not.toContain('没有呢，没有出去玩')
+  })
+
+  test('敏感记忆默认进入 pending，确认后才参与记忆提示', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:0006'
+    store.initMemoryBundle(elderKey, {
+      health: '高血压',
+      hobbies: ['太极'],
+      preferredAddress: '王阿姨',
+    })
+
+    store.mergeMemoryBundle(elderKey, {
+      elderMemory: {
+        healthNotes: ['最近血压有点波动'],
+      },
+    }, 'call_003')
+
+    const pendingItems = store.getPendingMemoryConfirmations(elderKey, { maxCount: 5 })
+    const pendingHealth = pendingItems.find(item => item.text === '最近血压有点波动')
+    expect(pendingHealth).toBeTruthy()
+    expect(pendingHealth.status).toBe('pending')
+
+    const promptBeforeConfirm = store.buildMemoryPrompt(elderKey, {
+      maxItems: 3,
+      minConfidence: 0.6,
+      typeBudget: { followUp: 1, recentEvent: 1, interest: 1 },
+    })
+    expect(promptBeforeConfirm).not.toContain('最近血压有点波动')
+
+    store.confirmMemoryItem(elderKey, pendingHealth.id, true)
+    const pendingAfterConfirm = store.getPendingMemoryConfirmations(elderKey, { maxCount: 5 })
+    expect(pendingAfterConfirm.find(item => item.id === pendingHealth.id)).toBeFalsy()
+
+    const bundle = store.getMemoryBundle(elderKey)
+    const confirmedItem = (bundle.memoryItems || []).find(item => item.id === pendingHealth.id)
+    expect(confirmedItem).toBeTruthy()
+    expect(confirmedItem.status).toBe('confirmed')
   })
 })

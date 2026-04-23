@@ -20,6 +20,12 @@ const REMINDER_STATUS = {
   DONE: 'done',
 }
 
+const MEMORY_STATUS = {
+  PENDING: 'pending',
+  CONFIRMED: 'confirmed',
+  REJECTED: 'rejected',
+}
+
 const DEFAULT_REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000
 const DEFAULT_GREETING_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -132,6 +138,8 @@ function _buildMemoryItem(type, text, source, confidence, now, evidence) {
   if (!cleanText) return null
   const safeConfidence = Math.max(0, Math.min(1, Number(confidence || 0.6)))
   const nowTs = Date.parse(now || '') || Date.now()
+  const sensitivity = _resolveMemorySensitivity(type, safeConfidence)
+  const shouldPendingConfirm = _shouldMemoryPendingConfirm(type, safeConfidence, sensitivity, source)
   return {
     id: _memoryItemId(type, cleanText),
     type,
@@ -140,7 +148,10 @@ function _buildMemoryItem(type, text, source, confidence, now, evidence) {
     confidence: safeConfidence,
     layer: _resolveMemoryLayer(type),
     stability: type === 'interest' || type === 'healthNote' ? 'stable' : 'semi_stable',
-    sensitivity: _resolveMemorySensitivity(type, safeConfidence),
+    sensitivity: sensitivity,
+    status: shouldPendingConfirm ? MEMORY_STATUS.PENDING : MEMORY_STATUS.CONFIRMED,
+    needsConfirmation: shouldPendingConfirm,
+    confirmedAt: shouldPendingConfirm ? '' : now,
     lastConfirmedAt: '',
     createdAt: now,
     lastUsedAt: '',
@@ -174,6 +185,13 @@ function _resolveMemoryLayer(type) {
 function _resolveMemorySensitivity(type, confidence) {
   if (type !== 'healthNote') return 'normal'
   return Number(confidence || 0) >= 0.85 ? 'sensitive' : 'normal'
+}
+
+function _shouldMemoryPendingConfirm(type, confidence, sensitivity, source) {
+  if (source === 'onboarding') return false
+  if (type === 'healthNote') return true
+  if (sensitivity === 'sensitive') return true
+  return Number(confidence || 0) < 0.7
 }
 
 function _computeRecencyWeight(createdAt, nowTs) {
@@ -233,12 +251,26 @@ function _mergeMemoryItems(existingItems, deltaItems) {
       triggerCount: Number(item.triggerCount || 0) || 0,
       stability: item.stability || (type === 'interest' || type === 'healthNote' ? 'stable' : 'semi_stable'),
       sensitivity: item.sensitivity || _resolveMemorySensitivity(type, item.confidence),
+      status: item.status === MEMORY_STATUS.PENDING || item.status === MEMORY_STATUS.REJECTED
+        ? item.status
+        : MEMORY_STATUS.CONFIRMED,
+      needsConfirmation: typeof item.needsConfirmation === 'boolean'
+        ? item.needsConfirmation
+        : item.status === MEMORY_STATUS.PENDING,
+      confirmedAt: item.confirmedAt || '',
       lastConfirmedAt: item.lastConfirmedAt || '',
       evidence: item.evidence || text,
     })
     normalizedItem.score = _computeMemoryScore(normalizedItem, nowTs)
     const current = mergedMap[key]
     if (!current) {
+      mergedMap[key] = normalizedItem
+      return
+    }
+    if (current.status === MEMORY_STATUS.CONFIRMED && normalizedItem.status !== MEMORY_STATUS.CONFIRMED) {
+      return
+    }
+    if (current.status !== MEMORY_STATUS.CONFIRMED && normalizedItem.status === MEMORY_STATUS.CONFIRMED) {
       mergedMap[key] = normalizedItem
       return
     }
@@ -427,19 +459,36 @@ function _normalizeReminderText(text) {
   return String(text || '').trim()
 }
 
-function _normalizeReminderTitle(text) {
+function _sliceFromReminderTrigger(text) {
   const raw = _normalizeReminderText(text)
+  if (!raw) return ''
+  const triggerPattern = /(记得提醒我|提醒我一下|提醒一下我|提醒我|提醒一下|提醒下我|提醒下|帮我提醒|帮忙提醒|帮提醒|叫我|告诉我|通知我)/
+  const match = raw.match(triggerPattern)
+  if (!match || typeof match.index !== 'number') return raw
+  return raw.slice(match.index)
+}
+
+function _normalizeReminderTitle(text) {
+  const raw = _sliceFromReminderTrigger(text)
   if (!raw) return ''
 
   // 先去掉“提醒我/记得提醒我”等第一人称提醒前缀
   let title = raw
     .replace(/^[，。！？、\s]+/, '')
+
+  // 去掉“提醒张叔叔/提醒王阿姨”等称呼前缀，避免和“吃药”重复入库
+  title = title
+    .replace(/^(请)?(帮忙)?(帮)?提醒(一下)?[，。！？、\s]*/u, '')
+    .replace(/^(?:老[\u4e00-\u9fa5]{1,2}|[\u4e00-\u9fa5]{1,3}(?:叔叔|阿姨|爷爷|奶奶|伯伯|大爷|大妈|老师|医生|先生|女士|哥哥|姐姐|弟弟|妹妹))[，。！？、\s]*/u, '')
+    .replace(/^(您|你)[，。！？、\s]*/u, '')
+    .replace(/^我[，。！？、\s]*/u, '')
     .replace(/^(请)?(帮我)?(记得)?(到时候)?(一定)?(提醒我一下|提醒一下我|提醒我|提醒下我|提醒下|记得提醒我|叫我|告诉我|通知我)[，。！？、\s]*/u, '')
     .replace(/^[，。！？、\s]+/, '')
 
   // 再去掉开头的时间短语（支持组合：明天下午2点 / 周一上午十点 / 每天9:00）
   const timeWordPrefix = /^(?:(今天|今晚|明天|后天|大后天|下周[一二三四五六日天]?|本周[一二三四五六日天]?|周[一二三四五六日天]|每天|每周|每月|每个?周[一二三四五六日天]|每个?月|\d{1,2}月\d{1,2}[日号]?|凌晨|早上|上午|中午|下午|晚上|夜里|夜间|清晨)[，。！？、\s]*)+/u
-  const timeClockPrefix = /^(\d{1,2}([:：]\d{1,2})?|[零一二两三四五六七八九十]{1,3})(点(半|[0-5]?\d分?)?)?[，。！？、\s]*/u
+  // 支持：9点 / 9点钟 / 九点 / 九点钟 / 09:00 / 上午十点半 等
+  const timeClockPrefix = /^(\d{1,2}([:：]\d{1,2})?|[零一二两三四五六七八九十]{1,3})(点(半|[0-5]?\d分?)?(?:钟)?)?[，。！？、\s]*/u
   let withTimeRemoved = title
     .replace(timeWordPrefix, '')
     .replace(/^[，。！？、\s]+/, '')
@@ -448,7 +497,7 @@ function _normalizeReminderTitle(text) {
     .replace(/^[，。！？、\s]+/, '')
   // 兜底：处理极端匹配下残留的“点/点半”前缀（如误成“点吃药”）
   withTimeRemoved = withTimeRemoved
-    .replace(/^(?:[零一二两三四五六七八九十\d]{0,2})点(半|[0-5]?\d分?)?/, '')
+    .replace(/^(?:[零一二两三四五六七八九十\d]{0,2})点(半|[0-5]?\d分?)?(?:钟)?/, '')
     .replace(/^[，。！？、\s]+/, '')
 
   // 只有在去掉时间后仍有有效内容时才采用，避免误删成空
@@ -457,6 +506,23 @@ function _normalizeReminderTitle(text) {
   }
 
   return title || raw
+}
+
+function _normalizeReminderActionKey(text) {
+  return _normalizeMemoryText(text)
+    // “去看电影” / “要去医院复查” 这类前导动作词不影响提醒语义，用于去重时统一
+    .replace(/^(?:要)?(?:准备|打算|想)?去/u, '')
+    .replace(/^(?:得|要|想)(?:去|做)?/u, '')
+}
+
+function _normalizeReminderDedupKey(text) {
+  return _normalizeReminderActionKey(_normalizeReminderTitle(text || ''))
+}
+
+function _hasTimeCue(text) {
+  const normalized = _normalizeReminderText(text)
+  if (!normalized) return false
+  return /(\d{1,2}[:：]\d{1,2}|\d{1,2}点|[零一二两三四五六七八九十]{1,3}点|早上|上午|中午|下午|晚上|凌晨|今晚|明天|后天|今天|周[一二三四五六日天]|每周|每天|每月|\d{1,2}月\d{1,2}[日号]?)/.test(normalized)
 }
 
 function _removeReminderRelatedMemory(reminder, elderKey) {
@@ -678,20 +744,34 @@ function upsertExtractedReminderCandidates(candidates, elderKey, options) {
       skippedLowConfidence += 1
       return
     }
-    const normalizedTitle = _normalizeMemoryText(title)
+    const normalizedTitle = _normalizeReminderDedupKey(title)
     const scheduleType = String((raw && raw.scheduleType) || 'daily')
     const timeOfDay = String((raw && raw.timeOfDay) || '09:00')
+    const hasExplicitTime = _hasTimeCue(raw && raw.remindDate)
+      || _hasTimeCue(raw && raw.evidence)
+      || _hasTimeCue(raw && raw.title)
     const hitIndex = list.findIndex(item => {
-      return _normalizeMemoryText(item.title) === normalizedTitle
+      return _normalizeReminderDedupKey(item.title) === normalizedTitle
         && String(item.scheduleType || 'daily') === scheduleType
-        && String(item.timeOfDay || '09:00') === timeOfDay
+        && (
+          String(item.timeOfDay || '09:00') === timeOfDay
+          || !hasExplicitTime
+        )
     })
     if (hitIndex >= 0) {
+      const currentTitle = String(list[hitIndex].title || '').trim()
+      const nextTitle = title
+      const preferredTitle = !currentTitle
+        ? nextTitle
+        : (!nextTitle ? currentTitle : (nextTitle.length < currentTitle.length ? nextTitle : currentTitle))
+      const previousStatus = list[hitIndex].status || REMINDER_STATUS.PENDING
       const merged = _normalizeReminder(Object.assign({}, list[hitIndex], {
+        title: preferredTitle,
         confidence: Math.max(confidence, Number(list[hitIndex].confidence || 0)),
         evidence: raw && raw.evidence ? String(raw.evidence) : list[hitIndex].evidence,
         source: 'call_extract',
-        status: REMINDER_STATUS.PENDING,
+        // 避免摘要候选把已完成提醒“复活”为 pending
+        status: previousStatus,
         updatedAt: now,
         elderKey: scopedKey,
       }))
@@ -915,6 +995,7 @@ function buildMemoryPrompt(elderKey, options) {
 
   const memoryItems = (bundle.memoryItems || [])
     .filter(item => item && item.text)
+    .filter(item => item.status !== MEMORY_STATUS.PENDING && item.status !== MEMORY_STATUS.REJECTED)
     .filter(item => !_isLowInfoMemoryText(item.text))
     .filter(item => item.confidence >= minConfidence)
     .filter(item => !excludeSet.has(_normalizeMemoryText(item.text)))
@@ -992,6 +1073,49 @@ function buildMemoryPrompt(elderKey, options) {
   }
 
   return parts.join('\n')
+}
+
+function getPendingMemoryConfirmations(elderKey, options) {
+  const scopedKey = elderKey || getElderKey()
+  const opts = options || {}
+  const maxCount = typeof opts.maxCount === 'number' ? opts.maxCount : 3
+  const bundle = getMemoryBundle(scopedKey)
+  return (bundle.memoryItems || [])
+    .filter(item => item && item.text)
+    .filter(item => item.status === MEMORY_STATUS.PENDING || item.needsConfirmation)
+    .filter(item => item.status !== MEMORY_STATUS.REJECTED)
+    .sort((a, b) => {
+      if (b.confidence !== a.confidence) return b.confidence - a.confidence
+      return Date.parse(b.createdAt || '') - Date.parse(a.createdAt || '')
+    })
+    .slice(0, maxCount)
+}
+
+function confirmMemoryItem(elderKey, memoryItemId, confirmed) {
+  const scopedKey = elderKey || getElderKey()
+  if (!memoryItemId) return null
+  const bundle = getMemoryBundle(scopedKey)
+  const now = new Date().toISOString()
+  let updatedItem = null
+  const nextItems = (bundle.memoryItems || []).map(item => {
+    if (!item || item.id !== memoryItemId) return item
+    const nextStatus = confirmed ? MEMORY_STATUS.CONFIRMED : MEMORY_STATUS.REJECTED
+    updatedItem = Object.assign({}, item, {
+      status: nextStatus,
+      needsConfirmation: false,
+      confirmedAt: confirmed ? now : '',
+      lastConfirmedAt: confirmed ? now : item.lastConfirmedAt || '',
+    })
+    return updatedItem
+  })
+  if (!updatedItem) return null
+  saveMemoryBundle(Object.assign({}, bundle, {
+    memoryItems: nextItems,
+    memoryMeta: Object.assign({}, bundle.memoryMeta, {
+      memoryUpdatedAt: now,
+    }),
+  }), scopedKey)
+  return updatedItem
 }
 
 function markMemoryItemsUsed(elderKey, texts) {
@@ -1099,6 +1223,8 @@ module.exports = {
   buildMemoryPrompt,
   markMemoryItemsUsed,
   getMemoryDebugSnapshot,
+  getPendingMemoryConfirmations,
+  confirmMemoryItem,
   getReminders,
   saveReminder,
   updateReminder,

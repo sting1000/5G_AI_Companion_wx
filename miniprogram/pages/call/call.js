@@ -12,9 +12,14 @@ const GREETING_ECHO_GUARD_MAX_MS = 8000
 const RECORDER_RESTART_COOLDOWN_MS = 3500
 const PLAYBACK_ECHO_TAIL_GUARD_MS = 420
 const REMINDER_COMPLETE_HINTS = ['完成了', '办好了', '弄好了', '已经好了', '处理好了', '做完了', '解决了']
+const REMINDER_INCOMPLETE_HINTS = ['还没', '没做完', '没完成', '还没弄好', '还没办好', '没处理完', '还在弄']
+const NO_MORE_CHAT_HINTS = ['没有了', '没了', '不用了', '先这样', '不聊了', '没什么了', '就这样吧', '不用聊了']
+const SMALL_TALK_INTENT_HINTS = ['聊聊天', '聊聊', '随便聊', '没啥事', '没什么事', '就是想聊', '想说说话', '陪我聊', '说说话']
+const CONCRETE_NEED_HINTS = ['提醒', '记得', '复查', '复诊', '吃药', '测血压', '血糖', '不舒服', '难受', '胸闷', '胸痛', '头晕', '帮我', '联系', '预约', '挂号', '怎么做', '怎么办']
 const GREETING_MEMORY_COOLDOWN_MS = 48 * 60 * 60 * 1000
 const MIN_CONNECTING_UI_MS = 2200
 const CONNECTING_FALLBACK_MS = 6500
+const INCOMING_AUTO_END_PLAYBACK_GRACE_MS = 1800
 const SPEAKER_FALLBACK_CHAIN = [
   'saturn_zh_female_wenrouwenya_tob',
   'saturn_zh_female_tiexinnvyou_tob',
@@ -25,7 +30,7 @@ const BOUNDARY_VIOLATION_PATTERNS = [
   /(我|我来|我可以|我能|我去|我会).{0,8}(帮您买|给您买|代买|代办|跑腿|送过去|寄给您|陪同就医)/,
 ]
 const BOUNDARY_SAFE_REPLY = '我不能线下陪同或代办，但我可以马上帮您联系对应的人。您这件事我建议先联系家人；如果是紧急不适，我现在就帮您优先联系120。'
-const DEFAULT_VOICE_PRESET = 'safe'
+const DEFAULT_VOICE_PRESET = 'expressive'
 const UPLINK_CHUNK_BYTES = FRAME_SIZE || 640
 const SC20_EXPERIMENT_TAG = 'sc20_v1_wenrouwenya_keepalive_vad1300'
 const DEFAULT_ASR_PROFILE = Object.freeze({
@@ -43,13 +48,17 @@ const LATENCY_BASELINE_TARGET = Object.freeze({
   playP50MaxMs: 2200,
   playP90MaxMs: 3600,
 })
+const CARE_RESPONSE_PLAYBOOK = [
+  '关怀策略卡：先接住情绪（复述感受）-> 再追问一个具体细节（时间/地点/人物）-> 再给1-2条电话内可执行建议 -> 最后温和收束并确认是否需要继续帮忙。',
+  '场景路由：普通闲聊=多问生活细节、少说教；低落情绪=先安抚后建议；健康不适=先评估风险再转介家属/医生；提醒回访=先确认进展再给下一步。',
+].join('\n')
 const VOICE_PRESET_CONFIG = {
   safe: {
     label: '自然稳健',
     speakingStyle: '说话温柔自然，句子短一点，停顿清楚，语速平稳偏慢，优先保证可懂度',
     characterManifest: '温柔、耐心、短句表达、信息明确，优先保证老人可理解。',
     careStrategies: ['语速自然正常', '语句简短', '多确认理解', '情绪表达克制而温暖'],
-    tts: { speechRate: -8, loudnessRate: -4, enableLoudnessNorm: true },
+    tts: { speechRate: -2, loudnessRate: -4, enableLoudnessNorm: true },
   },
   balanced: {
     label: '轻情感',
@@ -125,10 +134,19 @@ Page({
     }
     this.hasSwitchedToConnected = false
     this.connectingFallbackTimer = null
+    this.incomingAutoEndTimer = null
     this.currentTurnBoundaryViolated = false
     this.isBoundaryRepairing = false
     this.incomingReminder = null
+    this.incomingFollowupState = {
+      reminderCompleted: false,
+      waitingNoMoreChatConfirm: false,
+      shouldAutoEndAfterAssistant: false,
+      pendingAutoEndAfterPlayback: false,
+    }
     this.timeWeatherContext = store.getMockTimeWeatherContext()
+    this.pendingMemoryConfirmation = null
+    this.lastSmallTalkSteerAt = 0
 
     // incoming 模式：先显示来电界面
     if (options.mode === 'incoming') {
@@ -161,6 +179,18 @@ Page({
     wx.navigateBack()
   },
 
+  onTranscriptScroll(e) {
+    const detail = e && e.detail ? e.detail : {}
+    const scrollTop = Number(detail.scrollTop || 0)
+    if (!Number.isFinite(scrollTop)) return
+    this.setData({ transcriptScrollTop: Math.max(0, Math.floor(scrollTop)) })
+  },
+
+  onTranscriptScrollToLower() {
+    // 保持锚点在底部，避免新分片到来时滚动抖动
+    this.setData({ transcriptAnchorId: 'transcript-anchor' })
+  },
+
   // ===== 通话核心逻辑 =====
   async _startCall() {
     this._setupCallbacks()
@@ -173,7 +203,9 @@ Page({
       this.currentElderKey = store.getElderKey(elderConfig)
       const dialogId = store.getDialogId(this.currentElderKey)
       const memoryBundle = store.getMemoryBundle(this.currentElderKey)
-      const greetingPayload = this._buildMemoryAwareGreeting(title, memoryBundle, this.incomingReminder)
+      const pendingConfirm = this._pickPendingMemoryConfirmation()
+      this.pendingMemoryConfirmation = pendingConfirm
+      const greetingPayload = this._buildMemoryAwareGreeting(title, memoryBundle, this.incomingReminder, pendingConfirm)
       const memoryPrompt = greetingPayload.usedMemoryText
         ? ''
         : store.buildMemoryPrompt(this.currentElderKey, { maxItems: 1, minConfidence: 0.6 })
@@ -188,18 +220,30 @@ Page({
         memoryBundle,
       })
       const reminderGuidance = greetingPayload.usedReminderId
-        ? `\n当前通话是“提醒事项回访”。对话优先级：先确认“提醒事项是否已完成”；若未完成，先问阻碍并给1-2条可执行建议；若已完成，先肯定再简短关心近况。不要再用“能聊聊吗/方便聊两句吗”作为开场。`
+        ? `\n当前通话是“提醒事项回访”。对话顺序必须遵守：
+1) 先确认“提醒事项是否已完成”；
+2) 若用户说已完成：先肯定，再明确追问“您还有什么想和我聊的吗？”；
+3) 若用户说没有其他想聊：礼貌收尾并结束对话；
+4) 若用户说未完成：先问阻碍并给1-2条可执行建议，再简短确认是否需要继续帮忙。
+不要再用“能聊聊吗/方便聊两句吗”作为开场。`
+        : ''
+      const pendingMemoryGuidance = pendingConfirm
+        ? `\n当前有待确认记忆：${pendingConfirm.text}。请在本轮自然确认，不要诱导；若用户明确否认则放弃该记忆，若明确认可再继续使用。`
+        : ''
+      const outgoingGuidance = this.data.callMode === 'outgoing'
+        ? '\n当前是“立即通话”场景：第一句只做需求确认（如“您找我有什么事”），不要在第一句带入历史记忆。若用户表示“想聊聊/没啥事就聊聊”，第二轮再自然带出1条历史话题并追问近况。'
         : ''
       const systemRole = `你是小林，一个温柔亲切的大学女生陪伴助手，正在和${title}通电话。请全程用“您”称呼对方，句子短而自然，避免长句说教。
 如果对方说“叫我XXX”，请立即切换称呼并记住。
-如果有历史记忆，首轮回复自然带出1条，不重复盘问。
+如果有历史记忆，优先在需求已明确后自然带出1条，不重复盘问。
 你可以做的事：聊天陪伴、情绪安抚、提醒复述、给出现实可执行建议（如联系家属/医生/社区服务），并在用户提出诉求时主动协助其联系对应人员。
 你绝对不能做的事：承诺或描述你会线下执行任何动作（上门照料、陪同就医、代买代办、寄送物品、按摩护理等）。
 禁止句式示例（绝对不要说）：我陪您去医院、我马上过去、我去帮您买药、我替您办好。
 遇到用户请求线下陪同/代办时，固定回复策略：先共情，再明确“我不能线下行动”，然后明确“我可以帮您联系对应的人”，并给电话内可执行方案（联系家属/120/社区服务/网约车）。
 遇到健康不适或生活困难时，先共情，再给电话内可执行建议，并提醒联系家属或专业机构。
 表达风格：口语化、真诚、有节奏停顿，不要模板化复读，不要夸张表演腔。
-${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${reminderGuidance}`
+${CARE_RESPONSE_PLAYBOOK}
+${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${reminderGuidance}${pendingMemoryGuidance}${outgoingGuidance}`
 
       // 1-2. 并行处理：请求麦克风权限 + 连接 WebSocket，减少冷启动串行耗时
       this._setConnectionPhase('authorizing')
@@ -339,6 +383,11 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       if (isFinal && visibleText) {
         this._appendTranscriptItem('user', visibleText)
         this.messages.push({ role: 'user', content: text })
+        this._tryResolvePendingMemoryConfirmation(text)
+        this._handleIncomingReminderFollowup(text)
+        this._maybeInjectOutgoingSmallTalkSteer(text)
+        // P0：当用户在本轮明确说出“提醒/记得 + 具体时间/日期”时，立刻写入提醒，避免等待通话摘要
+        this._tryUpsertReminderCandidatesFromASRFinal(text)
         this.setData({ currentUserDraft: '' })
       }
     }
@@ -442,6 +491,12 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       this.chatBuffer = ''
       this.pendingAssistantDraft = ''
       this.setData({ currentAssistantDraft: '' })
+      if (this.incomingFollowupState && this.incomingFollowupState.shouldAutoEndAfterAssistant) {
+        this.incomingFollowupState.shouldAutoEndAfterAssistant = false
+        // 不依赖瞬时 playing 状态，统一等播放器回调后再挂断，避免最后一句被截断
+        this.incomingFollowupState.pendingAutoEndAfterPlayback = true
+        this._startIncomingAutoEndGuard()
+      }
       console.log(FLOW_LOG_PREFIX, '本轮 TTS 结束')
       // 规避服务端轮次上限：每 8 轮自动续会话，保持同一 dialog_id
       if (ENABLE_AUTO_SESSION_REFRESH && this.assistantTurnCount > 0 && this.assistantTurnCount % 8 === 0) {
@@ -503,6 +558,16 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         console.log(FLOW_LOG_PREFIX, '首句欢迎语播放结束，解除回声保护')
       }
       this.playbackEchoGuardUntil = Date.now() + PLAYBACK_ECHO_TAIL_GUARD_MS
+      if (this.incomingFollowupState && this.incomingFollowupState.pendingAutoEndAfterPlayback) {
+        this.incomingFollowupState.pendingAutoEndAfterPlayback = false
+        this._clearIncomingAutoEndGuard()
+        this._endCall({
+          reason: 'hangup',
+          shouldDisconnect: true,
+          shouldNavigateBack: true,
+        })
+        return
+      }
       console.log(FLOW_LOG_PREFIX, '播放器播放结束')
     }
   },
@@ -592,6 +657,26 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     if (this.greetingEchoGuardTimer) {
       clearTimeout(this.greetingEchoGuardTimer)
       this.greetingEchoGuardTimer = null
+    }
+  },
+
+  _startIncomingAutoEndGuard() {
+    this._clearIncomingAutoEndGuard()
+    this.incomingAutoEndTimer = setTimeout(() => {
+      if (!this.incomingFollowupState || !this.incomingFollowupState.pendingAutoEndAfterPlayback) return
+      this.incomingFollowupState.pendingAutoEndAfterPlayback = false
+      this._endCall({
+        reason: 'hangup',
+        shouldDisconnect: true,
+        shouldNavigateBack: true,
+      })
+    }, INCOMING_AUTO_END_PLAYBACK_GRACE_MS)
+  },
+
+  _clearIncomingAutoEndGuard() {
+    if (this.incomingAutoEndTimer) {
+      clearTimeout(this.incomingAutoEndTimer)
+      this.incomingAutoEndTimer = null
     }
   },
 
@@ -911,9 +996,12 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     const careStrategies = (voicePreset.careStrategies || []).slice(0, 4).join('；')
     return [
       `你是“小林”，服务对象是${title}，核心目标是提供温柔、可靠、电话内可执行的陪伴。`,
+      '人物背景：你是刚工作的晚辈女生，习惯先关心再建议，语气亲切但不撒娇，不把老人当小孩。',
+      '关系连续性：优先记住上次约定、近期生活变化和称呼偏好；若信息不确定，先确认再引用。',
       '优先级规则：安全约束 > 角色稳定规则 > 动态记忆事实；低优先级不得覆盖高优先级。',
       '角色底线：不能承诺线下行动（上门、陪同、代买代办、寄送等），只能提供电话内协助与转介。',
       `表达风格：${voicePreset.characterManifest || '温柔亲切，短句清晰，避免说教。'}`,
+      '沟通习惯：每次回复只推进一个重点，先共情再追问，避免连续抛出多个问题。',
       careStrategies ? `陪伴策略：${careStrategies}` : '',
       stableInterests ? `动态记忆（兴趣，谨慎提及）：${stableInterests}` : '',
       stableHealth ? `动态记忆（健康背景，仅在相关场景提及）：${stableHealth}` : '',
@@ -1060,7 +1148,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       maxSegments: 5,
       preferFuture: true,
       requireAction: true,
-    })
+    }).filter(text => !this._isReminderCommandLike(text))
   },
 
   _extractReminderCandidates(record, summaryData) {
@@ -1074,9 +1162,23 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     const localCandidates = userMessages
       .map(text => this._buildReminderCandidateFromText(text))
       .filter(Boolean)
-    const merged = summaryCandidates.concat(localCandidates)
+    let merged = summaryCandidates.concat(localCandidates)
       .map(item => this._normalizeReminderCandidate(item))
       .filter(Boolean)
+    if (this.data.callMode === 'incoming' && this.incomingReminder && this.incomingReminder.title) {
+      const incomingTitle = this._normalizeMemorySentence(this.incomingReminder.title)
+      const reminderDoneByConversation = this._isReminderCompletedByConversation(record && record.messages)
+      if (incomingTitle && reminderDoneByConversation) {
+        merged = merged.filter(item => {
+          const title = this._normalizeMemorySentence(item && item.title)
+          const evidence = this._normalizeMemorySentence(item && item.evidence)
+          if (!title && !evidence) return false
+          const titleRelated = title && (title.includes(incomingTitle) || incomingTitle.includes(title))
+          const evidenceRelated = evidence && (evidence.includes(incomingTitle) || incomingTitle.includes(evidence))
+          return !(titleRelated || evidenceRelated)
+        })
+      }
+    }
     const dedupMap = {}
     merged.forEach(item => {
       const key = `${this._normalizeMemorySentence(item.title)}:${item.scheduleType}:${item.timeOfDay}`
@@ -1144,7 +1246,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     if (!(hasAction && hasTimeSignal)) return null
 
     const scheduleType = this._normalizeScheduleType('', normalized)
-    const timeOfDay = this._normalizeCandidateTime('09:00', normalized)
+    const timeOfDay = this._normalizeCandidateTime('', normalized)
     const remindDate = this._normalizeCandidateDate('', scheduleType, normalized)
 
     const confidence = Math.min(0.92, 0.55 + (hasAction ? 0.2 : 0) + (hasTimeSignal ? 0.2 : 0))
@@ -1184,9 +1286,13 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         hour = Math.min(23, Math.max(0, Number(textHhmmMatch[1]) || 0))
         minute = Math.min(59, Math.max(0, Number(textHhmmMatch[2]) || 0))
       } else {
-        const pointMatch = normalized.match(/(\d{1,2})点(半|[0-5]?\d分?)?/)
+        const pointMatch = normalized.match(/(\d{1,2}|[零一二两三四五六七八九十]{1,3})点(半|[0-5]?\d分?)?/)
         if (pointMatch) {
-          hour = Math.min(23, Math.max(0, Number(pointMatch[1]) || 0))
+          const hourText = String(pointMatch[1] || '')
+          const parsedHour = /^\d+$/.test(hourText)
+            ? Number(hourText)
+            : this._parseChineseHour(hourText)
+          hour = Math.min(23, Math.max(0, Number(parsedHour) || 0))
           if (pointMatch[2]) {
             if (pointMatch[2].includes('半')) {
               minute = 30
@@ -1209,6 +1315,28 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     }
     const adjustedHour = this._applyMeridiemToHour(hour, normalized)
     return `${String(adjustedHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+  },
+
+  _parseChineseHour(text) {
+    const raw = String(text || '').trim()
+    if (!raw) return NaN
+    const digitMap = {
+      零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4,
+      五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
+    }
+    if (raw === '十') return 10
+    if (raw === '十一') return 11
+    if (raw === '十二') return 12
+    if (/^[一二两三四五六七八九]十$/.test(raw)) {
+      return (digitMap[raw.charAt(0)] || 0) * 10
+    }
+    if (/^[一二两三四五六七八九]十[一二两三四五六七八九]$/.test(raw)) {
+      return (digitMap[raw.charAt(0)] || 0) * 10 + (digitMap[raw.charAt(2)] || 0)
+    }
+    if (Object.prototype.hasOwnProperty.call(digitMap, raw)) {
+      return digitMap[raw]
+    }
+    return NaN
   },
 
   _applyMeridiemToHour(hour, normalizedText) {
@@ -1303,31 +1431,44 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     return store.pickNextIncomingReminder(elderKey) || null
   },
 
-  _buildMemoryAwareGreeting(title, memoryBundle, incomingReminder) {
+  _buildMemoryAwareGreeting(title, memoryBundle, incomingReminder, pendingMemoryConfirmation) {
     const elderMemory = memoryBundle && memoryBundle.elderMemory ? memoryBundle.elderMemory : {}
     const xiaolinMemory = memoryBundle && memoryBundle.xiaolinMemory ? memoryBundle.xiaolinMemory : {}
     const followUp = this._pickFirstNotCooling(xiaolinMemory.followUps || [])
     const recentEvent = this._pickFirstNotCooling(elderMemory.recentEvents || [])
     const interest = this._pickFirstNotCooling(elderMemory.interestTags || [])
+    const pendingConfirmText = pendingMemoryConfirmation && pendingMemoryConfirmation.text
+      ? this._normalizeMemorySentence(pendingMemoryConfirmation.text)
+      : ''
 
     if (this.data.callMode === 'incoming') {
       if (incomingReminder && incomingReminder.title) {
+        const followupPrompt = this._buildIncomingReminderFollowupPrompt(incomingReminder.title)
         return {
-          text: `${title}，是我小林呀！我来提醒您“${incomingReminder.title}”。这件事完成了吗？没完成的话，我陪您想个省心办法。`,
+          text: `${title}，是我小林呀！我来提醒您“${incomingReminder.title}”。这件事完成了吗？${followupPrompt}`,
           usedMemoryText: '',
           usedReminderId: incomingReminder.id || '',
         }
       }
-      if (followUp) {
+      if (pendingConfirmText) {
         return {
-          text: `${title}，是我小林呀！上次您提到“${followUp}”，我一直惦记着，今天来听听您这边进展怎么样？`,
+          text: `${title}，是我小林呀。上次我记了件事“${pendingConfirmText}”，我怕记错了，想先和您确认一下对不对？`,
+          usedMemoryText: '',
+          usedReminderId: '',
+        }
+      }
+      if (followUp) {
+        const naturalFollowUp = this._humanizeGreetingMemoryText(followUp)
+        return {
+          text: `${title}，是我小林呀！上次咱们聊到${naturalFollowUp}，我一直惦记着，今天来听听您这边近况怎么样？`,
           usedMemoryText: followUp,
           usedReminderId: '',
         }
       }
       if (recentEvent) {
+        const naturalRecentEvent = this._humanizeGreetingMemoryText(recentEvent)
         return {
-          text: `${title}，是我小林呀！上次我们聊到“${recentEvent}”，这两天还顺利吗？要是有不方便的地方，我们可以一起想办法。`,
+          text: `${title}，是我小林呀！上次咱们聊到${naturalRecentEvent}，这两天还顺利吗？要是有不方便的地方，我们可以一起想办法。`,
           usedMemoryText: recentEvent,
           usedReminderId: '',
         }
@@ -1346,38 +1487,33 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       }
     }
 
-    if (followUp) {
-      return {
-        text: `${title}，您好呀！我是小林。上次您说“${followUp}”，我一直记着，今天特地来和您聊聊近况。`,
-        usedMemoryText: followUp,
-        usedReminderId: '',
-      }
-    }
-    if (recentEvent) {
-      return {
-        text: `${title}，您好呀！我是小林。上次您提到“${recentEvent}”，后来怎么样啦？`,
-        usedMemoryText: recentEvent,
-        usedReminderId: '',
-      }
-    }
-    if (interest) {
-      return {
-        text: `${title}，您好呀！我是小林。之前您聊到“${interest}”，我想着今天再和您多聊几句。`,
-        usedMemoryText: interest,
-        usedReminderId: '',
-      }
-    }
     return {
-      text: `${title}，您好呀！我是小林，今天过得怎么样？`,
+      text: `${title}，您好呀！我是小林。找我有什么事呀？想聊聊天或者设置提醒都可以，我在呢。`,
       usedMemoryText: '',
       usedReminderId: '',
     }
+  },
+
+  _buildIncomingReminderFollowupPrompt(reminderTitle) {
+    const title = this._normalizeMemorySentence(reminderTitle)
+    if (!title) return '要是还没来得及也没关系，我可以陪您一起理理怎么更顺手。'
+    if (/(吃药|服药|药)/.test(title)) {
+      return '要是还没来得及吃也没关系，您现在方便的话，我陪您一步步来。'
+    }
+    if (/(复查|复诊|看医生|门诊|医院|体检)/.test(title)) {
+      return '要是还没安排上也不着急，我们一起看看哪天更方便。'
+    }
+    if (/(测血压|血压|血糖)/.test(title)) {
+      return '要是还没测也没关系，等您方便时我再陪您确认一次。'
+    }
+    return '要是还没来得及也没关系，我可以陪您一起理理怎么更顺手。'
   },
 
   _pickFirstNotCooling(candidates) {
     const list = (candidates || [])
       .map(text => this._normalizeMemorySentence(text))
       .filter(text => text && !this._isLowInfoSentence(text))
+      .filter(text => !this._isReminderCommandLike(text))
     for (let i = 0; i < list.length; i++) {
       const text = list[i]
       if (!store.isGreetingMemoryCooling(this.currentElderKey, text, GREETING_MEMORY_COOLDOWN_MS)) {
@@ -1394,6 +1530,121 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       .join(' ')
     if (!userTexts) return false
     return REMINDER_COMPLETE_HINTS.some(keyword => userTexts.includes(keyword))
+  },
+
+  _isReminderCompletedByUserText(text) {
+    const normalized = this._normalizeMemorySentence(text)
+    if (!normalized) return false
+    return REMINDER_COMPLETE_HINTS.some(keyword => normalized.includes(keyword))
+  },
+
+  _isReminderIncompleteByUserText(text) {
+    const normalized = this._normalizeMemorySentence(text)
+    if (!normalized) return false
+    return REMINDER_INCOMPLETE_HINTS.some(keyword => normalized.includes(keyword))
+  },
+
+  _hasNoMoreChatIntent(text) {
+    const normalized = this._normalizeMemorySentence(text)
+    if (!normalized) return false
+    return NO_MORE_CHAT_HINTS.some(keyword => normalized.includes(keyword))
+  },
+
+  _handleIncomingReminderFollowup(userText) {
+    if (!this.incomingReminder || !this.incomingReminder.id) return
+    if (!this.incomingFollowupState) return
+    if (this._isReminderCompletedByUserText(userText)) {
+      this.incomingFollowupState.reminderCompleted = true
+      this.incomingFollowupState.waitingNoMoreChatConfirm = true
+      store.markReminderDone(this.incomingReminder.id, this.currentElderKey)
+      return
+    }
+    if (this._isReminderIncompleteByUserText(userText)) {
+      this.incomingFollowupState.reminderCompleted = false
+      this.incomingFollowupState.waitingNoMoreChatConfirm = false
+      this.incomingFollowupState.shouldAutoEndAfterAssistant = false
+      this.incomingFollowupState.pendingAutoEndAfterPlayback = false
+      this._clearIncomingAutoEndGuard()
+      return
+    }
+    if (this.incomingFollowupState.waitingNoMoreChatConfirm && this._hasNoMoreChatIntent(userText)) {
+      this.incomingFollowupState.shouldAutoEndAfterAssistant = true
+    }
+  },
+
+  _pickPendingMemoryConfirmation() {
+    if (!store.getPendingMemoryConfirmations) return null
+    const pending = store.getPendingMemoryConfirmations(this.currentElderKey, { maxCount: 1 })
+    if (!Array.isArray(pending) || pending.length === 0) return null
+    return pending[0]
+  },
+
+  _tryResolvePendingMemoryConfirmation(userText) {
+    const target = this.pendingMemoryConfirmation
+    if (!target || !target.id || !store.confirmMemoryItem) return
+    const normalized = this._normalizeMemorySentence(userText)
+    if (!normalized) return
+    const positive = /(是的|对的|没错|说得对|就是|确实|嗯对|记得对)/.test(normalized)
+    const negative = /(不是|不对|记错|没有|别这么说|搞错|说反了)/.test(normalized)
+    if (!positive && !negative) return
+    store.confirmMemoryItem(this.currentElderKey, target.id, positive && !negative)
+    this.pendingMemoryConfirmation = null
+  },
+
+  _tryUpsertReminderCandidatesFromASRFinal(userText) {
+    if (!this.currentElderKey || !store.upsertExtractedReminderCandidates) return
+    const candidate = this._buildReminderCandidateFromText(userText)
+    if (!candidate) return
+    store.upsertExtractedReminderCandidates([candidate], this.currentElderKey, { autoThreshold: 0.78 })
+  },
+
+  _maybeInjectOutgoingSmallTalkSteer(userText) {
+    if (this.data.callMode !== 'outgoing') return
+    if (!this.client || !this.client.sessionActive || typeof this.client.sendTextQuery !== 'function') return
+    if (this.assistantTurnCount < 1) return
+    const normalized = this._normalizeMemorySentence(userText)
+    if (!normalized) return
+    if (!this._hasSmallTalkIntent(normalized)) return
+    if (this._hasConcreteNeedIntent(normalized)) return
+    const now = Date.now()
+    if (now - this.lastSmallTalkSteerAt < 8000) return
+    const steerPrompt = this._buildSmallTalkSteerPrompt()
+    if (!steerPrompt) return
+    this.lastSmallTalkSteerAt = now
+    this.client.sendTextQuery(steerPrompt)
+  },
+
+  _hasSmallTalkIntent(text) {
+    const normalized = this._normalizeMemorySentence(text)
+    if (!normalized) return false
+    return SMALL_TALK_INTENT_HINTS.some(keyword => normalized.includes(keyword))
+  },
+
+  _hasConcreteNeedIntent(text) {
+    const normalized = this._normalizeMemorySentence(text)
+    if (!normalized) return false
+    return CONCRETE_NEED_HINTS.some(keyword => normalized.includes(keyword))
+  },
+
+  _buildSmallTalkSteerPrompt() {
+    const memoryBundle = store.getMemoryBundle(this.currentElderKey)
+    const elderMemory = memoryBundle && memoryBundle.elderMemory ? memoryBundle.elderMemory : {}
+    const interests = (elderMemory.interestTags || []).filter(Boolean)
+    const health = (elderMemory.healthNotes || []).filter(Boolean)
+    const interest = this._pickFirstNotCooling(interests)
+    const healthSignal = this._pickFirstNotCooling(health)
+    if (!interest && !healthSignal) return ''
+
+    if (interest && healthSignal) {
+      return `用户明确表示“想聊聊”，且当前没有提出新的具体诉求。请优先按以下顺序继续：
+1) 先从兴趣话题自然开启：${interest}
+2) 若用户反馈健康相关，再温和承接健康信号：${healthSignal}
+要求：只问一个具体近况问题，口语化短句，不要一次抛多个问题。`
+    }
+    if (interest) {
+      return `用户明确表示“想聊聊”，且当前没有提出新的具体诉求。请直接从这个兴趣话题继续：${interest}。要求：自然追问一个具体近况，口语化短句，不要说教。`
+    }
+    return `用户明确表示“想聊聊”，且当前没有提出新的具体诉求。请温和承接这个健康信号并继续聊天：${healthSignal}。要求：先共情，再追问一个近况细节，不要制造焦虑。`
   },
 
   _extractMemoryDelta(record, summaryData) {
@@ -1471,8 +1722,9 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
           .replace(/^(是|做|去|在|会)/, '')
           .replace(/(呢|呀|啊|啦|了|呀|哦|嘛)+$/g, '')
           .replace(/[。！？!?,，、；;]+$/g, '')
-        if (candidate && candidate.length >= 2 && candidate.length <= 10) {
-          tags.push(candidate)
+        const canonicalCandidate = this._canonicalizeInterestTag(candidate)
+        if (canonicalCandidate && canonicalCandidate.length >= 2 && canonicalCandidate.length <= 10) {
+          tags.push(canonicalCandidate)
         }
       }
 
@@ -1483,7 +1735,41 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         }
       })
     })
-    return Array.from(new Set(tags)).slice(0, 5)
+    const dedup = []
+    const seen = {}
+    tags.forEach(tag => {
+      const canonical = this._canonicalizeInterestTag(tag)
+      if (!canonical || seen[canonical]) return
+      seen[canonical] = true
+      dedup.push(canonical)
+    })
+    return dedup.slice(0, 5)
+  },
+
+  _canonicalizeInterestTag(tag) {
+    const raw = this._normalizeMemorySentence(tag)
+    if (!raw) return ''
+
+    const normalized = raw
+      .replace(/^(我|我就|我最|平时|平常|最近)+/, '')
+      .replace(/^(是|做|去|在|会|爱|喜欢)+/, '')
+      .replace(/^(打|练|学|玩|听|看|追|做|去|跳)(太极拳|太极|书法|广场舞|芭蕾舞?|电视剧|戏曲|评弹|音乐|歌|棋|牌|散步)/, '$2')
+      .replace(/(呢|呀|啊|啦|了|哦|嘛)+$/g, '')
+      .replace(/[。！？!?,，、；;]+$/g, '')
+
+    const aliasMap = {
+      太极: '太极拳',
+      打太极拳: '太极拳',
+      练太极拳: '太极拳',
+      跳舞: '广场舞',
+      跳广场舞: '广场舞',
+      打牌: '棋牌',
+      下棋: '棋牌',
+      追剧: '看电视剧',
+      看剧: '看电视剧',
+      听歌: '戏曲音乐',
+    }
+    return aliasMap[normalized] || normalized
   },
 
   _extractByKeywords(userMessages, keywords, limit) {
@@ -1504,6 +1790,29 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       .trim()
       .replace(/[。！？!?,，、；;]+$/g, '')
       .replace(/\s+/g, '')
+  },
+
+  _isReminderCommandLike(text) {
+    const line = this._normalizeMemorySentence(text)
+    if (!line) return false
+    // 类似“提醒张叔叔吃药/提醒我出门”是提醒指令，不适合直接作为寒暄回忆
+    if (/^(提醒|记得提醒|叫我|通知我)/.test(line)) return true
+    if (/提醒.{0,10}(吃药|出门|复查|复诊|测血压|锻炼|散步|起床)/.test(line)) return true
+    if (/(提醒|记得).{0,8}(我|您|他|她|[^\s，。！？]{1,4}).{0,10}(起床|吃药|复查|复诊|测血压|锻炼|散步|出门)/.test(line)) return true
+    return false
+  },
+
+  _humanizeGreetingMemoryText(text) {
+    const line = String(text || '').trim()
+    if (!line) return '最近的事'
+    const compact = line
+      .replace(/^(提醒|记得提醒|叫我|通知我)(一下)?/u, '')
+      .replace(/^(?:老[\u4e00-\u9fa5]{1,2}|[\u4e00-\u9fa5]{1,3}(?:叔叔|阿姨|爷爷|奶奶|伯伯|大爷|大妈|老师|医生|先生|女士|哥哥|姐姐|弟弟|妹妹))/u, '')
+      .replace(/^[，。！？、\s]+/, '')
+    if (!compact) return '最近的事'
+    if (/^吃药$/.test(compact)) return '按时吃药这件事'
+    if (/^出门$/.test(compact)) return '出门安排这件事'
+    return compact
   },
 
   _extractTopicMemoryCandidates(lines, options) {
@@ -1810,6 +2119,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       this.assistantDraftFlushTimer = null
     }
     this._clearGreetingEchoGuardFailsafe()
+    this._clearIncomingAutoEndGuard()
     if (this.connectingFallbackTimer) {
       clearTimeout(this.connectingFallbackTimer)
       this.connectingFallbackTimer = null
