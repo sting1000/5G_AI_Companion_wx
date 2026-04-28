@@ -4,6 +4,7 @@
     "pages/reminders/reminders",
     "pages/records/records",
     "pages/settings/settings",
+    "pages/memory/memory",
     "pages/onboarding/onboarding",
     "pages/call/call",
     "pages/summary/summary"

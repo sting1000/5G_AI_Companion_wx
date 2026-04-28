@@ -1,0 +1,58 @@
+<view class="container">
+  <view class="header">
+    <text class="title">小林记忆</text>
+    <text class="subtitle">{{elderTitle ? elderTitle : '当前老人'}}</text>
+  </view>
+
+  <view class="list" wx:if="{{hasMemories}}">
+    <view class="memory-card" wx:for="{{memories}}" wx:key="id">
+      <view class="card-top">
+        <view class="badges">
+          <text class="badge">{{item.typeLabel}}</text>
+          <text class="badge muted">{{item.sensitivityLabel}}</text>
+          <text class="badge {{item.statusClass}}">{{item.statusLabel}}</text>
+        </view>
+        <text class="source">{{item.sourceText}}</text>
+      </view>
+      <text class="memory-text">{{item.text}}</text>
+      <text class="evidence">证据：{{item.evidenceText}}</text>
+      <view class="actions">
+        <button class="action-btn" data-id="{{item.id}}" bindtap="onEditMemory">编辑</button>
+        <button
+          class="action-btn primary"
+          wx:if="{{item.status === 'pending' || item.needsConfirmation}}"
+          data-id="{{item.id}}"
+          bindtap="onConfirmMemory"
+        >确认</button>
+        <button
+          class="action-btn"
+          wx:if="{{item.status === 'pending' || item.needsConfirmation}}"
+          data-id="{{item.id}}"
+          bindtap="onRejectMemory"
+        >忽略</button>
+        <button class="action-btn danger" data-id="{{item.id}}" bindtap="onDeleteMemory">删除</button>
+      </view>
+    </view>
+  </view>
+
+  <view class="empty" wx:else>
+    <text>小林还没有形成长期记忆</text>
+  </view>
+
+  <view class="editor-mask" wx:if="{{showEditor}}" bindtap="onCloseEditor">
+    <view class="editor" catchtap="onEditorTap">
+      <text class="editor-title">编辑记忆</text>
+      <textarea
+        class="editor-input"
+        value="{{editText}}"
+        maxlength="80"
+        bindinput="onEditInput"
+        auto-height
+      />
+      <view class="editor-actions">
+        <button class="editor-btn cancel" bindtap="onCloseEditor">取消</button>
+        <button class="editor-btn save" bindtap="onSaveEdit">保存</button>
+      </view>
+    </view>
+  </view>
+</view>

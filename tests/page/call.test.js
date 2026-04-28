@@ -340,6 +340,62 @@ describe('call 页面离线关键分支', () => {
     expect(list[0].timeOfDay).toBe('07:30')
   })
 
+  test('_evolveMemory 会优先使用 extractMemories 云函数返回的结构化记忆', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = 'elder:test:cloud-memory'
+    page.currentElderKey = elderKey
+    wx.cloud = {
+      callFunction: jest.fn(() => Promise.resolve({
+        result: {
+          success: true,
+          data: {
+            elderMemory: {
+              interestTags: ['书法'],
+            },
+            xiaolinMemory: {
+              followUps: ['下次问问书法班报名情况'],
+            },
+            memoryItems: [
+              {
+                type: 'interest',
+                text: '最近在练书法',
+                confidence: 0.88,
+                evidence: '我最近在练书法',
+                needsConfirmation: false,
+              },
+            ],
+          },
+        },
+      })),
+    }
+    const record = {
+      id: 'call_cloud_memory_1',
+      messages: [
+        { role: 'user', content: '我最近在练书法' },
+        { role: 'assistant', content: '那很好呀，下次我再问问您练得怎么样。' },
+      ],
+    }
+
+    await page._evolveMemory(record, {
+      summary: '聊到书法练习',
+      topics: ['书法'],
+      highlights: ['老人最近在练书法'],
+    })
+
+    expect(wx.cloud.callFunction).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'extractMemories',
+    }))
+    const bundle = store.getMemoryBundle(elderKey)
+    const item = bundle.memoryItems.find(memory => memory.text === '最近在练书法')
+    expect(item).toBeTruthy()
+    expect(item.source).toBe('cloud_ark')
+    expect(item.sourceCallId).toBe('call_cloud_memory_1')
+    expect(item.evidence).toBe('我最近在练书法')
+    expect(bundle.xiaolinMemory.followUps).toContain('下次问问书法班报名情况')
+  })
+
   test('呼入回访已确认完成时，会抑制同提醒候选的二次入库', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
     const page = loadPage()

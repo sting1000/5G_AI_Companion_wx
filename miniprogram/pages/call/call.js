@@ -219,9 +219,18 @@ Page({
       const pendingConfirm = this._pickPendingMemoryConfirmation()
       this.pendingMemoryConfirmation = pendingConfirm
       const greetingPayload = this._buildMemoryAwareGreeting(title, memoryBundle, this.incomingReminder, pendingConfirm)
+      const memoryContext = store.buildMemoryContext
+        ? store.buildMemoryContext(this.currentElderKey, {
+          intent: this.data.callMode === 'incoming' ? 'opening' : 'outgoingNeed',
+          callMode: this.data.callMode,
+          maxItems: 1,
+          minConfidence: 0.6,
+          includePreferredAddress: true,
+        })
+        : { prompt: store.buildMemoryPrompt(this.currentElderKey, { maxItems: 1, minConfidence: 0.6 }) }
       const memoryPrompt = greetingPayload.usedMemoryText
         ? ''
-        : store.buildMemoryPrompt(this.currentElderKey, { maxItems: 1, minConfidence: 0.6 })
+        : (memoryContext && memoryContext.prompt ? memoryContext.prompt : '')
       const contextPrompt = this.timeWeatherContext && this.timeWeatherContext.prompt
         ? `\n当前场景：${this.timeWeatherContext.prompt}`
         : ''
@@ -1082,10 +1091,47 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
   },
 
   _evolveMemory(record, summaryData) {
+    const applyMemoryDelta = (memoryDelta) => {
+      this._applyMemoryDelta(record, summaryData, memoryDelta)
+      return memoryDelta
+    }
+
+    const localDelta = this._extractMemoryDelta(record, summaryData)
+    if (!wx.cloud || typeof wx.cloud.callFunction !== 'function') {
+      return Promise.resolve(applyMemoryDelta(localDelta))
+    }
+
+    const elderConfig = store.getElderConfig()
+    const elderName = elderConfig ? elderConfig.parentName : '老人'
+    return wx.cloud.callFunction({
+      name: 'extractMemories',
+      data: {
+        messages: record.messages || [],
+        summaryData: summaryData || {},
+        elderName,
+        elderKey: this.currentElderKey || store.getElderKey(elderConfig),
+        callId: record.id || '',
+      },
+    }).then(res => {
+      if (res.result && res.result.success && res.result.data) {
+        const cloudDelta = this._normalizeMemoryDelta(res.result.data, record, 'cloud_ark')
+        return applyMemoryDelta(cloudDelta)
+      }
+      return applyMemoryDelta(localDelta)
+    }).catch(err => {
+      console.warn('[Call] 云函数记忆抽取失败，使用本地规则:', err)
+      return applyMemoryDelta(localDelta)
+    })
+  },
+
+  _applyMemoryDelta(record, summaryData, memoryDelta) {
     const elderConfig = store.getElderConfig()
     const elderKey = this.currentElderKey || store.getElderKey(elderConfig)
     const title = store.getElderTitle()
-    const memoryDelta = this._extractMemoryDelta(record, summaryData)
+    const safeMemoryDelta = memoryDelta || this._extractMemoryDelta(record, summaryData)
+    safeMemoryDelta.elderMemory = safeMemoryDelta.elderMemory || {}
+    safeMemoryDelta.xiaolinMemory = safeMemoryDelta.xiaolinMemory || {}
+    safeMemoryDelta.memoryItems = Array.isArray(safeMemoryDelta.memoryItems) ? safeMemoryDelta.memoryItems : []
     const userMessages = (record.messages || [])
       .filter(item => item.role === 'user')
       .map(item => String(item.content || '').trim())
@@ -1096,17 +1142,19 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       ? String(currentBundle.xiaolinMemory.preferredAddress || '').trim()
       : ''
     if (preferredAddress) {
-      memoryDelta.xiaolinMemory.preferredAddress = preferredAddress
+      safeMemoryDelta.xiaolinMemory.preferredAddress = preferredAddress
     } else if (!currentPreferred && title) {
-      memoryDelta.xiaolinMemory.preferredAddress = title
+      safeMemoryDelta.xiaolinMemory.preferredAddress = title
     }
-    memoryDelta.xiaolinMemory.careStrategies = ['语速自然正常，语句简短，多确认，情绪表达更有温度']
+    safeMemoryDelta.xiaolinMemory.careStrategies = ['语速自然正常，语句简短，多确认，情绪表达更有温度']
 
     if (elderConfig && elderConfig.health) {
-      memoryDelta.elderMemory.healthNotes = [elderConfig.health]
+      safeMemoryDelta.elderMemory.healthNotes = [elderConfig.health].concat(safeMemoryDelta.elderMemory.healthNotes || [])
     }
 
-    store.mergeMemoryBundle(elderKey, memoryDelta, record.id)
+    safeMemoryDelta.memorySource = safeMemoryDelta.memorySource || 'summary'
+    safeMemoryDelta.sourceCallId = safeMemoryDelta.sourceCallId || record.id || ''
+    store.mergeMemoryBundle(elderKey, safeMemoryDelta, record.id)
     const reminderCandidates = this._extractReminderCandidates(record, summaryData)
     if (reminderCandidates.length > 0) {
       store.upsertExtractedReminderCandidates(reminderCandidates, elderKey, { autoThreshold: 0.78 })
@@ -1462,7 +1510,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     }
 
     return {
-      text: `${title}，您好呀！我是小林。找我有什么事呀？想聊聊天或者设置提醒都可以，我在呢。`,
+      text: `${title}，您好呀！我是小林。您找我有什么事呀？想聊聊天或者让我帮您设置提醒都可以，我在呢。`,
       usedMemoryText: '',
       usedReminderId: '',
     }
@@ -1621,6 +1669,112 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     return `用户明确表示“想聊聊”，且当前没有提出新的具体诉求。请温和承接这个健康信号并继续聊天：${healthSignal}。要求：先共情，再追问一个近况细节，不要制造焦虑。`
   },
 
+  _normalizeMemoryDelta(rawData, record, source) {
+    const input = rawData && typeof rawData === 'object' ? rawData : {}
+    const callId = record && record.id ? record.id : ''
+    const observedAt = input.observedAt || new Date().toISOString()
+    const delta = {
+      memorySource: source || input.memorySource || 'summary',
+      sourceCallId: callId,
+      observedAt,
+      elderMemory: {
+        interestTags: [],
+        healthNotes: [],
+        routineNotes: [],
+        recentEvents: [],
+      },
+      xiaolinMemory: {
+        followUps: [],
+        tabooTopics: [],
+        careStrategies: [],
+      },
+      memoryItems: [],
+    }
+
+    const elderMemory = input.elderMemory && typeof input.elderMemory === 'object' ? input.elderMemory : {}
+    const xiaolinMemory = input.xiaolinMemory && typeof input.xiaolinMemory === 'object' ? input.xiaolinMemory : {}
+    delta.elderMemory.interestTags = this._normalizeTextList(elderMemory.interestTags, 8)
+    delta.elderMemory.healthNotes = this._normalizeTextList(elderMemory.healthNotes, 6)
+    delta.elderMemory.routineNotes = this._normalizeTextList(elderMemory.routineNotes, 6)
+    delta.elderMemory.recentEvents = this._normalizeTextList(elderMemory.recentEvents, 8)
+    delta.xiaolinMemory.followUps = this._normalizeTextList(xiaolinMemory.followUps, 6)
+    delta.xiaolinMemory.tabooTopics = this._normalizeTextList(xiaolinMemory.tabooTopics, 4)
+    delta.xiaolinMemory.careStrategies = this._normalizeTextList(xiaolinMemory.careStrategies, 4)
+
+    const appendLegacyList = (type, text) => {
+      const cleanText = this._normalizeMemorySentence(text)
+      if (!cleanText) return
+      if (type === 'interest') delta.elderMemory.interestTags.push(cleanText)
+      else if (type === 'healthNote') delta.elderMemory.healthNotes.push(cleanText)
+      else if (type === 'routineNote') delta.elderMemory.routineNotes.push(cleanText)
+      else if (type === 'recentEvent') delta.elderMemory.recentEvents.push(cleanText)
+      else if (type === 'followUp') delta.xiaolinMemory.followUps.push(cleanText)
+      else if (type === 'tabooTopic') delta.xiaolinMemory.tabooTopics.push(cleanText)
+    }
+
+    ;(Array.isArray(input.memoryItems) ? input.memoryItems : []).forEach(rawItem => {
+      if (!rawItem || typeof rawItem !== 'object') return
+      const type = this._normalizeMemoryItemType(rawItem.type)
+      const text = this._normalizeMemorySentence(rawItem.text)
+      if (!text || this._isLowInfoSentence(text)) return
+      const confidence = Math.max(0, Math.min(1, Number(rawItem.confidence || 0.7)))
+      const sensitivity = rawItem.sensitivity || (type === 'healthNote' && confidence >= 0.85 ? 'sensitive' : 'normal')
+      const needsConfirmation = typeof rawItem.needsConfirmation === 'boolean'
+        ? rawItem.needsConfirmation
+        : (type === 'healthNote' || sensitivity === 'sensitive' || confidence < 0.7)
+      delta.memoryItems.push({
+        type,
+        text,
+        confidence,
+        evidence: String(rawItem.evidence || text).trim(),
+        source: source || rawItem.source || 'cloud_ark',
+        sourceCallId: callId,
+        sourceTurnId: String(rawItem.sourceTurnId || rawItem.turnId || '').trim(),
+        observedAt: String(rawItem.observedAt || observedAt).trim(),
+        validFrom: String(rawItem.validFrom || '').trim(),
+        validTo: String(rawItem.validTo || '').trim(),
+        expiresAt: String(rawItem.expiresAt || '').trim(),
+        sensitivity,
+        visibility: rawItem.visibility || '',
+        status: needsConfirmation ? 'pending' : 'confirmed',
+        needsConfirmation,
+        contradicts: Array.isArray(rawItem.contradicts) ? rawItem.contradicts : [],
+      })
+      appendLegacyList(type, text)
+    })
+
+    delta.elderMemory.interestTags = Array.from(new Set(delta.elderMemory.interestTags)).slice(0, 8)
+    delta.elderMemory.healthNotes = Array.from(new Set(delta.elderMemory.healthNotes)).slice(0, 6)
+    delta.elderMemory.routineNotes = Array.from(new Set(delta.elderMemory.routineNotes)).slice(0, 6)
+    delta.elderMemory.recentEvents = Array.from(new Set(delta.elderMemory.recentEvents)).slice(0, 8)
+    delta.xiaolinMemory.followUps = Array.from(new Set(delta.xiaolinMemory.followUps)).slice(0, 6)
+    delta.xiaolinMemory.tabooTopics = Array.from(new Set(delta.xiaolinMemory.tabooTopics)).slice(0, 4)
+    return delta
+  },
+
+  _normalizeMemoryItemType(type) {
+    const raw = String(type || '').trim()
+    const aliasMap = {
+      health: 'healthNote',
+      health_note: 'healthNote',
+      healthNote: 'healthNote',
+      interest: 'interest',
+      hobby: 'interest',
+      routine: 'routineNote',
+      routine_note: 'routineNote',
+      routineNote: 'routineNote',
+      recent_event: 'recentEvent',
+      recentEvent: 'recentEvent',
+      event: 'recentEvent',
+      follow_up: 'followUp',
+      followUp: 'followUp',
+      taboo: 'tabooTopic',
+      taboo_topic: 'tabooTopic',
+      tabooTopic: 'tabooTopic',
+    }
+    return aliasMap[raw] || 'recentEvent'
+  },
+
   _extractMemoryDelta(record, summaryData) {
     const userMessages = (record.messages || [])
       .filter(item => item.role === 'user')
@@ -1646,6 +1800,9 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     ], 2)
 
     return {
+      memorySource: 'local_rule',
+      sourceCallId: record.id || '',
+      observedAt: new Date().toISOString(),
       elderMemory: {
         interestTags: interestTags,
         recentEvents,

@@ -81,6 +81,12 @@ Page({
     })
   },
 
+  goMemory() {
+    wx.navigateTo({
+      url: '/pages/memory/memory'
+    })
+  },
+
   onClearAllTestData() {
     wx.showModal({
       title: '清空本地测试数据',

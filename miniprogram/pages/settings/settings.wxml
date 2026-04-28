@@ -56,6 +56,17 @@
         <view class="arrow-right">›</view>
       </view>
 
+      <view class="list-item" bindtap="goMemory">
+        <view class="item-left">
+          <view class="item-icon bg-orange">🧠</view>
+          <view class="item-text">
+            <text class="item-title">小林记忆</text>
+            <text class="item-desc">查看、确认、编辑和删除长期记忆</text>
+          </view>
+        </view>
+        <view class="arrow-right">›</view>
+      </view>
+
       <view class="list-item no-border">
         <view class="item-left">
           <view class="item-icon bg-red">🤍</view>

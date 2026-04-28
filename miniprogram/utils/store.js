@@ -26,6 +26,12 @@ const MEMORY_STATUS = {
   REJECTED: 'rejected',
 }
 
+const MEMORY_VISIBILITY = {
+  ASSISTANT: 'assistant',
+  GUARDIAN_REVIEW: 'guardian_review',
+  PRIVATE: 'private',
+}
+
 const DEFAULT_REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000
 const DEFAULT_GREETING_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -91,6 +97,7 @@ function getDefaultMemoryBundle() {
 const MEMORY_TYPE_LIMIT = {
   followUp: 10,
   recentEvent: 12,
+  routineNote: 10,
   interest: 20,
   healthNote: 10,
   tabooTopic: 10,
@@ -99,7 +106,8 @@ const MEMORY_TYPE_LIMIT = {
 const MEMORY_TYPE_CONFIDENCE = {
   followUp: 0.75,
   recentEvent: 0.7,
-  interest: 0.65,
+  routineNote: 0.7,
+  interest: 0.72,
   healthNote: 0.8,
   tabooTopic: 0.85,
 }
@@ -133,27 +141,106 @@ function _memoryItemId(type, text) {
   return `mem_${Date.now()}_${base.slice(0, 24)}`
 }
 
+function _normalizeMemoryType(type) {
+  const raw = String(type || '').trim()
+  const aliasMap = {
+    health: 'healthNote',
+    health_note: 'healthNote',
+    healthNote: 'healthNote',
+    interest: 'interest',
+    hobby: 'interest',
+    recent_event: 'recentEvent',
+    recentEvent: 'recentEvent',
+    event: 'recentEvent',
+    routine: 'routineNote',
+    routine_note: 'routineNote',
+    routineNote: 'routineNote',
+    follow_up: 'followUp',
+    followUp: 'followUp',
+    taboo: 'tabooTopic',
+    taboo_topic: 'tabooTopic',
+    tabooTopic: 'tabooTopic',
+  }
+  return aliasMap[raw] || 'recentEvent'
+}
+
+function _normalizeMemoryStringList(items, maxCount) {
+  return _uniqList([].concat(items || []), maxCount)
+}
+
+function _normalizeMemorySourceMeta(source, now) {
+  const isObject = source && typeof source === 'object'
+  const meta = isObject ? source : { source }
+  const sourceName = String(meta.source || (isObject ? 'summary' : source) || 'summary').trim() || 'summary'
+  return {
+    source: sourceName,
+    sourceCallId: String(meta.sourceCallId || meta.callId || '').trim(),
+    sourceTurnId: String(meta.sourceTurnId || meta.turnId || '').trim(),
+    observedAt: String(meta.observedAt || now || '').trim(),
+    validFrom: String(meta.validFrom || '').trim(),
+    validTo: String(meta.validTo || '').trim(),
+    expiresAt: String(meta.expiresAt || '').trim(),
+    visibility: String(meta.visibility || '').trim(),
+    contradicts: _normalizeMemoryStringList(meta.contradicts || [], 8),
+  }
+}
+
+function _resolveMemoryVisibility(type, sensitivity, visibility) {
+  const explicit = String(visibility || '').trim()
+  if (explicit === MEMORY_VISIBILITY.ASSISTANT
+    || explicit === MEMORY_VISIBILITY.GUARDIAN_REVIEW
+    || explicit === MEMORY_VISIBILITY.PRIVATE) {
+    return explicit
+  }
+  if (sensitivity === 'sensitive' || type === 'healthNote') {
+    return MEMORY_VISIBILITY.GUARDIAN_REVIEW
+  }
+  return MEMORY_VISIBILITY.ASSISTANT
+}
+
+function _normalizeMemoryStatus(item, type, confidence, sensitivity, source) {
+  const rawStatus = String(item && item.status || '').trim()
+  if (rawStatus === MEMORY_STATUS.PENDING
+    || rawStatus === MEMORY_STATUS.CONFIRMED
+    || rawStatus === MEMORY_STATUS.REJECTED) {
+    return rawStatus
+  }
+  return _shouldMemoryPendingConfirm(type, confidence, sensitivity, source)
+    ? MEMORY_STATUS.PENDING
+    : MEMORY_STATUS.CONFIRMED
+}
+
 function _buildMemoryItem(type, text, source, confidence, now, evidence) {
   const cleanText = _normalizeMemoryText(text)
   if (!cleanText) return null
+  const normalizedType = _normalizeMemoryType(type)
+  const meta = _normalizeMemorySourceMeta(source, now)
   const safeConfidence = Math.max(0, Math.min(1, Number(confidence || 0.6)))
   const nowTs = Date.parse(now || '') || Date.now()
-  const sensitivity = _resolveMemorySensitivity(type, safeConfidence)
-  const shouldPendingConfirm = _shouldMemoryPendingConfirm(type, safeConfidence, sensitivity, source)
+  const sensitivity = _resolveMemorySensitivity(normalizedType, safeConfidence)
+  const shouldPendingConfirm = _shouldMemoryPendingConfirm(normalizedType, safeConfidence, sensitivity, meta.source)
   return {
     id: _memoryItemId(type, cleanText),
-    type,
+    type: normalizedType,
     text: cleanText,
-    source: source || 'summary',
+    source: meta.source,
+    sourceCallId: meta.sourceCallId,
+    sourceTurnId: meta.sourceTurnId,
+    observedAt: meta.observedAt || now,
+    validFrom: meta.validFrom,
+    validTo: meta.validTo,
+    expiresAt: meta.expiresAt,
     confidence: safeConfidence,
-    layer: _resolveMemoryLayer(type),
-    stability: type === 'interest' || type === 'healthNote' ? 'stable' : 'semi_stable',
+    layer: _resolveMemoryLayer(normalizedType),
+    stability: normalizedType === 'interest' || normalizedType === 'healthNote' ? 'stable' : 'semi_stable',
     sensitivity: sensitivity,
+    visibility: _resolveMemoryVisibility(normalizedType, sensitivity, meta.visibility),
     status: shouldPendingConfirm ? MEMORY_STATUS.PENDING : MEMORY_STATUS.CONFIRMED,
     needsConfirmation: shouldPendingConfirm,
     confirmedAt: shouldPendingConfirm ? '' : now,
     lastConfirmedAt: '',
     createdAt: now,
+    updatedAt: now,
     lastUsedAt: '',
     triggerCount: 0,
     score: _computeMemoryScore({
@@ -163,6 +250,7 @@ function _buildMemoryItem(type, text, source, confidence, now, evidence) {
       triggerCount: 0,
     }, nowTs),
     evidence: evidence || cleanText,
+    contradicts: meta.contradicts,
   }
 }
 
@@ -177,6 +265,7 @@ function _isRecent(iso, days) {
 function _resolveMemoryLayer(type) {
   if (type === 'healthNote') return 'health'
   if (type === 'followUp' || type === 'recentEvent') return 'event'
+  if (type === 'routineNote') return 'routine'
   if (type === 'interest') return 'persona'
   if (type === 'tabooTopic') return 'ai_strategy'
   return 'event'
@@ -225,6 +314,156 @@ function _computeMemoryScore(item, nowTs) {
   return Number(score.toFixed(4))
 }
 
+function _isMemoryCurrentlyValid(item, nowTs) {
+  const validFromTs = Date.parse(item && item.validFrom || '')
+  if (validFromTs && validFromTs > nowTs) return false
+  const validToTs = Date.parse(item && item.validTo || '')
+  if (validToTs && validToTs < nowTs) return false
+  const expiresTs = Date.parse(item && item.expiresAt || '')
+  if (expiresTs && expiresTs < nowTs) return false
+  return true
+}
+
+function _formatMemoryItemForPrompt(item) {
+  if (!item || !item.text) return ''
+  if (item.type === 'followUp') {
+    return `上次承诺跟进：${item.text}`
+  }
+  if (item.type === 'recentEvent') {
+    return `老人近期事件：${item.text}`
+  }
+  if (item.type === 'routineNote') {
+    return `老人日常习惯：${item.text}`
+  }
+  if (item.type === 'interest') {
+    return `老人兴趣：${item.text}`
+  }
+  if (item.type === 'healthNote') {
+    return `健康背景（已确认，仅相关时提及）：${item.text}`
+  }
+  if (item.type === 'tabooTopic') {
+    return `慎提话题：${item.text}`
+  }
+  return `记忆：${item.text}`
+}
+
+function _inferMemoryContextIntent(options) {
+  const opts = options || {}
+  if (opts.intent) return String(opts.intent)
+  const text = _normalizeMemoryText(opts.currentUserText || '')
+  if (/(胸闷|胸痛|头晕|不舒服|难受|血压|血糖|吃药|复查|复诊|医院|医生|睡眠|失眠)/.test(text)) {
+    return 'healthConcern'
+  }
+  if (/(提醒|记得|别忘|完成了吗|办好了吗|起床|测血压)/.test(text)) {
+    return 'reminderFollowup'
+  }
+  if (/(聊聊|聊天|说说话|没啥事|没什么事)/.test(text)) {
+    return 'smallTalk'
+  }
+  return 'general'
+}
+
+function _resolveMemoryContextBudget(intent, typeBudget) {
+  const base = {
+    followUp: 1,
+    recentEvent: 1,
+    routineNote: 0,
+    interest: 1,
+    healthNote: 0,
+    tabooTopic: 0,
+  }
+  const intentName = String(intent || 'general')
+  if (intentName === 'healthConcern') {
+    Object.assign(base, {
+      followUp: 1,
+      recentEvent: 1,
+      routineNote: 1,
+      interest: 0,
+      healthNote: 2,
+      tabooTopic: 1,
+    })
+  } else if (intentName === 'smallTalk') {
+    Object.assign(base, {
+      followUp: 1,
+      recentEvent: 1,
+      routineNote: 1,
+      interest: 2,
+      healthNote: 0,
+      tabooTopic: 1,
+    })
+  } else if (intentName === 'reminderFollowup') {
+    Object.assign(base, {
+      followUp: 0,
+      recentEvent: 0,
+      routineNote: 0,
+      interest: 0,
+      healthNote: 0,
+      tabooTopic: 1,
+    })
+  } else if (intentName === 'profileReview') {
+    Object.assign(base, {
+      followUp: 2,
+      recentEvent: 3,
+      routineNote: 3,
+      interest: 4,
+      healthNote: 3,
+      tabooTopic: 3,
+    })
+  }
+  return Object.assign(base, typeBudget || {})
+}
+
+function _selectMemoryItemsForContext(bundle, options) {
+  const opts = options || {}
+  const excludeSet = new Set((opts.excludeTexts || []).map(_normalizeMemoryText).filter(Boolean))
+  const maxItems = typeof opts.maxItems === 'number' ? opts.maxItems : 3
+  const minConfidence = typeof opts.minConfidence === 'number' ? opts.minConfidence : 0.6
+  const cooldownMs = typeof opts.cooldownMs === 'number' ? opts.cooldownMs : 12 * 60 * 60 * 1000
+  const intent = _inferMemoryContextIntent(opts)
+  const typeBudget = _resolveMemoryContextBudget(intent, opts.typeBudget)
+  const nowTs = Date.now()
+  const pickedTypes = {}
+
+  return (bundle.memoryItems || [])
+    .filter(item => item && item.text)
+    .filter(item => item.status !== MEMORY_STATUS.PENDING && item.status !== MEMORY_STATUS.REJECTED)
+    .filter(item => !item.needsConfirmation)
+    .filter(item => item.type === 'interest' || item.type === 'tabooTopic' || !_isLowInfoMemoryText(item.text))
+    .filter(item => item.confidence >= minConfidence)
+    .filter(item => !excludeSet.has(_normalizeMemoryText(item.text)))
+    .filter(item => _isMemoryCurrentlyValid(item, nowTs))
+    .filter(item => {
+      if (!item.lastUsedAt) return true
+      const usedTs = Date.parse(item.lastUsedAt)
+      if (!usedTs) return true
+      return nowTs - usedTs >= cooldownMs
+    })
+    .filter(item => {
+      if (item.type === 'interest' || item.type === 'healthNote' || item.type === 'tabooTopic' || item.type === 'routineNote') return true
+      return _isRecent(item.createdAt, 45)
+    })
+    .sort((a, b) => {
+      const typeRank = { tabooTopic: 6, followUp: 5, recentEvent: 4, routineNote: 3, interest: 2, healthNote: 1 }
+      const ar = typeRank[a.type] || 0
+      const br = typeRank[b.type] || 0
+      if (br !== ar) return br - ar
+      const as = Number(a.score || _computeMemoryScore(a, nowTs))
+      const bs = Number(b.score || _computeMemoryScore(b, nowTs))
+      if (bs !== as) return bs - as
+      if (b.confidence !== a.confidence) return b.confidence - a.confidence
+      return Date.parse(b.createdAt || '') - Date.parse(a.createdAt || '')
+    })
+    .filter(item => {
+      const budget = Number(typeBudget[item.type] || 0)
+      if (budget <= 0) return false
+      if (!pickedTypes[item.type]) pickedTypes[item.type] = 0
+      if (pickedTypes[item.type] >= budget) return false
+      pickedTypes[item.type] += 1
+      return true
+    })
+    .slice(0, maxItems)
+}
+
 function _mergeMemoryItems(existingItems, deltaItems) {
   const now = new Date().toISOString()
   const nowTs = Date.now()
@@ -235,31 +474,52 @@ function _mergeMemoryItems(existingItems, deltaItems) {
 
   const mergedMap = {}
   allItems.forEach(item => {
-    const type = item.type || 'recentEvent'
+    const type = _normalizeMemoryType(item.type)
     const text = _normalizeMemoryText(item.text)
     if (!text) return
     const key = `${type}:${text}`
+    const safeConfidence = Math.max(0, Math.min(1, Number(item.confidence || MEMORY_TYPE_CONFIDENCE[type] || 0.6)))
+    const sourceMeta = _normalizeMemorySourceMeta({
+      source: item.source || 'summary',
+      sourceCallId: item.sourceCallId || item.callId || '',
+      sourceTurnId: item.sourceTurnId || item.turnId || '',
+      observedAt: item.observedAt || item.createdAt || now,
+      validFrom: item.validFrom || '',
+      validTo: item.validTo || '',
+      expiresAt: item.expiresAt || '',
+      visibility: item.visibility || '',
+      contradicts: item.contradicts || [],
+    }, now)
+    const sensitivity = item.sensitivity || _resolveMemorySensitivity(type, safeConfidence)
+    const status = _normalizeMemoryStatus(item, type, safeConfidence, sensitivity, sourceMeta.source)
     const normalizedItem = Object.assign({}, item, {
       id: item.id || _memoryItemId(type, text),
       type,
       text,
-      confidence: Math.max(0, Math.min(1, Number(item.confidence || MEMORY_TYPE_CONFIDENCE[type] || 0.6))),
+      confidence: safeConfidence,
       layer: item.layer || _resolveMemoryLayer(type),
-      source: item.source || 'summary',
+      source: sourceMeta.source,
+      sourceCallId: sourceMeta.sourceCallId,
+      sourceTurnId: sourceMeta.sourceTurnId,
+      observedAt: sourceMeta.observedAt,
+      validFrom: sourceMeta.validFrom,
+      validTo: sourceMeta.validTo,
+      expiresAt: sourceMeta.expiresAt,
       createdAt: item.createdAt || now,
+      updatedAt: item.updatedAt || now,
       lastUsedAt: item.lastUsedAt || '',
       triggerCount: Number(item.triggerCount || 0) || 0,
       stability: item.stability || (type === 'interest' || type === 'healthNote' ? 'stable' : 'semi_stable'),
-      sensitivity: item.sensitivity || _resolveMemorySensitivity(type, item.confidence),
-      status: item.status === MEMORY_STATUS.PENDING || item.status === MEMORY_STATUS.REJECTED
-        ? item.status
-        : MEMORY_STATUS.CONFIRMED,
+      sensitivity,
+      visibility: _resolveMemoryVisibility(type, sensitivity, sourceMeta.visibility),
+      status,
       needsConfirmation: typeof item.needsConfirmation === 'boolean'
         ? item.needsConfirmation
-        : item.status === MEMORY_STATUS.PENDING,
+        : status === MEMORY_STATUS.PENDING,
       confirmedAt: item.confirmedAt || '',
       lastConfirmedAt: item.lastConfirmedAt || '',
       evidence: item.evidence || text,
+      contradicts: sourceMeta.contradicts,
     })
     normalizedItem.score = _computeMemoryScore(normalizedItem, nowTs)
     const current = mergedMap[key]
@@ -283,6 +543,12 @@ function _mergeMemoryItems(existingItems, deltaItems) {
     }
     if (!current.lastUsedAt && normalizedItem.lastUsedAt) {
       current.lastUsedAt = normalizedItem.lastUsedAt
+    }
+    if (!current.sourceCallId && normalizedItem.sourceCallId) {
+      current.sourceCallId = normalizedItem.sourceCallId
+    }
+    if (!current.evidence && normalizedItem.evidence) {
+      current.evidence = normalizedItem.evidence
     }
   })
 
@@ -321,6 +587,10 @@ function _buildItemsFromLegacy(bundle) {
   })
   ;(elderMemory.healthNotes || []).forEach(text => {
     const item = _buildMemoryItem('healthNote', text, 'legacy', 0.8, now, text)
+    if (item) items.push(item)
+  })
+  ;(elderMemory.routineNotes || []).forEach(text => {
+    const item = _buildMemoryItem('routineNote', text, 'legacy', 0.7, now, text)
     if (item) items.push(item)
   })
   ;(xiaolinMemory.followUps || []).forEach(text => {
@@ -928,15 +1198,22 @@ function mergeMemoryBundle(elderKey, delta, callId) {
   const scopedKey = elderKey || getElderKey()
   const current = getMemoryBundle(scopedKey)
   const now = new Date().toISOString()
+  const deltaElderMemory = delta && delta.elderMemory ? delta.elderMemory : {}
+  const deltaXiaolinMemory = delta && delta.xiaolinMemory ? delta.xiaolinMemory : {}
+  const sourceMeta = {
+    source: delta && delta.memorySource ? delta.memorySource : 'summary',
+    sourceCallId: callId || delta && delta.sourceCallId || '',
+    observedAt: delta && delta.observedAt ? delta.observedAt : now,
+  }
 
-  const elderMemory = Object.assign({}, current.elderMemory, delta && delta.elderMemory ? delta.elderMemory : {})
+  const elderMemory = Object.assign({}, current.elderMemory, deltaElderMemory)
   elderMemory.healthNotes = _uniqList([].concat(current.elderMemory.healthNotes, elderMemory.healthNotes || []), 10)
   elderMemory.interestTags = _uniqList([].concat(current.elderMemory.interestTags, elderMemory.interestTags || []), 20)
   elderMemory.routineNotes = _uniqList([].concat(current.elderMemory.routineNotes, elderMemory.routineNotes || []), 10)
   elderMemory.recentEvents = _uniqList([].concat(current.elderMemory.recentEvents, elderMemory.recentEvents || []), 10)
   elderMemory.lastUpdatedAt = now
 
-  const xiaolinMemory = Object.assign({}, current.xiaolinMemory, delta && delta.xiaolinMemory ? delta.xiaolinMemory : {})
+  const xiaolinMemory = Object.assign({}, current.xiaolinMemory, deltaXiaolinMemory)
   xiaolinMemory.tabooTopics = _uniqList([].concat(current.xiaolinMemory.tabooTopics, xiaolinMemory.tabooTopics || []), 10)
   xiaolinMemory.followUps = _uniqList([].concat(current.xiaolinMemory.followUps, xiaolinMemory.followUps || []), 10)
   xiaolinMemory.careStrategies = _uniqList([].concat(current.xiaolinMemory.careStrategies, xiaolinMemory.careStrategies || []), 10)
@@ -944,25 +1221,40 @@ function mergeMemoryBundle(elderKey, delta, callId) {
   xiaolinMemory.memoryUpdatedAt = now
 
   const deltaItems = []
-  ;(elderMemory.recentEvents || []).forEach(text => {
-    const item = _buildMemoryItem('recentEvent', text, 'summary', MEMORY_TYPE_CONFIDENCE.recentEvent, now, text)
+  ;(deltaElderMemory.recentEvents || []).forEach(text => {
+    const item = _buildMemoryItem('recentEvent', text, sourceMeta, MEMORY_TYPE_CONFIDENCE.recentEvent, now, text)
     if (item) deltaItems.push(item)
   })
-  ;(elderMemory.interestTags || []).forEach(text => {
-    const item = _buildMemoryItem('interest', text, 'summary', MEMORY_TYPE_CONFIDENCE.interest, now, text)
+  ;(deltaElderMemory.interestTags || []).forEach(text => {
+    const item = _buildMemoryItem('interest', text, sourceMeta, MEMORY_TYPE_CONFIDENCE.interest, now, text)
     if (item) deltaItems.push(item)
   })
-  ;(elderMemory.healthNotes || []).forEach(text => {
-    const item = _buildMemoryItem('healthNote', text, 'summary', MEMORY_TYPE_CONFIDENCE.healthNote, now, text)
+  ;(deltaElderMemory.healthNotes || []).forEach(text => {
+    const item = _buildMemoryItem('healthNote', text, sourceMeta, MEMORY_TYPE_CONFIDENCE.healthNote, now, text)
     if (item) deltaItems.push(item)
   })
-  ;(xiaolinMemory.followUps || []).forEach(text => {
-    const item = _buildMemoryItem('followUp', text, 'summary', MEMORY_TYPE_CONFIDENCE.followUp, now, text)
+  ;(deltaElderMemory.routineNotes || []).forEach(text => {
+    const item = _buildMemoryItem('routineNote', text, sourceMeta, MEMORY_TYPE_CONFIDENCE.routineNote, now, text)
     if (item) deltaItems.push(item)
   })
-  ;(xiaolinMemory.tabooTopics || []).forEach(text => {
-    const item = _buildMemoryItem('tabooTopic', text, 'summary', MEMORY_TYPE_CONFIDENCE.tabooTopic, now, text)
+  ;(deltaXiaolinMemory.followUps || []).forEach(text => {
+    const item = _buildMemoryItem('followUp', text, sourceMeta, MEMORY_TYPE_CONFIDENCE.followUp, now, text)
     if (item) deltaItems.push(item)
+  })
+  ;(deltaXiaolinMemory.tabooTopics || []).forEach(text => {
+    const item = _buildMemoryItem('tabooTopic', text, sourceMeta, MEMORY_TYPE_CONFIDENCE.tabooTopic, now, text)
+    if (item) deltaItems.push(item)
+  })
+  ;(delta && Array.isArray(delta.memoryItems) ? delta.memoryItems : []).forEach(rawItem => {
+    if (!rawItem || !rawItem.text) return
+    deltaItems.push(Object.assign({}, rawItem, {
+      type: _normalizeMemoryType(rawItem.type),
+      source: rawItem.source || sourceMeta.source,
+      sourceCallId: rawItem.sourceCallId || sourceMeta.sourceCallId,
+      observedAt: rawItem.observedAt || sourceMeta.observedAt,
+      createdAt: rawItem.createdAt || now,
+      updatedAt: rawItem.updatedAt || now,
+    }))
   })
 
   const next = {
@@ -985,67 +1277,21 @@ function buildMemoryPrompt(elderKey, options) {
   const parts = []
   const elderMemory = bundle.elderMemory || {}
   const xiaolinMemory = bundle.xiaolinMemory || {}
-  const excludeSet = new Set((opts.excludeTexts || []).map(_normalizeMemoryText).filter(Boolean))
-  const maxItems = typeof opts.maxItems === 'number' ? opts.maxItems : 3
-  const minConfidence = typeof opts.minConfidence === 'number' ? opts.minConfidence : 0.6
-  const cooldownMs = typeof opts.cooldownMs === 'number' ? opts.cooldownMs : 12 * 60 * 60 * 1000
   const typeBudget = Object.assign({
     followUp: 1,
     recentEvent: 1,
     interest: 1,
   }, opts.typeBudget || {})
-  const nowTs = Date.now()
 
-  const memoryItems = (bundle.memoryItems || [])
-    .filter(item => item && item.text)
-    .filter(item => item.status !== MEMORY_STATUS.PENDING && item.status !== MEMORY_STATUS.REJECTED)
-    .filter(item => !_isLowInfoMemoryText(item.text))
-    .filter(item => item.confidence >= minConfidence)
-    .filter(item => !excludeSet.has(_normalizeMemoryText(item.text)))
-    .filter(item => {
-      if (!item.lastUsedAt) return true
-      const usedTs = Date.parse(item.lastUsedAt)
-      if (!usedTs) return true
-      return nowTs - usedTs >= cooldownMs
-    })
-    .filter(item => {
-      if (item.type === 'interest' || item.type === 'healthNote') return true
-      return _isRecent(item.createdAt, 45)
-    })
+  const memoryItems = _selectMemoryItemsForContext(bundle, Object.assign({}, opts, {
+    intent: opts.intent || 'general',
+    typeBudget,
+  }))
 
   if (memoryItems.length > 0) {
-    const pickedTypes = {}
-    const selected = memoryItems
-      .sort((a, b) => {
-        const typeRank = { followUp: 4, recentEvent: 3, interest: 2, healthNote: 1 }
-        const ar = typeRank[a.type] || 0
-        const br = typeRank[b.type] || 0
-        if (br !== ar) return br - ar
-        const as = Number(a.score || _computeMemoryScore(a, nowTs))
-        const bs = Number(b.score || _computeMemoryScore(b, nowTs))
-        if (bs !== as) return bs - as
-        if (b.confidence !== a.confidence) return b.confidence - a.confidence
-        return Date.parse(b.createdAt || '') - Date.parse(a.createdAt || '')
-      })
-      .filter(item => {
-        if (!(item.type === 'followUp' || item.type === 'recentEvent' || item.type === 'interest')) return false
-        const budget = Number(typeBudget[item.type] || 0)
-        if (budget <= 0) return false
-        if (!pickedTypes[item.type]) pickedTypes[item.type] = 0
-        if (pickedTypes[item.type] >= budget) return false
-        pickedTypes[item.type] += 1
-        return true
-      })
-      .slice(0, maxItems)
-
-    selected.forEach(item => {
-      if (item.type === 'followUp') {
-        parts.push(`上次承诺跟进：${item.text}`)
-      } else if (item.type === 'recentEvent') {
-        parts.push(`老人近期事件：${item.text}`)
-      } else if (item.type === 'interest') {
-        parts.push(`老人兴趣：${item.text}`)
-      }
+    memoryItems.forEach(item => {
+      const line = _formatMemoryItemForPrompt(item)
+      if (line) parts.push(line)
     })
   }
 
@@ -1076,6 +1322,25 @@ function buildMemoryPrompt(elderKey, options) {
   }
 
   return parts.join('\n')
+}
+
+function buildMemoryContext(elderKey, options) {
+  const bundle = getMemoryBundle(elderKey)
+  const opts = options || {}
+  const intent = _inferMemoryContextIntent(opts)
+  const selected = _selectMemoryItemsForContext(bundle, opts)
+  const lines = selected.map(_formatMemoryItemForPrompt).filter(Boolean)
+  const xiaolinMemory = bundle.xiaolinMemory || {}
+  if (xiaolinMemory.preferredAddress && opts.includePreferredAddress) {
+    lines.push(`偏好称呼：${xiaolinMemory.preferredAddress}`)
+  }
+  return {
+    intent,
+    prompt: lines.join('\n'),
+    items: selected,
+    usedTexts: selected.map(item => item.text),
+    hasSensitive: selected.some(item => item.sensitivity === 'sensitive' || item.type === 'healthNote'),
+  }
 }
 
 function getPendingMemoryConfirmations(elderKey, options) {
@@ -1162,6 +1427,88 @@ function markMemoryItemsUsed(elderKey, texts) {
   return true
 }
 
+function _memoryListKeyForType(type) {
+  const normalizedType = _normalizeMemoryType(type)
+  if (normalizedType === 'interest') return { section: 'elderMemory', key: 'interestTags' }
+  if (normalizedType === 'healthNote') return { section: 'elderMemory', key: 'healthNotes' }
+  if (normalizedType === 'recentEvent') return { section: 'elderMemory', key: 'recentEvents' }
+  if (normalizedType === 'routineNote') return { section: 'elderMemory', key: 'routineNotes' }
+  if (normalizedType === 'followUp') return { section: 'xiaolinMemory', key: 'followUps' }
+  if (normalizedType === 'tabooTopic') return { section: 'xiaolinMemory', key: 'tabooTopics' }
+  return null
+}
+
+function updateMemoryItem(elderKey, memoryItemId, updates) {
+  const scopedKey = elderKey || getElderKey()
+  if (!memoryItemId) return null
+  const bundle = getMemoryBundle(scopedKey)
+  const now = new Date().toISOString()
+  let previousItem = null
+  let updatedItem = null
+  const nextItems = (bundle.memoryItems || []).map(item => {
+    if (!item || item.id !== memoryItemId) return item
+    previousItem = item
+    const nextType = _normalizeMemoryType(updates && updates.type ? updates.type : item.type)
+    const nextText = _normalizeMemoryText(updates && Object.prototype.hasOwnProperty.call(updates, 'text') ? updates.text : item.text)
+    if (!nextText) return item
+    const merged = Object.assign({}, item, updates || {}, {
+      id: memoryItemId,
+      type: nextType,
+      text: nextText,
+      updatedAt: now,
+    })
+    updatedItem = _mergeMemoryItems([], [merged])[0] || merged
+    return updatedItem
+  })
+  if (!updatedItem) return null
+
+  const nextBundle = Object.assign({}, bundle, {
+    memoryItems: nextItems,
+    memoryMeta: Object.assign({}, bundle.memoryMeta, {
+      memoryUpdatedAt: now,
+    }),
+  })
+  const previousListRef = _memoryListKeyForType(previousItem && previousItem.type)
+  const nextListRef = _memoryListKeyForType(updatedItem.type)
+  if (previousListRef) {
+    const section = Object.assign({}, nextBundle[previousListRef.section] || {})
+    section[previousListRef.key] = (section[previousListRef.key] || [])
+      .filter(text => _normalizeMemoryText(text) !== _normalizeMemoryText(previousItem.text))
+    nextBundle[previousListRef.section] = section
+  }
+  if (nextListRef) {
+    const section = Object.assign({}, nextBundle[nextListRef.section] || {})
+    section[nextListRef.key] = _uniqList([].concat(section[nextListRef.key] || [], [updatedItem.text]), MEMORY_TYPE_LIMIT[updatedItem.type] || 10)
+    nextBundle[nextListRef.section] = section
+  }
+  saveMemoryBundle(nextBundle, scopedKey)
+  return updatedItem
+}
+
+function deleteMemoryItem(elderKey, memoryItemId) {
+  const scopedKey = elderKey || getElderKey()
+  if (!memoryItemId) return false
+  const bundle = getMemoryBundle(scopedKey)
+  const removed = (bundle.memoryItems || []).find(item => item && item.id === memoryItemId)
+  if (!removed) return false
+  const now = new Date().toISOString()
+  const nextBundle = Object.assign({}, bundle, {
+    memoryItems: (bundle.memoryItems || []).filter(item => item && item.id !== memoryItemId),
+    memoryMeta: Object.assign({}, bundle.memoryMeta, {
+      memoryUpdatedAt: now,
+    }),
+  })
+  const listRef = _memoryListKeyForType(removed.type)
+  if (listRef) {
+    const section = Object.assign({}, nextBundle[listRef.section] || {})
+    section[listRef.key] = (section[listRef.key] || [])
+      .filter(text => _normalizeMemoryText(text) !== _normalizeMemoryText(removed.text))
+    nextBundle[listRef.section] = section
+  }
+  saveMemoryBundle(nextBundle, scopedKey)
+  return true
+}
+
 function getMemoryDebugSnapshot(elderKey) {
   const scopedKey = elderKey || getElderKey()
   return {
@@ -1224,7 +1571,10 @@ module.exports = {
   initMemoryBundle,
   mergeMemoryBundle,
   buildMemoryPrompt,
+  buildMemoryContext,
   markMemoryItemsUsed,
+  updateMemoryItem,
+  deleteMemoryItem,
   getMemoryDebugSnapshot,
   getPendingMemoryConfirmations,
   confirmMemoryItem,

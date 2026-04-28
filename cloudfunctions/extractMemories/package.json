@@ -1,0 +1,9 @@
+{
+  "name": "extractMemories",
+  "version": "1.0.0",
+  "description": "调用火山方舟 LLM 抽取长期记忆 JSON patch",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "latest"
+  }
+}

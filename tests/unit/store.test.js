@@ -352,4 +352,104 @@ describe('store 离线规则', () => {
     expect(confirmedItem).toBeTruthy()
     expect(confirmedItem.status).toBe('confirmed')
   })
+
+  test('memoryItems 会保留来源、证据、有效期和可见性元数据', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:memory-meta'
+
+    store.mergeMemoryBundle(elderKey, {
+      memorySource: 'cloud_ark',
+      elderMemory: {
+        recentEvents: ['周五要去社区量血压'],
+      },
+      memoryItems: [
+        {
+          type: 'healthNote',
+          text: '最近血压有点波动',
+          confidence: 0.86,
+          evidence: '老人说最近血压有点波动',
+          validFrom: '2026-04-15',
+          expiresAt: '2026-07-15',
+          sensitivity: 'sensitive',
+          needsConfirmation: true,
+        },
+      ],
+    }, 'call_meta_001')
+
+    const bundle = store.getMemoryBundle(elderKey)
+    const health = bundle.memoryItems.find(item => item.text === '最近血压有点波动')
+    const event = bundle.memoryItems.find(item => item.text === '周五要去社区量血压')
+
+    expect(health.sourceCallId).toBe('call_meta_001')
+    expect(health.evidence).toBe('老人说最近血压有点波动')
+    expect(health.validFrom).toBe('2026-04-15')
+    expect(health.expiresAt).toBe('2026-07-15')
+    expect(health.visibility).toBe('guardian_review')
+    expect(health.status).toBe('pending')
+    expect(event.source).toBe('cloud_ark')
+    expect(event.sourceCallId).toBe('call_meta_001')
+  })
+
+  test('buildMemoryContext 会按意图召回记忆并过滤未确认健康信息', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:memory-context'
+
+    store.mergeMemoryBundle(elderKey, {
+      elderMemory: {
+        interestTags: ['太极拳'],
+        healthNotes: ['最近血压有点波动'],
+      },
+      xiaolinMemory: {
+        tabooTopics: ['不想聊住院经历'],
+      },
+    }, 'call_context_001')
+
+    const smallTalk = store.buildMemoryContext(elderKey, {
+      intent: 'smallTalk',
+      maxItems: 3,
+      minConfidence: 0.6,
+    })
+    expect(smallTalk.prompt).toContain('老人兴趣：太极拳')
+    expect(smallTalk.prompt).not.toContain('最近血压有点波动')
+
+    const pending = store.getPendingMemoryConfirmations(elderKey, { maxCount: 5 })
+    const health = pending.find(item => item.text === '最近血压有点波动')
+    store.confirmMemoryItem(elderKey, health.id, true)
+
+    const healthContext = store.buildMemoryContext(elderKey, {
+      intent: 'healthConcern',
+      maxItems: 3,
+      minConfidence: 0.6,
+    })
+    expect(healthContext.prompt).toContain('健康背景')
+    expect(healthContext.prompt).toContain('最近血压有点波动')
+    expect(healthContext.prompt).toContain('慎提话题')
+  })
+
+  test('updateMemoryItem/deleteMemoryItem 可编辑和删除长期记忆', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:memory-edit'
+    store.mergeMemoryBundle(elderKey, {
+      elderMemory: {
+        interestTags: ['太极'],
+      },
+    }, 'call_edit_001')
+
+    const item = store.getMemoryBundle(elderKey).memoryItems.find(row => row.text === '太极')
+    const updated = store.updateMemoryItem(elderKey, item.id, {
+      text: '太极拳',
+      status: 'confirmed',
+      needsConfirmation: false,
+    })
+    expect(updated.text).toBe('太极拳')
+    expect(store.getMemoryBundle(elderKey).elderMemory.interestTags).toContain('太极拳')
+    expect(store.getMemoryBundle(elderKey).elderMemory.interestTags).not.toContain('太极')
+
+    expect(store.deleteMemoryItem(elderKey, item.id)).toBe(true)
+    expect(store.getMemoryBundle(elderKey).memoryItems.find(row => row.id === item.id)).toBeFalsy()
+    expect(store.getMemoryBundle(elderKey).elderMemory.interestTags).not.toContain('太极拳')
+  })
 })

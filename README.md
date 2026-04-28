@@ -35,7 +35,8 @@
 │   │   └── store.js        # 本地数据与记忆管理
 │   └── config.local.example.js
 ├── cloudfunctions/
-│   └── generateSummary/    # 通话摘要云函数
+│   ├── generateSummary/    # 通话摘要云函数
+│   └── extractMemories/    # 长期记忆抽取云函数
 └── project.config.json
 ```
 
@@ -57,6 +58,8 @@
 ### 3) 记忆与提醒
 
 - 记忆条目评分与冷却机制，降低重复提及
+- 记忆条目带来源通话、证据、有效期、敏感度与确认状态
+- 支持“记忆管理”页查看、确认、编辑和删除长期记忆
 - 支持“叫我 XXX”称呼偏好提取与持久化
 - 从摘要结果与用户原话中提取提醒候选
 - 高置信提醒自动入库，避免重复创建
@@ -97,7 +100,7 @@ cp miniprogram/config.local.example.js miniprogram/config.local.js
 
 进入微信开发者工具后：
 
-1. 上传并部署 `cloudfunctions/generateSummary`
+1. 上传并部署 `cloudfunctions/generateSummary` 和 `cloudfunctions/extractMemories`
 2. 为云函数配置环境变量 `ARK_API_KEY`
 
 说明：
