@@ -381,7 +381,10 @@ function getDialogId(elderKey) {
   if (map[scopedKey]) return map[scopedKey]
 
   // 兼容旧版本单值 dialogId
-  return wx.getStorageSync(KEYS.DIALOG_ID) || ''
+  if (scopedKey === 'elder:default') {
+    return wx.getStorageSync(KEYS.DIALOG_ID) || ''
+  }
+  return ''
 }
 
 function saveDialogId(id, elderKey) {

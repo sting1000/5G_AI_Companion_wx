@@ -1,3 +1,4 @@
+const { createLogger } = require('./logger')
 /**
  * 小程序录音和音频播放工具
  *
@@ -22,6 +23,7 @@ const FLOW_LOG_PREFIX = '[AudioFlow]'
 const DEBUG_AUDIO_TRACE = false
 const AUDIO_STUTTER_WARN_SEGMENTS = 2
 const AUDIO_STUTTER_WARN_SWITCH_AVG_MS = 80
+const logger = createLogger('Audio')
 
 /**
  * 录音管理器封装
@@ -33,7 +35,7 @@ class AudioRecorder {
     this.recording = false
 
     this.recorder.onStart(() => {
-      console.log('[AudioRecorder] 录音已启动')
+      logger.info('录音已启动')
     })
 
     this.recorder.onFrameRecorded((res) => {
@@ -43,19 +45,19 @@ class AudioRecorder {
     })
 
     this.recorder.onError((err) => {
-      console.error('[AudioRecorder] error:', JSON.stringify(err))
+      logger.error('AudioRecorder error:', JSON.stringify(err))
       this.recording = false
     })
 
     this.recorder.onStop(() => {
-      console.log('[AudioRecorder] 录音已停止')
+      logger.info('录音已停止')
       this.recording = false
     })
   }
 
   start() {
     this.recording = true
-    console.log('[AudioRecorder] 调用 recorder.start, format=PCM, sampleRate=' + SAMPLE_RATE + ', frameSize=' + RECORDER_FRAME_SIZE_KB + 'KB')
+    logger.info('调用 recorder.start, format=PCM, sampleRate=' + SAMPLE_RATE + ', frameSize=' + RECORDER_FRAME_SIZE_KB + 'KB')
     this.recorder.start({
       sampleRate: SAMPLE_RATE,
       numberOfChannels: CHANNELS,
@@ -189,7 +191,7 @@ class AudioPlayer {
       success: () => {
         this.playing = true
         this._armPlayWatchdog()
-        console.log(FLOW_LOG_PREFIX, '开始播放整句缓冲音频')
+        logger.info(FLOW_LOG_PREFIX, '开始播放整句缓冲音频')
         if (!this._playFile(filePath)) {
           this.playing = false
           this._clearPlayWatchdog()
@@ -198,7 +200,7 @@ class AudioPlayer {
         if (this.onPlayStart) this.onPlayStart()
       },
       fail: (err) => {
-        console.error('[AudioPlayer] write file error:', err)
+        logger.error('AudioPlayer write file error:', err)
         this.playing = false
       },
     })

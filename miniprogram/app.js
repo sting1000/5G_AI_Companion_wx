@@ -1,3 +1,11 @@
+let localConfig = {}
+try {
+  localConfig = require('./config.local')
+} catch (err) {
+  localConfig = {}
+}
+const store = require('./utils/store')
+
 App({
   globalData: {
     // 老人配置信息
@@ -12,7 +20,7 @@ App({
     // 初始化云开发
     if (wx.cloud) {
       wx.cloud.init({
-        env: 'cloud1-1gfclb4r49c6bfad',
+        env: localConfig.cloudEnvId || wx.cloud.DYNAMIC_CURRENT_ENV,
         traceUser: true,
       })
     }
@@ -34,19 +42,16 @@ App({
 
   // 保存老人配置
   saveElderConfig(config) {
-    this.globalData.elderConfig = config
-    wx.setStorageSync('elderConfig', config)
+    store.saveElderConfig(config)
   },
 
   // 保存 dialog_id
   saveDialogId(id) {
-    this.globalData.dialogId = id
-    wx.setStorageSync('dialogId', id)
+    store.saveDialogId(id)
   },
 
   // 添加通话记录
   addCallRecord(record) {
-    this.globalData.callHistory.unshift(record)
-    wx.setStorageSync('callHistory', this.globalData.callHistory)
+    store.addCallRecord(record)
   },
 })

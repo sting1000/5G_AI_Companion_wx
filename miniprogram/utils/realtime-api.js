@@ -6,12 +6,13 @@
  */
 
 const config = require('../config.local')
+const { createLogger, shouldPrintInfo } = require('./logger')
 
 const WS_URL = 'wss://openspeech.bytedance.com/api/v3/realtime/dialogue'
 const RESOURCE_ID = 'volc.speech.dialog'
-const APP_KEY = 'PlgvMymc7f3tQnJ6'
+const APP_KEY = (config.speech && config.speech.appKey) || ''
 const DEBUG_LOG = false
-const FLOW_LOG_PREFIX = '[RealtimeFlow]'
+const logger = createLogger('RealtimeAPI')
 
 // 客户端事件 ID
 const EVENT = {
@@ -228,7 +229,7 @@ function tryParseJSON(str) {
 }
 
 function logDebug(...args) {
-  if (!DEBUG_LOG) return
+  if (!DEBUG_LOG || !shouldPrintInfo()) return
   console.log(...args)
 }
 
@@ -299,17 +300,20 @@ class RealtimeAPIClient {
       logDebug('[RealtimeAPI] 正在连接:', WS_URL)
       logDebug('[RealtimeAPI] AppID:', config.speech.appId)
 
+      const headers = {
+        'X-Api-App-ID': config.speech.appId,
+        'X-Api-Access-Key': config.speech.accessKey,
+        'X-Api-Resource-Id': RESOURCE_ID,
+        'X-Api-Connect-Id': this.connectId,
+      }
+      if (APP_KEY) {
+        headers['X-Api-App-Key'] = APP_KEY
+      }
       const socketTask = wx.connectSocket({
         url: WS_URL,
-        header: {
-          'X-Api-App-ID': config.speech.appId,
-          'X-Api-Access-Key': config.speech.accessKey,
-          'X-Api-Resource-Id': RESOURCE_ID,
-          'X-Api-App-Key': APP_KEY,
-          'X-Api-Connect-Id': this.connectId,
-        },
+        header: headers,
         fail: (err) => {
-          console.error('[RealtimeAPI] connectSocket fail:', JSON.stringify(err))
+          logger.error('connectSocket fail:', JSON.stringify(err))
           reject(err)
         },
       })
@@ -318,7 +322,7 @@ class RealtimeAPIClient {
 
       socketTask.onOpen((res) => {
         logDebug('[RealtimeAPI] WebSocket onOpen', JSON.stringify(res))
-        console.log(FLOW_LOG_PREFIX, 'WebSocket onOpen')
+        logger.info('WebSocket onOpen')
         this._sendStartConnection()
       })
 
@@ -327,14 +331,14 @@ class RealtimeAPIClient {
       })
 
       socketTask.onError((err) => {
-        console.error('[RealtimeAPI] WebSocket onError:', JSON.stringify(err))
+        logger.error('WebSocket onError:', JSON.stringify(err))
         if (this.onError) this.onError(err)
         reject(err)
       })
 
       socketTask.onClose((res) => {
         logDebug('[RealtimeAPI] WebSocket onClose:', JSON.stringify(res))
-        console.warn(FLOW_LOG_PREFIX, 'WebSocket onClose')
+        logger.warn('WebSocket onClose')
         this.socket = null
         this.connected = false
         this.sessionActive = false
@@ -469,7 +473,7 @@ class RealtimeAPIClient {
       this.sessionId,
       { content }
     )
-    console.log(FLOW_LOG_PREFIX, '发送 SAY_HELLO')
+    logger.info('发送 SAY_HELLO')
     this.socket.send({ data: frame })
   }
 
@@ -478,11 +482,11 @@ class RealtimeAPIClient {
    */
   sendAudio(pcmBuffer) {
     if (!this.sessionActive) {
-      console.warn('[RealtimeAPI] sendAudio: session not active, skipping')
+      logger.warn('sendAudio: session not active, skipping')
       return
     }
     if (!this.socket) {
-      console.warn('[RealtimeAPI] sendAudio: socket is null, skipping')
+      logger.warn('sendAudio: socket is null, skipping')
       return
     }
     const frame = buildFrame(
@@ -558,7 +562,7 @@ class RealtimeAPIClient {
         try { socket.close() } catch (e) {}
       }, 500)
     } catch (e) {
-      console.warn('[RealtimeAPI] disconnect error:', e)
+      logger.warn('disconnect error:', e)
     }
   }
 
@@ -569,11 +573,11 @@ class RealtimeAPIClient {
     // 小程序 ArrayBuffer 的 instanceof 可能失效，改用 byteLength 检测
     let buffer = data
     if (typeof data === 'string') {
-      console.warn('[RealtimeAPI] 收到字符串消息，忽略')
+      logger.warn('收到字符串消息，忽略')
       return
     }
     if (!buffer || buffer.byteLength === undefined) {
-      console.warn('[RealtimeAPI] 收到非二进制消息:', typeof data)
+      logger.warn('收到非二进制消息:', typeof data)
       return
     }
     // 如果是 typed array 而非 ArrayBuffer，取底层 buffer
@@ -583,7 +587,7 @@ class RealtimeAPIClient {
 
     const parsed = parseFrame(buffer)
     if (!parsed) {
-      console.warn('[RealtimeAPI] 帧解析失败, 数据长度:', buffer.byteLength)
+      logger.warn('帧解析失败, 数据长度:', buffer.byteLength)
       return
     }
 
@@ -598,7 +602,7 @@ class RealtimeAPIClient {
 
     // 错误处理
     if (msgType === MSG_TYPE.ERROR) {
-      console.error('[RealtimeAPI] Server error:', parsed.errorCode, payload)
+      logger.error('Server error:', parsed.errorCode, payload)
       if (this.onError) this.onError({ code: parsed.errorCode, detail: payload })
       return
     }
@@ -606,7 +610,7 @@ class RealtimeAPIClient {
     switch (eventId) {
       case SERVER_EVENT.CONNECTION_STARTED:
         this.connected = true
-        console.log(FLOW_LOG_PREFIX, '收到 CONNECTION_STARTED')
+        logger.info('收到 CONNECTION_STARTED')
         if (this._onceConnected) {
           this._onceConnected()
           this._onceConnected = null
@@ -614,7 +618,7 @@ class RealtimeAPIClient {
         break
 
       case SERVER_EVENT.CONNECTION_FAILED:
-        console.error(FLOW_LOG_PREFIX, '收到 CONNECTION_FAILED', payload || {})
+        logger.error('收到 CONNECTION_FAILED', payload || {})
         if (this._onConnectFailed) {
           this._onConnectFailed(payload)
           this._onConnectFailed = null
@@ -624,7 +628,7 @@ class RealtimeAPIClient {
       case SERVER_EVENT.SESSION_STARTED:
         this.sessionActive = true
         this.dialogId = payload?.dialog_id || ''
-        console.log(FLOW_LOG_PREFIX, '收到 SESSION_STARTED', {
+        logger.info('收到 SESSION_STARTED', {
           dialogId: this.dialogId,
         })
         if (this.onSessionStarted) this.onSessionStarted(this.dialogId)
@@ -635,7 +639,7 @@ class RealtimeAPIClient {
         break
 
       case SERVER_EVENT.SESSION_FAILED:
-        console.error(FLOW_LOG_PREFIX, '收到 SESSION_FAILED', payload || {})
+        logger.error('收到 SESSION_FAILED', payload || {})
         if (this._onSessionFailed) {
           this._onSessionFailed(payload)
           this._onSessionFailed = null
@@ -655,7 +659,7 @@ class RealtimeAPIClient {
         break
 
       case SERVER_EVENT.ASR_ENDED:
-        console.log(FLOW_LOG_PREFIX, '收到 ASR_ENDED')
+        logger.info('收到 ASR_ENDED')
         if (this.onASREnd) this.onASREnd()
         break
 
@@ -670,11 +674,11 @@ class RealtimeAPIClient {
         break
 
       case SERVER_EVENT.CHAT_ENDED:
-        console.log(FLOW_LOG_PREFIX, '收到 CHAT_ENDED')
+        logger.info('收到 CHAT_ENDED')
         break
 
       case SERVER_EVENT.TTS_SENTENCE_START:
-        console.log(FLOW_LOG_PREFIX, '收到 TTS_SENTENCE_START')
+        logger.info('收到 TTS_SENTENCE_START')
         if (this.onTTSStart) this.onTTSStart(payload?.text || '')
         break
 
@@ -690,15 +694,15 @@ class RealtimeAPIClient {
             const firstBytes = new Uint8Array(audioData.slice(0, 8))
             const header = Array.from(firstBytes).map(b => b.toString(16).padStart(2, '0')).join(' ')
             const isOgg = firstBytes[0] === 0x4F && firstBytes[1] === 0x67 && firstBytes[2] === 0x67 && firstBytes[3] === 0x53
-            console.log('[RealtimeAPI] TTS 首包音频头字节:', header, isOgg ? '(OGG格式!)' : '(非 OGG, 可能是 PCM)')
-            console.log('[RealtimeAPI] TTS 音频包大小:', audioData.byteLength, 'bytes')
+            logger.info('TTS 首包音频头字节:', header, isOgg ? '(OGG格式!)' : '(非 OGG, 可能是 PCM)')
+            logger.info('TTS 音频包大小:', audioData.byteLength, 'bytes')
           }
           if (this.onAudioData) this.onAudioData(audioData)
         }
         break
 
       case SERVER_EVENT.TTS_ENDED:
-        console.log(FLOW_LOG_PREFIX, '收到 TTS_ENDED')
+        logger.info('收到 TTS_ENDED')
         if (this.onTTSEnd) this.onTTSEnd()
         break
     }

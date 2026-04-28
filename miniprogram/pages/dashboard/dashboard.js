@@ -1,4 +1,5 @@
 const store = require('../../utils/store')
+const { extractHealthTags, normalizeInterestTags, uniqTags } = require('../../utils/shared-rules')
 
 Page({
   data: {
@@ -146,12 +147,10 @@ Page({
       .concat(memoryHealthNotes)
       .concat(memoryItemHealthNotes)
       .filter(Boolean)
-    const extractedHealthTags = healthSources.reduce((all, source) => {
-      return all.concat(this._extractHealthTags(source))
-    }, [])
+    const extractedHealthTags = healthSources.reduce((all, source) => all.concat(extractHealthTags(source)), [])
 
     const interestTags = this._normalizeInterestTags(hobbies).slice(0, 6)
-    const healthTags = this._uniqTags(extractedHealthTags).slice(0, 6)
+    const healthTags = uniqTags(extractedHealthTags).slice(0, 6)
 
     this.setData({
       hasSignal: interestTags.length > 0,
@@ -210,53 +209,7 @@ Page({
   },
 
   _extractHealthTags(healthText) {
-    const text = String(healthText || '').trim()
-    if (!text) return []
-    const compact = text.replace(/\s+/g, '')
-    const keywordDict = [
-      ['失眠', ['失眠']],
-      ['睡不着', ['睡不着', '入睡困难', '早醒']],
-      ['睡眠问题', ['睡眠']],
-      ['高血压', ['高血压']],
-      ['血压波动', ['血压', '头晕']],
-      ['糖尿病', ['糖尿病']],
-      ['血糖偏高', ['血糖']],
-      ['心脏病', ['心脏病']],
-      ['心悸', ['心悸']],
-      ['胸闷', ['胸闷']],
-      ['胸痛', ['胸痛']],
-      ['心脏问题', ['心脏']],
-      ['关节疼痛', ['关节', '膝盖', '腰痛', '腰酸', '腿疼', '疼痛']],
-      ['食欲下降', ['胃口', '食欲']],
-      ['消化不适', ['消化', '胃痛', '腹胀']],
-      ['按时吃药', ['按时服药']],
-      ['漏服药', ['漏服']],
-      ['用药', ['吃药', '药']],
-    ]
-    const matchedMeta = keywordDict
-      .map(([tag, keywords]) => ({
-        tag,
-        keywords,
-        matchedKeywords: keywords.filter(keyword => compact.includes(keyword)),
-      }))
-      .filter(item => item.matchedKeywords.length > 0)
-    const hasHypertension = matchedMeta.some(item => item.tag === '高血压')
-    const filteredMatchedMeta = matchedMeta.filter(item => {
-      // “高血压”应优先于“血压波动”，避免单条备注重复打标签
-      if (hasHypertension && item.tag === '血压波动') return false
-      return true
-    })
-    const matched = filteredMatchedMeta.map(item => item.tag)
-    const matchedKeywordList = filteredMatchedMeta.reduce((all, item) => all.concat(item.matchedKeywords), [])
-
-    const fallbackTags = text
-      .split(/[，。,、；;！!？?\n]/)
-      .map(item => item.trim())
-      .filter(Boolean)
-      .filter(item => !matchedKeywordList.some(keyword => item.includes(keyword)))
-      .map(item => (item.length > 8 ? `${item.slice(0, 8)}...` : item))
-
-    return this._uniqTags([].concat(matched, fallbackTags))
+    return extractHealthTags(healthText)
   },
 
   _normalizeInterestTags(tags) {
@@ -280,14 +233,10 @@ Page({
       }
     })
 
-    return this._uniqTags(normalized)
+    return normalizeInterestTags(normalized)
   },
 
   _uniqTags(tags) {
-    return (tags || []).filter((tag, index, list) => {
-      const text = String(tag || '').trim()
-      if (!text) return false
-      return list.findIndex(item => String(item || '').trim() === text) === index
-    }).map(tag => String(tag).trim())
+    return uniqTags(tags)
   },
 })

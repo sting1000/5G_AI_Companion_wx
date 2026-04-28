@@ -1,7 +1,17 @@
 const { RealtimeAPIClient } = require('../../utils/realtime-api')
 const { AudioRecorder, AudioPlayer, FRAME_SIZE } = require('../../utils/audio')
 const store = require('../../utils/store')
+const { createLogger } = require('../../utils/logger')
+const { normalizeSummaryPayload } = require('../../utils/shared-rules')
+const { generateSummary, applyLocalSummary } = require('../../utils/call-finalizer')
+const logger = createLogger('Call')
+const console = {
+  log: (...args) => logger.info(...args),
+  warn: (...args) => logger.warn(...args),
+  error: (...args) => logger.error(...args),
+}
 const SUBTITLE_THROTTLE_MS = 120
+const USER_DRAFT_THROTTLE_MS = 120
 const TRANSCRIPT_MAX_ITEMS = 30
 const ENABLE_AUTO_SESSION_REFRESH = false
 const FLOW_LOG_PREFIX = '[CallFlow]'
@@ -111,6 +121,9 @@ Page({
     this.sessionOptions = null
     this.assistantDraftFlushTimer = null
     this.assistantDraftLastFlushAt = 0
+    this.userDraftFlushTimer = null
+    this.userDraftLastFlushAt = 0
+    this.pendingUserDraft = ''
     this.currentLatencyTurn = null
     this.latencySamples = []
     this.lastUplinkBlockReason = ''
@@ -373,14 +386,11 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     this.client.onASRText = (text, isFinal) => {
       this._markCallConnectedIfNeeded('asr')
       const visibleText = this._sanitizeForDisplay(text)
-      this.setData({
-        currentUserDraft: visibleText,
-        transcriptAnchorId: 'draft-user',
-        transcriptScrollTop: this.data.transcriptScrollTop + 9999,
-        isSpeaking: true,
-        isAssistantSpeaking: false,
-      })
+      this.pendingUserDraft = visibleText || ''
+      this._flushUserDraft(false)
+      this.setData({ isSpeaking: true, isAssistantSpeaking: false })
       if (isFinal && visibleText) {
+        this._flushUserDraft(true)
         this._appendTranscriptItem('user', visibleText)
         this.messages.push({ role: 'user', content: text })
         this._tryResolvePendingMemoryConfirmation(text)
@@ -925,6 +935,35 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     }, waitMs)
   },
 
+  _flushUserDraft(force) {
+    if (force) {
+      if (this.userDraftFlushTimer) {
+        clearTimeout(this.userDraftFlushTimer)
+        this.userDraftFlushTimer = null
+      }
+      this.userDraftLastFlushAt = Date.now()
+      this.setData({
+        currentUserDraft: this.pendingUserDraft || '',
+        transcriptAnchorId: 'draft-user',
+        transcriptScrollTop: this.data.transcriptScrollTop + 9999,
+      })
+      return
+    }
+    if (this.userDraftFlushTimer) return
+    const now = Date.now()
+    const elapsed = now - this.userDraftLastFlushAt
+    const waitMs = elapsed >= USER_DRAFT_THROTTLE_MS ? 0 : (USER_DRAFT_THROTTLE_MS - elapsed)
+    this.userDraftFlushTimer = setTimeout(() => {
+      this.userDraftFlushTimer = null
+      this.userDraftLastFlushAt = Date.now()
+      this.setData({
+        currentUserDraft: this.pendingUserDraft || '',
+        transcriptAnchorId: 'draft-user',
+        transcriptScrollTop: this.data.transcriptScrollTop + 9999,
+      })
+    }, waitMs)
+  },
+
   _appendTranscriptItem(role, content) {
     const text = this._sanitizeForDisplay(content)
     if (!text) return
@@ -1011,43 +1050,14 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
 
   // 异步生成通话摘要
   _generateSummary(record) {
-    if (!record.messages || record.messages.length === 0) return
-
     const elderConfig = store.getElderConfig()
     const elderName = elderConfig ? elderConfig.parentName : '老人'
-
-    // 尝试云函数（如果云开发已初始化）
-    if (wx.cloud) {
-      wx.cloud.callFunction({
-        name: 'generateSummary',
-        data: {
-          messages: record.messages,
-          elderName: elderName,
-        },
-      }).then(res => {
-        if (res.result && res.result.success) {
-          const summaryPayload = Object.assign(
-            {},
-            this._normalizeSummaryPayload(res.result.data, record, { preferSource: 'cloud_ark' }),
-            {
-            summaryStatus: 'done',
-            summaryUpdatedAt: new Date().toISOString(),
-            summaryError: '',
-            }
-          )
-          this._updateCallRecord(record.id, summaryPayload)
-          this._evolveMemory(record, summaryPayload)
-        } else {
-          this._localSummary(record)
-        }
-      }).catch(err => {
-        console.warn('[Call] 云函数摘要生成失败，使用本地生成:', err)
-        this._localSummary(record)
-      })
-    } else {
-      // 云开发未初始化，直接本地生成
-      this._localSummary(record)
-    }
+    generateSummary(record, {
+      elderName,
+      normalizeSummaryPayload: this._normalizeSummaryPayload.bind(this),
+      updateCallRecord: this._updateCallRecord.bind(this),
+      evolveMemory: this._evolveMemory.bind(this),
+    })
   },
 
   // 本地摘要生成（fallback）
@@ -1055,47 +1065,11 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     try {
       const elderConfig = store.getElderConfig()
       const elderName = elderConfig ? elderConfig.parentName : '老人'
-      const messages = record.messages || []
-      const userMsgs = messages.filter(m => m.role === 'user').map(m => m.content)
-      const allText = messages.map(m => m.content).join(' ')
-      const healthKeywords = ['心脏病', '胸闷', '胸痛', '心慌', '心悸', '不舒服', '难受', '头晕', '血压', '血糖', '失眠', '吃药', '没药', '复查', '复诊']
-      const interestKeywords = ['太极拳', '书法', '电视剧', '运动', '做饭', '烹饪', '散步', '公园', '邻居', '广场舞', '跳舞']
-      const healthTopics = healthKeywords.filter(k => allText.includes(k))
-      const interestTopics = interestKeywords.filter(k => allText.includes(k))
-      const topics = []
-      if (healthTopics.length > 0) {
-        topics.push('健康关注')
-      }
-      topics.push.apply(topics, interestTopics)
-      const dedupTopics = Array.from(new Set(topics)).slice(0, 6)
-      const healthHighlight = userMsgs.filter(text => /(心脏病|胸闷|胸痛|不舒服|难受|没药|没带药|吃药|血压|血糖|焦虑|紧张|状态不好)/.test(String(text || ''))).slice(0, 2)
-      const genericHighlights = userMsgs.slice(0, 3)
-      const highlights = Array.from(new Set([].concat(healthHighlight, genericHighlights))).slice(0, 3)
-
-      const summary = `${elderName}和小林进行了${messages.length}轮对话。` +
-        (dedupTopics.length > 0 ? `话题涉及${dedupTopics.join('、')}。` : '') +
-        (healthTopics.length > 0 ? '对话中出现了健康不适与用药相关线索，建议优先跟进。' : '')
-
-      const summaryPayload = this._normalizeSummaryPayload({
-        summary,
-        topics: dedupTopics.length > 0 ? dedupTopics : ['日常聊天'],
-        highlights,
-        mood: '',
-        moodEmoji: '',
-        summarySource: 'local_rule',
-        summaryModel: '',
-      }, record, { preferSource: 'local_rule' })
-      this._updateCallRecord(record.id, Object.assign({}, summaryPayload, {
-        summaryStatus: 'done',
-        summaryUpdatedAt: new Date().toISOString(),
-        summaryError: '',
-      }))
-      this._evolveMemory(record, {
-        summary: summaryPayload.summary,
-        topics: summaryPayload.topics,
-        highlights: summaryPayload.highlights,
-        mood: summaryPayload.moodLabel,
-        moodEmoji: summaryPayload.mood,
+      applyLocalSummary(record, {
+        elderName,
+        normalizeSummaryPayload: this._normalizeSummaryPayload.bind(this),
+        updateCallRecord: this._updateCallRecord.bind(this),
+        evolveMemory: this._evolveMemory.bind(this),
       })
     } catch (err) {
       console.error('[Call] 本地摘要生成失败:', err)
@@ -1978,27 +1952,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
   },
 
   _normalizeSummaryPayload(summaryData, record, options) {
-    const payload = summaryData && typeof summaryData === 'object' ? summaryData : {}
-    const moodFromModel = this._normalizeMoodLabel(payload.mood || payload.moodLabel)
-    const moodFallback = this._inferMoodFromMessages((record && record.messages) || [])
-    const finalMoodLabel = moodFromModel || moodFallback.moodLabel || '平静'
-    const finalMoodEmoji = this._normalizeMoodEmoji(payload.moodEmoji, finalMoodLabel)
-      || moodFallback.mood
-      || '😌'
-    return {
-      summary: String(payload.summary || '').trim(),
-      topics: this._normalizeTextList(payload.topics, 6),
-      highlights: this._normalizeTextList(payload.highlights, 5),
-      reminderCandidates: Array.isArray(payload.reminderCandidates) ? payload.reminderCandidates : [],
-      mood: finalMoodEmoji,
-      moodLabel: finalMoodLabel,
-      summarySource: String(
-        payload.summarySource
-        || (options && options.preferSource)
-        || 'local_rule'
-      ).trim(),
-      summaryModel: String(payload.summaryModel || '').trim(),
-    }
+    return normalizeSummaryPayload(summaryData, record, options)
   },
 
   _normalizeTextList(items, maxCount) {
@@ -2114,6 +2068,10 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
   },
 
   _cleanup() {
+    if (this.userDraftFlushTimer) {
+      clearTimeout(this.userDraftFlushTimer)
+      this.userDraftFlushTimer = null
+    }
     if (this.assistantDraftFlushTimer) {
       clearTimeout(this.assistantDraftFlushTimer)
       this.assistantDraftFlushTimer = null

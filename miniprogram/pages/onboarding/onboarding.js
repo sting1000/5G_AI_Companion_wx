@@ -152,6 +152,5 @@ Page({
       })
     }
 
-    console.log('[Onboarding] 配置已保存:', JSON.stringify(config))
   },
 })

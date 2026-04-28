@@ -176,8 +176,8 @@ describe('call 页面离线关键分支', () => {
       elderMemory: { recentEvents: [] },
       xiaolinMemory: { followUps: ['提醒张叔叔吃药'] },
     }, null, null)
-    expect(payload.text).toContain('您找我有什么事')
-    expect(payload.text).toContain('想聊聊天或者让我帮您设置提醒都可以')
+    expect(payload.text).toContain('找我有什么事')
+    expect(payload.text).toContain('想聊聊天或者设置提醒都可以')
     expect(payload.text).not.toContain('提醒张叔叔吃药')
   })
 
@@ -188,7 +188,7 @@ describe('call 页面离线关键分支', () => {
       elderMemory: { recentEvents: [] },
       xiaolinMemory: { followUps: ['最近睡眠不太好'] },
     }, null, null)
-    expect(payload.text).toContain('您找我有什么事')
+    expect(payload.text).toContain('找我有什么事')
     expect(payload.text).not.toContain('特地来和您聊聊近况')
     expect(payload.text).not.toContain('最近睡眠不太好')
   })

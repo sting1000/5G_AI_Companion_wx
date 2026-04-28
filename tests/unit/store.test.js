@@ -22,7 +22,7 @@ describe('store 离线规则', () => {
     expect(store.getDialogId('elder:b:2222')).toBe('dlg_b')
 
     store.clearDialogId('elder:a:1111')
-    expect(store.getDialogId('elder:a:1111')).toBe('dlg_b')
+    expect(store.getDialogId('elder:a:1111')).toBe('')
   })
 
   test('提醒候选 upsert 会跳过低置信并合并重复项', () => {

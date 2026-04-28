@@ -49,8 +49,8 @@ exports.main = async (event, context) => {
     }
   }
 
-  // 从环境变量获取 API Key，如果没有则使用 event 中传入的
-  const apiKey = process.env.ARK_API_KEY || event.apiKey
+  // 仅从云函数环境变量读取 API Key，避免客户端透传密钥
+  const apiKey = process.env.ARK_API_KEY
   const modelId = process.env.ARK_SUMMARY_MODEL || event.model || DEFAULT_SUMMARY_MODEL
   if (!apiKey) {
     // 没有 API Key 时，使用本地规则生成简易摘要
