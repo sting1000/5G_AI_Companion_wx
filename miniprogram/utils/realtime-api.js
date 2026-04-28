@@ -10,9 +10,25 @@ const { createLogger, shouldPrintInfo } = require('./logger')
 
 const WS_URL = 'wss://openspeech.bytedance.com/api/v3/realtime/dialogue'
 const RESOURCE_ID = 'volc.speech.dialog'
-const APP_KEY = (config.speech && config.speech.appKey) || ''
-const DEBUG_LOG = false
+const DEFAULT_APP_KEY = 'PlgvMymc7f3tQnJ6'
 const logger = createLogger('RealtimeAPI')
+function resolveAppKey() {
+  const speechConfig = config && config.speech ? config.speech : {}
+  const appId = String(speechConfig.appId || '').trim()
+  const rawKey = String(speechConfig.appKey || '').trim()
+
+  // 常见误配置：把 appId（纯数字）填到了 appKey，或直接留空
+  const looksLikeAppId = rawKey && (/^\d+$/.test(rawKey) || (appId && rawKey === appId))
+  if (!rawKey || looksLikeAppId) {
+    if (rawKey) {
+      logger.warn('检测到 appKey 配置疑似错误，已回退默认 X-Api-App-Key')
+    }
+    return DEFAULT_APP_KEY
+  }
+  return rawKey
+}
+const APP_KEY = resolveAppKey()
+const DEBUG_LOG = false
 
 // 客户端事件 ID
 const EVENT = {
