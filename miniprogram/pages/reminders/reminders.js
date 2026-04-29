@@ -47,18 +47,21 @@ Page({
   },
 
   _statusText(status) {
+    if (status === 'candidate') return '待确认'
     if (status === 'done') return '已完成'
     if (status === 'triggered') return '已触发'
     return '待提醒'
   },
 
   _statusClass(status) {
+    if (status === 'candidate') return 'status-candidate'
     if (status === 'done') return 'status-done'
     if (status === 'triggered') return 'status-triggered'
     return 'status-pending'
   },
 
   _statusIcon(status) {
+    if (status === 'candidate') return '?'
     if (status === 'done') return '✓'
     if (status === 'triggered') return '↗'
     return ''
@@ -68,7 +71,13 @@ Page({
     if (item.scheduleType === 'once') {
       return `${item.remindDate || '未设日期'} ${item.timeOfDay || '09:00'}`
     }
-    if (item.scheduleType === 'weekly') return `每周 ${item.timeOfDay || '09:00'}`
+    if (item.scheduleType === 'weekly') {
+      const weekdayMap = ['日', '一', '二', '三', '四', '五', '六']
+      const weekdays = Array.isArray(item.weekdays) && item.weekdays.length > 0
+        ? item.weekdays.map(day => weekdayMap[Number(day)]).filter(Boolean).join('、')
+        : ''
+      return `每周${weekdays || ''} ${item.timeOfDay || '09:00'}`
+    }
     if (item.scheduleType === 'monthly') return `每月 ${item.timeOfDay || '09:00'}`
     return `每天 ${item.timeOfDay || '09:00'}`
   },
@@ -188,7 +197,14 @@ Page({
     const reminder = this.data.reminders.find(item => item.id === id)
     if (!reminder) return
 
-    if (reminder.status === 'done') {
+    if (reminder.status === 'candidate') {
+      store.updateReminder(id, {
+        status: 'pending',
+        needsConfirmation: false,
+        missingFields: [],
+      }, elderKey)
+      wx.showToast({ title: '已确认提醒', icon: 'success' })
+    } else if (reminder.status === 'done') {
       store.updateReminder(id, {
         status: 'pending',
         completedAt: '',
@@ -205,6 +221,10 @@ Page({
     const id = e.currentTarget.dataset.id
     const reminder = this.data.reminders.find(item => item.id === id)
     if (!reminder) return
+    if (reminder.status === 'candidate') {
+      wx.showToast({ title: '请先确认提醒', icon: 'none' })
+      return
+    }
     const title = encodeURIComponent(reminder.title || '')
     wx.navigateTo({
       url: `/pages/call/call?mode=incoming&reminderId=${reminder.id}&reminderText=${title}&triggerSource=manual`,

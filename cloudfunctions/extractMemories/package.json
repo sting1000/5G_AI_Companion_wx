@@ -4,6 +4,6 @@
   "description": "调用火山方舟 LLM 抽取长期记忆 JSON patch",
   "main": "index.js",
   "dependencies": {
-    "wx-server-sdk": "latest"
+    "wx-server-sdk": "3.0.4"
   }
 }

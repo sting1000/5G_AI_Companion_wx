@@ -15,6 +15,7 @@ const KEYS = {
 }
 
 const REMINDER_STATUS = {
+  CANDIDATE: 'candidate',
   PENDING: 'pending',
   TRIGGERED: 'triggered',
   DONE: 'done',
@@ -795,7 +796,15 @@ function _normalizeReminderDedupKey(text) {
 function _hasTimeCue(text) {
   const normalized = _normalizeReminderText(text)
   if (!normalized) return false
-  return /(\d{1,2}[:：]\d{1,2}|\d{1,2}点|[零一二两三四五六七八九十]{1,3}点|早上|上午|中午|下午|晚上|凌晨|今晚|明天|后天|今天|周[一二三四五六日天]|每周|每天|每月|\d{1,2}月\d{1,2}[日号]?)/.test(normalized)
+  return /(\d{4}-\d{2}-\d{2}|\d{1,2}[:：]\d{1,2}|\d{1,2}点|[零〇一二两三四五六七八九十]{1,3}点|早上|上午|中午|下午|晚上|凌晨|今晚|明天|后天|大后天|今天|下周[一二三四五六日天]|周[一二三四五六日天]|每周|每天|每日|每月|\d{1,2}月\d{1,2}[日号]?)/.test(normalized)
+}
+
+function _normalizeReminderStatus(status) {
+  const text = String(status || '').trim()
+  if (text === REMINDER_STATUS.CANDIDATE) return REMINDER_STATUS.CANDIDATE
+  if (text === REMINDER_STATUS.TRIGGERED) return REMINDER_STATUS.TRIGGERED
+  if (text === REMINDER_STATUS.DONE) return REMINDER_STATUS.DONE
+  return REMINDER_STATUS.PENDING
 }
 
 function _removeReminderRelatedMemory(reminder, elderKey) {
@@ -859,9 +868,11 @@ function _normalizeReminder(reminder) {
   const scheduleType = String((reminder && reminder.scheduleType) || 'daily')
   const remindDate = _normalizeReminderText(reminder && reminder.remindDate)
   const weekdays = Array.isArray(reminder && reminder.weekdays) ? reminder.weekdays : []
+  const missingFields = Array.isArray(reminder && reminder.missingFields) ? reminder.missingFields : []
   const confidenceRaw = Number(reminder && reminder.confidence)
   const fallbackConfidence = reminder && reminder.source === 'call_extract' ? 0.8 : 1
   const safeConfidence = Number.isFinite(confidenceRaw) ? confidenceRaw : fallbackConfidence
+  const status = _normalizeReminderStatus(reminder && reminder.status)
   return {
     id: reminder && reminder.id ? reminder.id : `reminder_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     title: title || '未命名提醒',
@@ -874,7 +885,10 @@ function _normalizeReminder(reminder) {
     source: reminder && reminder.source ? reminder.source : 'manual',
     confidence: Math.max(0, Math.min(1, safeConfidence)),
     evidence: _normalizeReminderText(reminder && reminder.evidence),
-    status: reminder && reminder.status ? reminder.status : REMINDER_STATUS.PENDING,
+    needsConfirmation: Boolean(reminder && reminder.needsConfirmation) || status === REMINDER_STATUS.CANDIDATE,
+    intentType: _normalizeReminderText(reminder && reminder.intentType),
+    missingFields: missingFields.map(item => _normalizeReminderText(item)).filter(Boolean).slice(0, 4),
+    status,
     elderKey: reminder && reminder.elderKey ? reminder.elderKey : getElderKey(),
     triggerCount: Number(reminder && reminder.triggerCount) > 0 ? Number(reminder.triggerCount) : 0,
     createdAt: reminder && reminder.createdAt ? reminder.createdAt : now,
@@ -969,7 +983,7 @@ function pickNextIncomingReminder(elderKey, options) {
     ? opts.cooldownMs
     : DEFAULT_REMINDER_COOLDOWN_MS
   const nowTs = Date.now()
-  const reminders = getReminders(scopedKey).filter(item => item.status !== REMINDER_STATUS.DONE)
+  const reminders = getReminders(scopedKey).filter(item => item.status === REMINDER_STATUS.PENDING || item.status === REMINDER_STATUS.TRIGGERED)
   if (reminders.length === 0) return null
 
   const available = reminders.filter(item => {
@@ -982,6 +996,7 @@ function pickNextIncomingReminder(elderKey, options) {
   const source = available.length > 0 ? available : reminders
   const sorted = source.sort((a, b) => {
     const statusRank = {
+      [REMINDER_STATUS.CANDIDATE]: 0,
       [REMINDER_STATUS.PENDING]: 2,
       [REMINDER_STATUS.TRIGGERED]: 1,
       [REMINDER_STATUS.DONE]: 0,
@@ -1008,15 +1023,25 @@ function upsertExtractedReminderCandidates(candidates, elderKey, options) {
   let inserted = 0
   let updated = 0
   let skippedLowConfidence = 0
+  let insertedCandidates = 0
+  let updatedCandidates = 0
+  const candidateThreshold = typeof opts.candidateThreshold === 'number' ? opts.candidateThreshold : 0.45
 
   input.forEach(raw => {
     const title = _normalizeReminderTitle(raw && raw.title)
     const confidenceRaw = Number(raw && raw.confidence)
     const confidence = Math.max(0, Math.min(1, Number.isFinite(confidenceRaw) ? confidenceRaw : 0))
-    if (!title || confidence < autoThreshold) {
+    if (!title || confidence < candidateThreshold) {
       skippedLowConfidence += 1
       return
     }
+    const rawNeedsConfirmation = Boolean(raw && raw.needsConfirmation)
+    const missingFields = Array.isArray(raw && raw.missingFields)
+      ? raw.missingFields.map(item => _normalizeReminderText(item)).filter(Boolean).slice(0, 4)
+      : []
+    const incomingStatus = rawNeedsConfirmation || missingFields.length > 0 || confidence < autoThreshold
+      ? REMINDER_STATUS.CANDIDATE
+      : REMINDER_STATUS.PENDING
     const normalizedTitle = _normalizeReminderDedupKey(title)
     const scheduleType = String((raw && raw.scheduleType) || 'daily')
     const timeOfDay = String((raw && raw.timeOfDay) || '09:00')
@@ -1038,18 +1063,25 @@ function upsertExtractedReminderCandidates(candidates, elderKey, options) {
         ? nextTitle
         : (!nextTitle ? currentTitle : (nextTitle.length < currentTitle.length ? nextTitle : currentTitle))
       const previousStatus = list[hitIndex].status || REMINDER_STATUS.PENDING
+      const nextStatus = previousStatus === REMINDER_STATUS.CANDIDATE && incomingStatus === REMINDER_STATUS.PENDING
+        ? REMINDER_STATUS.PENDING
+        : previousStatus
       const merged = _normalizeReminder(Object.assign({}, list[hitIndex], {
         title: preferredTitle,
         confidence: Math.max(confidence, Number(list[hitIndex].confidence || 0)),
         evidence: raw && raw.evidence ? String(raw.evidence) : list[hitIndex].evidence,
         source: 'call_extract',
+        needsConfirmation: nextStatus === REMINDER_STATUS.CANDIDATE || rawNeedsConfirmation,
+        intentType: raw && raw.intentType ? String(raw.intentType) : list[hitIndex].intentType,
+        missingFields: missingFields.length > 0 ? missingFields : list[hitIndex].missingFields,
         // 避免摘要候选把已完成提醒“复活”为 pending
-        status: previousStatus,
+        status: nextStatus,
         updatedAt: now,
         elderKey: scopedKey,
       }))
       list[hitIndex] = merged
       updated += 1
+      if (merged.status === REMINDER_STATUS.CANDIDATE) updatedCandidates += 1
       return
     }
     list.unshift(_normalizeReminder({
@@ -1060,17 +1092,22 @@ function upsertExtractedReminderCandidates(candidates, elderKey, options) {
       source: 'call_extract',
       confidence,
       evidence: raw && raw.evidence ? String(raw.evidence) : title,
-      status: REMINDER_STATUS.PENDING,
+      needsConfirmation: incomingStatus === REMINDER_STATUS.CANDIDATE || rawNeedsConfirmation,
+      intentType: raw && raw.intentType ? String(raw.intentType) : '',
+      missingFields,
+      weekdays: Array.isArray(raw && raw.weekdays) ? raw.weekdays : [],
+      status: incomingStatus,
       elderKey: scopedKey,
       createdAt: now,
       updatedAt: now,
     }))
     inserted += 1
+    if (incomingStatus === REMINDER_STATUS.CANDIDATE) insertedCandidates += 1
   })
 
   reminderMap[scopedKey] = list
   _saveReminderMap(reminderMap)
-  return { inserted, updated, skippedLowConfidence }
+  return { inserted, updated, skippedLowConfidence, insertedCandidates, updatedCandidates }
 }
 
 function markGreetingMemoryUsed(elderKey, text) {

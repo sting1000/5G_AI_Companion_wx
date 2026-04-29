@@ -1,9 +1,84 @@
 const { RealtimeAPIClient } = require('../../utils/realtime-api')
 const { AudioRecorder, AudioPlayer, FRAME_SIZE } = require('../../utils/audio')
 const store = require('../../utils/store')
-const { createLogger } = require('../../utils/logger')
-const { normalizeSummaryPayload } = require('../../utils/shared-rules')
 const { generateSummary, applyLocalSummary } = require('../../utils/call-finalizer')
+const reminderExtractor = require('../../utils/reminder-extractor')
+const cloudFunctions = require('../../utils/cloud-functions')
+const createLogger = (() => {
+  try {
+    const loggerModule = require('../../utils/logger')
+    if (loggerModule && loggerModule.createLogger) return loggerModule.createLogger
+  } catch (err) {}
+  return (scope) => {
+    const prefix = scope ? `[${scope}]` : ''
+    return {
+      info() {},
+      warn(...args) { globalThis.console.warn(prefix, ...args) },
+      error(...args) { globalThis.console.error(prefix, ...args) },
+    }
+  }
+})()
+const normalizeSummaryPayload = (() => {
+  function normalizeTextList(items, maxCount) {
+    if (!Array.isArray(items)) return []
+    const uniqMap = {}
+    items.forEach((item) => {
+      const text = String(item || '').trim()
+      if (!text || uniqMap[text]) return
+      uniqMap[text] = true
+    })
+    return Object.keys(uniqMap).slice(0, maxCount || 5)
+  }
+  function normalizeMoodLabel(input) {
+    const text = String(input || '').trim()
+    if (text === '开心' || text === '平静' || text === '低落' || text === '焦虑') return text
+    if (/开心|高兴|愉快/.test(text)) return '开心'
+    if (/焦虑|担心|紧张/.test(text)) return '焦虑'
+    if (/低落|难过|伤心/.test(text)) return '低落'
+    if (/平静|稳定|平稳/.test(text)) return '平静'
+    return ''
+  }
+  function normalizeMoodEmoji(input, moodLabel) {
+    const text = String(input || '').trim()
+    if (text === '😊' || text === '😌' || text === '😢' || text === '😟') return text
+    const map = { 开心: '😊', 平静: '😌', 低落: '😢', 焦虑: '😟' }
+    return map[moodLabel] || ''
+  }
+  function inferMoodFromMessages(messages) {
+    const userText = (messages || [])
+      .filter(item => item && item.role === 'user')
+      .map(item => String(item.content || '').trim())
+      .join(' ')
+    const normalized = userText.replace(/\s+/g, '')
+    if (!normalized) return { mood: '😌', moodLabel: '平静' }
+    if (/(担心|焦虑|紧张|害怕|睡不着|不舒服|难受|疼)/.test(normalized)) return { mood: '😟', moodLabel: '焦虑' }
+    if (/(难过|低落|伤心|没意思|孤单|失落)/.test(normalized)) return { mood: '😢', moodLabel: '低落' }
+    if (/(开心|高兴|不错|挺好|愉快|放心)/.test(normalized)) return { mood: '😊', moodLabel: '开心' }
+    return { mood: '😌', moodLabel: '平静' }
+  }
+  const fallback = (summaryData, record, options) => {
+    const payload = summaryData && typeof summaryData === 'object' ? summaryData : {}
+    const moodFromModel = normalizeMoodLabel(payload.mood || payload.moodLabel)
+    const moodFallback = inferMoodFromMessages((record && record.messages) || [])
+    const finalMoodLabel = moodFromModel || moodFallback.moodLabel || '平静'
+    const finalMoodEmoji = normalizeMoodEmoji(payload.moodEmoji, finalMoodLabel) || moodFallback.mood || '😌'
+    return {
+      summary: String(payload.summary || '').trim(),
+      topics: normalizeTextList(payload.topics, 6),
+      highlights: normalizeTextList(payload.highlights, 5),
+      reminderCandidates: Array.isArray(payload.reminderCandidates) ? payload.reminderCandidates : [],
+      mood: finalMoodEmoji,
+      moodLabel: finalMoodLabel,
+      summarySource: String(payload.summarySource || (options && options.preferSource) || 'local_rule').trim(),
+      summaryModel: String(payload.summaryModel || '').trim(),
+    }
+  }
+  try {
+    const rules = require('../../utils/shared-rules')
+    if (rules && rules.normalizeSummaryPayload) return rules.normalizeSummaryPayload
+  } catch (err) {}
+  return fallback
+})()
 const logger = createLogger('Call')
 const console = {
   log: (...args) => logger.info(...args),
@@ -48,10 +123,20 @@ const DEFAULT_ASR_PROFILE = Object.freeze({
   enableCustomVad: true,
   // 用户反馈思考停顿容易被提前判停，默认回调到更稳妥窗口
   endSmoothWindowMs: 1300,
-  enableAsrTwopass: false,
-  hotwords: ['小林', '提醒', '复查', '太极拳'],
+  enableAsrTwopass: true,
+  hotwords: [
+    '小林', '提醒', '提醒我', '叫我', '通知我',
+    '吃药', '服药', '测血压', '测血糖',
+    '复查', '复诊', '医院复查', '关煤气',
+    '明天', '后天', '大后天', '下周一', '每天', '每周一',
+    '太极拳',
+  ],
   correctWords: {
     小玲: '小林',
+    浮查: '复查',
+    复擦: '复查',
+    量血压: '测血压',
+    关煤汽: '关煤气',
   },
 })
 const LATENCY_BASELINE_TARGET = Object.freeze({
@@ -1097,21 +1182,18 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     }
 
     const localDelta = this._extractMemoryDelta(record, summaryData)
-    if (!wx.cloud || typeof wx.cloud.callFunction !== 'function') {
+    if (!cloudFunctions.canCallFunction('extractMemories')) {
       return Promise.resolve(applyMemoryDelta(localDelta))
     }
 
     const elderConfig = store.getElderConfig()
     const elderName = elderConfig ? elderConfig.parentName : '老人'
-    return wx.cloud.callFunction({
-      name: 'extractMemories',
-      data: {
-        messages: record.messages || [],
-        summaryData: summaryData || {},
-        elderName,
-        elderKey: this.currentElderKey || store.getElderKey(elderConfig),
-        callId: record.id || '',
-      },
+    return cloudFunctions.callFunction('extractMemories', {
+      messages: record.messages || [],
+      summaryData: summaryData || {},
+      elderName,
+      elderKey: this.currentElderKey || store.getElderKey(elderConfig),
+      callId: record.id || '',
     }).then(res => {
       if (res.result && res.result.success && res.result.data) {
         const cloudDelta = this._normalizeMemoryDelta(res.result.data, record, 'cloud_ark')
@@ -1119,7 +1201,11 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       }
       return applyMemoryDelta(localDelta)
     }).catch(err => {
-      console.warn('[Call] 云函数记忆抽取失败，使用本地规则:', err)
+      if (cloudFunctions.isExpectedFallbackError(err)) {
+        console.log('[Call] extractMemories 云函数不可用，使用本地规则')
+      } else {
+        console.warn('[Call] 云函数记忆抽取失败，使用本地规则:', err)
+      }
       return applyMemoryDelta(localDelta)
     })
   },
@@ -1189,8 +1275,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       .filter(Boolean)
     if (this.data.callMode === 'incoming' && this.incomingReminder && this.incomingReminder.title) {
       const incomingTitle = this._normalizeMemorySentence(this.incomingReminder.title)
-      const reminderDoneByConversation = this._isReminderCompletedByConversation(record && record.messages)
-      if (incomingTitle && reminderDoneByConversation) {
+      if (incomingTitle) {
         merged = merged.filter(item => {
           const title = this._normalizeMemorySentence(item && item.title)
           const evidence = this._normalizeMemorySentence(item && item.evidence)
@@ -1236,107 +1321,19 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
   },
 
   _normalizeReminderCandidate(candidate) {
-    if (!candidate) return null
-    const title = String(candidate.title || '').trim()
-    if (!title) return null
-    const evidence = String(candidate.evidence || title)
-    const scheduleType = this._normalizeScheduleType(candidate.scheduleType, evidence)
-    const timeOfDay = this._normalizeCandidateTime(
-      String(candidate.timeOfDay || '09:00'),
-      `${title}${evidence}`
-    )
-    const remindDate = this._normalizeCandidateDate(
-      String(candidate.remindDate || ''),
-      scheduleType,
-      `${title}${evidence}`
-    )
-    return {
-      title,
-      scheduleType,
-      timeOfDay,
-      remindDate,
-      confidence: Math.max(0, Math.min(1, Number(candidate.confidence || 0.65))),
-      evidence,
-    }
+    return reminderExtractor.normalizeReminderCandidate(candidate)
   },
 
   _buildReminderCandidateFromText(text) {
-    const normalized = this._normalizeMemorySentence(text)
-    if (!normalized) return null
-    const hasAction = /(记得|提醒|别忘|需要|要去|要做|得去|按时|复查|复诊|吃药|测血压|锻炼)/.test(normalized)
-    const hasTimeSignal = /(明天|后天|今晚|今天|每天|每周|每月|周[一二三四五六日天]|号|点|早上|上午|中午|下午|晚上)/.test(normalized)
-    if (!(hasAction && hasTimeSignal)) return null
-
-    const scheduleType = this._normalizeScheduleType('', normalized)
-    const timeOfDay = this._normalizeCandidateTime('', normalized)
-    const remindDate = this._normalizeCandidateDate('', scheduleType, normalized)
-
-    const confidence = Math.min(0.92, 0.55 + (hasAction ? 0.2 : 0) + (hasTimeSignal ? 0.2 : 0))
-    return {
-      title: String(text || '').trim(),
-      scheduleType,
-      timeOfDay,
-      remindDate,
-      confidence,
-      evidence: normalized,
-    }
+    return reminderExtractor.buildReminderCandidateFromText(text)
   },
 
   _normalizeScheduleType(rawType, text) {
-    const given = String(rawType || '').trim()
-    if (given === 'once' || given === 'daily' || given === 'weekly' || given === 'monthly') {
-      return given
-    }
-    const normalized = this._normalizeMemorySentence(text)
-    if (/每周|周[一二三四五六日天]/.test(normalized)) return 'weekly'
-    if (/每月|\d+号/.test(normalized)) return 'monthly'
-    if (/明天|后天|今晚|今天|下周|周末/.test(normalized)) return 'once'
-    return 'daily'
+    return reminderExtractor.inferScheduleType(rawType, text)
   },
 
   _normalizeCandidateTime(rawTime, text) {
-    const normalized = this._normalizeMemorySentence(text)
-    let hour = 9
-    let minute = 0
-    const hhmmMatch = String(rawTime || '').match(/^(\d{1,2})[:：](\d{1,2})$/)
-    if (hhmmMatch) {
-      hour = Math.min(23, Math.max(0, Number(hhmmMatch[1]) || 0))
-      minute = Math.min(59, Math.max(0, Number(hhmmMatch[2]) || 0))
-    } else {
-      const textHhmmMatch = normalized.match(/(\d{1,2})[:：](\d{1,2})/)
-      if (textHhmmMatch) {
-        hour = Math.min(23, Math.max(0, Number(textHhmmMatch[1]) || 0))
-        minute = Math.min(59, Math.max(0, Number(textHhmmMatch[2]) || 0))
-      } else {
-        const pointMatch = normalized.match(/(\d{1,2}|[零一二两三四五六七八九十]{1,3})点(半|[0-5]?\d分?)?/)
-        if (pointMatch) {
-          const hourText = String(pointMatch[1] || '')
-          const parsedHour = /^\d+$/.test(hourText)
-            ? Number(hourText)
-            : this._parseChineseHour(hourText)
-          hour = Math.min(23, Math.max(0, Number(parsedHour) || 0))
-          if (pointMatch[2]) {
-            if (pointMatch[2].includes('半')) {
-              minute = 30
-            } else {
-              const minuteMatch = pointMatch[2].match(/(\d{1,2})分?/)
-              minute = minuteMatch ? Math.min(59, Math.max(0, Number(minuteMatch[1]) || 0)) : 0
-            }
-          }
-        } else if (/晚上|今晚/.test(normalized)) {
-          hour = 20
-          minute = 0
-        } else if (/上午|早上/.test(normalized)) {
-          hour = 9
-          minute = 0
-        } else if (/下午|中午/.test(normalized)) {
-          hour = 14
-          minute = 0
-        }
-      }
-    }
-    const adjustedHour = this._applyMeridiemToHour(hour, normalized)
-    return `${String(adjustedHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+    return reminderExtractor.normalizeTime(rawTime, text).timeOfDay
   },
 
   _parseChineseHour(text) {
@@ -1389,38 +1386,11 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
   },
 
   _normalizeCandidateDate(rawDate, scheduleType, text) {
-    const given = String(rawDate || '').trim()
-    if (/^\d{4}-\d{2}-\d{2}$/.test(given)) return given
-    if (scheduleType !== 'once') return ''
-    return this._resolveRelativeDate(text)
+    return reminderExtractor.normalizeCandidateDate(rawDate, scheduleType, text)
   },
 
   _resolveRelativeDate(text) {
-    const normalized = this._normalizeMemorySentence(text)
-    const now = new Date()
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-
-    if (/后天/.test(normalized)) {
-      return this._formatDateOffset(today, 2)
-    }
-    if (/明天/.test(normalized)) {
-      return this._formatDateOffset(today, 1)
-    }
-    if (/今天|今晚/.test(normalized)) {
-      return this._formatDateOffset(today, 0)
-    }
-
-    const match = normalized.match(/(\d{1,2})月(\d{1,2})[日号]?/)
-    if (match) {
-      const month = Math.min(12, Math.max(1, Number(match[1]) || 1))
-      const day = Math.min(31, Math.max(1, Number(match[2]) || 1))
-      const candidate = new Date(today.getFullYear(), month - 1, day)
-      if (candidate.getTime() < today.getTime()) {
-        candidate.setFullYear(candidate.getFullYear() + 1)
-      }
-      return this._formatDate(candidate)
-    }
-    return ''
+    return reminderExtractor.resolveRelativeDate(text)
   },
 
   _formatDateOffset(baseDate, days) {
@@ -1510,7 +1480,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     }
 
     return {
-      text: `${title}，您好呀！我是小林。您找我有什么事呀？想聊聊天或者让我帮您设置提醒都可以，我在呢。`,
+      text: `${title}，您好呀！我是小林。您找我有什么事呀？想聊聊天或者设置提醒都可以，我在呢。`,
       usedMemoryText: '',
       usedReminderId: '',
     }

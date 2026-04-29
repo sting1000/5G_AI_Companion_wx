@@ -25,7 +25,7 @@ describe('store 离线规则', () => {
     expect(store.getDialogId('elder:a:1111')).toBe('')
   })
 
-  test('提醒候选 upsert 会跳过低置信并合并重复项', () => {
+  test('提醒候选 upsert 会把低置信候选设为待确认并合并重复项', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
     const store = loadStore()
     const elderKey = 'elder:test:0001'
@@ -36,15 +36,41 @@ describe('store 离线规则', () => {
       { title: '吃降压药', confidence: 0.9, scheduleType: 'daily', timeOfDay: '09:00', evidence: '再次确认' },
     ], elderKey)
 
-    expect(result.skippedLowConfidence).toBe(1)
+    expect(result.skippedLowConfidence).toBe(0)
     expect(result.inserted).toBe(1)
-    expect(result.updated).toBe(1)
+    expect(result.updated).toBe(2)
 
     const list = store.getReminders(elderKey)
     expect(list).toHaveLength(1)
     expect(list[0].title).toBe('吃降压药')
     expect(list[0].confidence).toBe(0.9)
     expect(list[0].source).toBe('call_extract')
+    expect(list[0].status).toBe('pending')
+  })
+
+  test('待确认提醒不会参与主动呼入调度', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:candidate-reminder'
+
+    const result = store.upsertExtractedReminderCandidates([
+      {
+        title: '医院复查',
+        confidence: 0.66,
+        scheduleType: 'once',
+        remindDate: '2026-04-16',
+        timeOfDay: '09:00',
+        needsConfirmation: true,
+        missingFields: ['time'],
+      },
+    ], elderKey)
+
+    expect(result.inserted).toBe(1)
+    expect(result.insertedCandidates).toBe(1)
+    const list = store.getReminders(elderKey)
+    expect(list[0].status).toBe('candidate')
+    expect(list[0].needsConfirmation).toBe(true)
+    expect(store.pickNextIncomingReminder(elderKey)).toBe(null)
   })
 
   test('提醒候选会归一化“提醒张叔叔吃药/吃药”为同一条', () => {

@@ -6,7 +6,42 @@
  */
 
 const config = require('../config.local')
-const { createLogger, shouldPrintInfo } = require('./logger')
+const loggerRuntime = (() => {
+  function fallbackShouldPrintInfo() {
+    try {
+      if (typeof wx !== 'undefined' && wx && typeof wx.getAccountInfoSync === 'function') {
+        const info = wx.getAccountInfoSync()
+        const mp = info && info.miniProgram ? info.miniProgram : {}
+        return mp.envVersion !== 'release'
+      }
+    } catch (err) {}
+    return false
+  }
+  function fallbackCreateLogger(scope) {
+    const prefix = scope ? `[${scope}]` : ''
+    return {
+      info(...args) {
+        if (!fallbackShouldPrintInfo()) return
+        globalThis.console.log(prefix, ...args)
+      },
+      warn(...args) { globalThis.console.warn(prefix, ...args) },
+      error(...args) { globalThis.console.error(prefix, ...args) },
+    }
+  }
+  try {
+    const loggerModule = require('./logger')
+    return {
+      createLogger: loggerModule.createLogger || fallbackCreateLogger,
+      shouldPrintInfo: loggerModule.shouldPrintInfo || fallbackShouldPrintInfo,
+    }
+  } catch (err) {
+    return {
+      createLogger: fallbackCreateLogger,
+      shouldPrintInfo: fallbackShouldPrintInfo,
+    }
+  }
+})()
+const { createLogger, shouldPrintInfo } = loggerRuntime
 
 const WS_URL = 'wss://openspeech.bytedance.com/api/v3/realtime/dialogue'
 const RESOURCE_ID = 'volc.speech.dialog'
@@ -29,6 +64,47 @@ function resolveAppKey() {
 }
 const APP_KEY = resolveAppKey()
 const DEBUG_LOG = false
+
+function getSocketErrorText(err) {
+  if (!err) return ''
+  if (typeof err === 'string') return err
+  const parts = []
+  if (err.message) parts.push(String(err.message))
+  if (err.errMsg) parts.push(String(err.errMsg))
+  try {
+    parts.push(JSON.stringify(err))
+  } catch (e) {}
+  return parts.join(' ')
+}
+
+function isSocketTaskMissingError(err) {
+  const text = getSocketErrorText(err)
+  return /taskID not exist/i.test(text) || /SocketTask.*not exist/i.test(text)
+}
+
+function closeSocketSafely(socket) {
+  if (!socket || typeof socket.close !== 'function') return
+  try {
+    const result = socket.close({
+      fail: (err) => {
+        if (!isSocketTaskMissingError(err)) {
+          logger.warn('socket close fail:', err)
+        }
+      },
+    })
+    if (result && typeof result.catch === 'function') {
+      result.catch((err) => {
+        if (!isSocketTaskMissingError(err)) {
+          logger.warn('socket close fail:', err)
+        }
+      })
+    }
+  } catch (err) {
+    if (!isSocketTaskMissingError(err)) {
+      logger.warn('socket close fail:', err)
+    }
+  }
+}
 
 // 客户端事件 ID
 const EVENT = {
@@ -289,6 +365,8 @@ class RealtimeAPIClient {
     this.dialogId = ''
     this.connected = false
     this.sessionActive = false
+    this._disconnecting = false
+    this._closeTimer = null
 
     // 事件回调
     this.onASRText = null        // (text, isFinal) => {}
@@ -312,6 +390,7 @@ class RealtimeAPIClient {
   connect() {
     return new Promise((resolve, reject) => {
       this.connectId = generateUUID()
+      this._disconnecting = false
 
       logDebug('[RealtimeAPI] 正在连接:', WS_URL)
       logDebug('[RealtimeAPI] AppID:', config.speech.appId)
@@ -355,10 +434,18 @@ class RealtimeAPIClient {
       socketTask.onClose((res) => {
         logDebug('[RealtimeAPI] WebSocket onClose:', JSON.stringify(res))
         logger.warn('WebSocket onClose')
-        this.socket = null
+        const isManualDisconnect = this._disconnecting
+        if (this._closeTimer) {
+          clearTimeout(this._closeTimer)
+          this._closeTimer = null
+        }
+        if (this.socket === socketTask) {
+          this.socket = null
+        }
         this.connected = false
         this.sessionActive = false
-        if (this.onDisconnect) this.onDisconnect()
+        this._disconnecting = false
+        if (!isManualDisconnect && this.onDisconnect) this.onDisconnect()
       })
 
       // 等待 ConnectionStarted 事件
@@ -544,7 +631,7 @@ class RealtimeAPIClient {
    * 结束会话
    */
   finishSession() {
-    if (!this.sessionActive) return
+    if (!this.sessionActive || !this.socket) return
     this.sessionActive = false
     const frame = buildFrame(
       MSG_TYPE.FULL_CLIENT,
@@ -552,7 +639,11 @@ class RealtimeAPIClient {
       this.sessionId,
       {}
     )
-    this.socket.send({ data: frame })
+    try {
+      this.socket.send({ data: frame })
+    } catch (err) {
+      logger.warn('finishSession send fail:', err)
+    }
   }
 
   /**
@@ -564,6 +655,12 @@ class RealtimeAPIClient {
     const wasConnected = this.connected
     this.socket = null
     this.connected = false
+    this.sessionActive = false
+    this._disconnecting = true
+    if (this._closeTimer) {
+      clearTimeout(this._closeTimer)
+      this._closeTimer = null
+    }
     try {
       if (wasConnected) {
         const frame = buildFrame(
@@ -574,11 +671,13 @@ class RealtimeAPIClient {
         )
         socket.send({ data: frame })
       }
-      setTimeout(() => {
-        try { socket.close() } catch (e) {}
+      this._closeTimer = setTimeout(() => {
+        this._closeTimer = null
+        closeSocketSafely(socket)
       }, 500)
     } catch (e) {
       logger.warn('disconnect error:', e)
+      closeSocketSafely(socket)
     }
   }
 

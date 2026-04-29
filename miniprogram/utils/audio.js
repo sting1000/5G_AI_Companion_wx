@@ -1,4 +1,17 @@
-const { createLogger } = require('./logger')
+const createLogger = (() => {
+  try {
+    const loggerModule = require('./logger')
+    if (loggerModule && loggerModule.createLogger) return loggerModule.createLogger
+  } catch (err) {}
+  return (scope) => {
+    const prefix = scope ? `[${scope}]` : ''
+    return {
+      info() {},
+      warn(...args) { globalThis.console.warn(prefix, ...args) },
+      error(...args) { globalThis.console.error(prefix, ...args) },
+    }
+  }
+})()
 /**
  * 小程序录音和音频播放工具
  *

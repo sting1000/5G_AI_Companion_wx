@@ -97,6 +97,12 @@
   background: #fff;
 }
 
+.status-candidate {
+  border: 2rpx solid #6f7d95;
+  background: #eef3fb;
+  color: #4f6078;
+}
+
 .status-done {
   border: 2rpx solid #2fa765;
   background: #2fa765;

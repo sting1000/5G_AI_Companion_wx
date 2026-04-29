@@ -1,5 +1,68 @@
 const store = require('../../utils/store')
-const { extractHealthTags, normalizeInterestTags, uniqTags } = require('../../utils/shared-rules')
+const sharedRules = (() => {
+  function uniqTags(items) {
+    const seen = {}
+    const result = []
+    ;(items || []).forEach((item) => {
+      const text = String(item || '').trim()
+      if (!text || seen[text]) return
+      seen[text] = true
+      result.push(text)
+    })
+    return result
+  }
+  function normalizeInterestTags(tags) {
+    return uniqTags(tags).filter(tag => tag.length > 0 && tag.length <= 10)
+  }
+  function extractHealthTags(healthText) {
+    const text = String(healthText || '').trim()
+    if (!text) return []
+    const compact = text.replace(/\s+/g, '')
+    const keywordDict = [
+      ['失眠', ['失眠']],
+      ['睡不着', ['睡不着', '入睡困难', '早醒']],
+      ['睡眠问题', ['睡眠']],
+      ['高血压', ['高血压']],
+      ['血压波动', ['血压', '头晕']],
+      ['糖尿病', ['糖尿病']],
+      ['血糖偏高', ['血糖']],
+      ['心脏病', ['心脏病']],
+      ['心悸', ['心悸']],
+      ['胸闷', ['胸闷']],
+      ['胸痛', ['胸痛']],
+      ['心脏问题', ['心脏']],
+      ['关节疼痛', ['关节', '膝盖', '腰痛', '腰酸', '腿疼', '疼痛']],
+      ['食欲下降', ['胃口', '食欲']],
+      ['消化不适', ['消化', '胃痛', '腹胀']],
+      ['按时吃药', ['按时服药']],
+      ['漏服药', ['漏服']],
+      ['用药', ['吃药', '药']],
+    ]
+    const matchedMeta = keywordDict
+      .map(([tag, keywords]) => ({
+        tag,
+        matchedKeywords: keywords.filter(keyword => compact.includes(keyword)),
+      }))
+      .filter(item => item.matchedKeywords.length > 0)
+    const hasHypertension = matchedMeta.some(item => item.tag === '高血压')
+    const filtered = matchedMeta.filter(item => !(hasHypertension && item.tag === '血压波动'))
+    const matched = filtered.map(item => item.tag)
+    const matchedKeywordList = filtered.reduce((all, item) => all.concat(item.matchedKeywords), [])
+    const fallbackTags = text
+      .split(/[，。,、；;！!？?\n]/)
+      .map(item => item.trim())
+      .filter(Boolean)
+      .filter(item => !matchedKeywordList.some(keyword => item.includes(keyword)))
+      .map(item => (item.length > 8 ? `${item.slice(0, 8)}...` : item))
+    return uniqTags([].concat(matched, fallbackTags))
+  }
+  try {
+    return require('../../utils/shared-rules')
+  } catch (err) {
+    return { extractHealthTags, normalizeInterestTags, uniqTags }
+  }
+})()
+const { extractHealthTags, normalizeInterestTags, uniqTags } = sharedRules
 
 Page({
   data: {

@@ -71,7 +71,14 @@ exports.main = async (event, context) => {
       .map(m => `${m.role === 'user' ? elderName || '老人' : '小林'}: ${m.content}`)
       .join('\n')
 
-    const prompt = `你是一个通话摘要分析师。请分析以下AI陪伴通话记录，生成结构化摘要。
+    const prompt = `你是一个通话摘要分析师。请分析以下AI陪伴通话记录，生成结构化摘要，并谨慎抽取提醒候选。
+
+提醒候选抽取规则：
+1. 只抽取老人明确要求设置提醒，或老人明确提到未来计划且适合下次确认的事项。
+2. 不要把小林主动提醒、回访询问、老人感谢提醒、老人确认已完成、健康问询或闲聊误抽为新提醒。
+3. 明确提醒意图且日期/周期/时间完整时 confidence >= 0.78，needsConfirmation=false。
+4. 只有未来计划但未明确要求提醒，或缺日期/时间/星期等关键字段时，needsConfirmation=true，confidence 不超过 0.76，并在 missingFields 标出缺失字段。
+5. evidence 必须引用老人原话短片段；没有可靠证据时 reminderCandidates 返回空数组。
 
 通话记录：
 ${transcript}
@@ -89,7 +96,11 @@ ${transcript}
       "scheduleType": "once/daily/weekly/monthly",
       "timeOfDay": "HH:mm",
       "remindDate": "YYYY-MM-DD或空字符串",
+      "weekdays": [1],
       "confidence": 0.0,
+      "needsConfirmation": false,
+      "intentType": "explicit_reminder/schedule_statement",
+      "missingFields": ["date/time/weekday"],
       "evidence": "原话摘录"
     }
   ]
@@ -224,12 +235,23 @@ function normalizeReminderCandidate(item) {
   const remindDate = String(item.remindDate || '').trim()
   const confidence = Math.max(0, Math.min(1, Number(item.confidence || 0.6)))
   const evidence = String(item.evidence || title).trim()
+  const weekdays = Array.isArray(item.weekdays)
+    ? item.weekdays.map(day => Number(day)).filter(day => day >= 0 && day <= 6).slice(0, 7)
+    : []
+  const missingFields = Array.isArray(item.missingFields)
+    ? item.missingFields.map(field => String(field || '').trim()).filter(Boolean).slice(0, 4)
+    : []
+  const intentType = String(item.intentType || '').trim()
   return {
     title,
     scheduleType: validSchedule ? scheduleType : 'once',
     timeOfDay: /^\d{1,2}:\d{1,2}$/.test(timeOfDay) ? timeOfDay : '09:00',
     remindDate,
+    weekdays,
     confidence: Number(confidence.toFixed(3)),
+    needsConfirmation: Boolean(item.needsConfirmation) || missingFields.length > 0,
+    intentType: intentType || 'model_candidate',
+    missingFields,
     evidence: evidence || title,
   }
 }
@@ -245,13 +267,14 @@ async function callArkAPI(apiKey, modelId, prompt, timeoutMs) {
   const requestBody = JSON.stringify({
     model: modelId,
     messages: [
-      { role: 'system', content: '你是通话摘要分析助手，请严格按照JSON格式输出。' },
+      { role: 'system', content: '你是通话摘要和提醒候选抽取助手，请严格按照 JSON object 输出。' },
       { role: 'user', content: prompt },
     ],
+    response_format: { type: 'json_object' },
     thinking: { type: 'disabled' },
     reasoning_effort: 'minimal',
-    temperature: 0.3,
-    max_tokens: 220,
+    temperature: 0.2,
+    max_tokens: 420,
   })
 
   return new Promise((resolve, reject) => {

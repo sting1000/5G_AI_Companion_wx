@@ -295,6 +295,32 @@ describe('call 页面离线关键分支', () => {
     expect(list).toHaveLength(0)
   })
 
+  test('ASR 最终识别会把未来计划写成待确认候选，不直接主动提醒', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-28T10:00:00.000+08:00'))
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+
+    const elderKey = 'elder:test:asr-reminder-candidate'
+    page.currentElderKey = elderKey
+    page._markCallConnectedIfNeeded = jest.fn()
+    page._tryResolvePendingMemoryConfirmation = jest.fn()
+    page.pendingMemoryConfirmation = null
+    page.messages = []
+    page.client = {}
+    page.recorder = {}
+    page.player = { appendChunk: jest.fn(), playBuffered: jest.fn(), stop: jest.fn(), playing: false }
+
+    page._setupCallbacks()
+    page.client.onASRText('我明天去医院复查', true)
+
+    const list = store.getReminders(elderKey)
+    expect(list).toHaveLength(1)
+    expect(list[0].title).toBe('医院复查')
+    expect(list[0].status).toBe('candidate')
+    expect(list[0].remindDate).toBe('2026-04-29')
+    expect(store.pickNextIncomingReminder(elderKey)).toBe(null)
+  })
+
   test('模拟呼入提醒回访后，不会重复新增同名提醒', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
     const page = loadPage()

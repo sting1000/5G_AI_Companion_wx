@@ -205,4 +205,26 @@ describe('realtime-api 离线协议与生命周期', () => {
     jest.advanceTimersByTime(500)
     expect(wx.__socketTask.close).toHaveBeenCalled()
   })
+
+  test('disconnect 会吞掉已不存在 socket task 的关闭失败', async () => {
+    jest.useFakeTimers()
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const client = loadClient()
+    client.connected = true
+    client.socket = wx.__socketTask
+    wx.__socketTask.close.mockImplementation(() => Promise.reject(
+      new Error('closeSocket:fail wcwss taskID not exist')
+    ))
+
+    client.disconnect()
+    jest.advanceTimersByTime(500)
+    await Promise.resolve()
+
+    expect(wx.__socketTask.close).toHaveBeenCalled()
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('socket close fail:'),
+      expect.anything()
+    )
+    warnSpy.mockRestore()
+  })
 })

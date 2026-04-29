@@ -1,5 +1,33 @@
-const { createLogger } = require('./logger')
+const createLogger = (() => {
+  try {
+    const loggerModule = require('./logger')
+    if (loggerModule && loggerModule.createLogger) return loggerModule.createLogger
+  } catch (err) {}
+  return (scope) => {
+    const prefix = scope ? `[${scope}]` : ''
+    return {
+      info() {},
+      warn(...args) { globalThis.console.warn(prefix, ...args) },
+      error(...args) { globalThis.console.error(prefix, ...args) },
+    }
+  }
+})()
 const logger = createLogger('CallFinalizer')
+const cloudFunctions = require('./cloud-functions')
+
+function runEvolveMemory(evolveMemory, record, summaryPayload) {
+  if (typeof evolveMemory !== 'function') return
+  try {
+    const task = evolveMemory(record, summaryPayload)
+    if (task && typeof task.catch === 'function') {
+      task.catch((err) => {
+        logger.warn('记忆演进失败，已保留通话摘要:', err)
+      })
+    }
+  } catch (err) {
+    logger.warn('记忆演进失败，已保留通话摘要:', err)
+  }
+}
 
 function buildLocalSummaryPayload(record, elderName, normalizeSummaryPayload) {
   const messages = (record && record.messages) || []
@@ -44,17 +72,14 @@ function applyLocalSummary(record, options) {
     summaryUpdatedAt: new Date().toISOString(),
     summaryError: '',
   }))
-  evolveMemory(record, {
-    summary: summaryPayload.summary,
-    topics: summaryPayload.topics,
-    highlights: summaryPayload.highlights,
-    mood: summaryPayload.moodLabel,
-    moodEmoji: summaryPayload.mood,
-  })
+  runEvolveMemory(evolveMemory, record, summaryPayload)
+  return summaryPayload
 }
 
 function generateSummary(record, options) {
-  if (!record || !record.messages || record.messages.length === 0) return
+  if (!record || !record.messages || record.messages.length === 0) {
+    return Promise.resolve(null)
+  }
   const {
     elderName,
     normalizeSummaryPayload,
@@ -63,17 +88,13 @@ function generateSummary(record, options) {
   } = options
   const fallback = () => applyLocalSummary(record, options)
 
-  if (!wx.cloud) {
-    fallback()
-    return
+  if (!cloudFunctions.canCallFunction('generateSummary')) {
+    return Promise.resolve(fallback())
   }
 
-  wx.cloud.callFunction({
-    name: 'generateSummary',
-    data: {
-      messages: record.messages,
-      elderName,
-    },
+  return cloudFunctions.callFunction('generateSummary', {
+    messages: record.messages,
+    elderName,
   }).then((res) => {
     if (res.result && res.result.success) {
       const summaryPayload = Object.assign(
@@ -86,13 +107,17 @@ function generateSummary(record, options) {
         }
       )
       updateCallRecord(record.id, summaryPayload)
-      evolveMemory(record, summaryPayload)
-      return
+      runEvolveMemory(evolveMemory, record, summaryPayload)
+      return summaryPayload
     }
-    fallback()
+    return fallback()
   }).catch((err) => {
-    logger.warn('云函数摘要生成失败，使用本地生成:', err)
-    fallback()
+    if (cloudFunctions.isExpectedFallbackError(err)) {
+      logger.info('generateSummary 云函数不可用，使用本地生成')
+    } else {
+      logger.warn('云函数摘要生成失败，使用本地生成:', err)
+    }
+    return fallback()
   })
 }
 
