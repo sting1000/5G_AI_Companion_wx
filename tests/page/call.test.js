@@ -176,8 +176,8 @@ describe('call 页面离线关键分支', () => {
       elderMemory: { recentEvents: [] },
       xiaolinMemory: { followUps: ['提醒张叔叔吃药'] },
     }, null, null)
-    expect(payload.text).toContain('找我有什么事')
-    expect(payload.text).toContain('想聊聊天或者设置提醒都可以')
+    expect(payload.text).toBe('喂，张叔叔，我是小林。您找我呀？')
+    expect(payload.text).not.toContain('想聊聊天或者设置提醒都可以')
     expect(payload.text).not.toContain('提醒张叔叔吃药')
   })
 
@@ -188,9 +188,54 @@ describe('call 页面离线关键分支', () => {
       elderMemory: { recentEvents: [] },
       xiaolinMemory: { followUps: ['最近睡眠不太好'] },
     }, null, null)
-    expect(payload.text).toContain('找我有什么事')
+    expect(payload.text).toContain('您找我呀')
     expect(payload.text).not.toContain('特地来和您聊聊近况')
     expect(payload.text).not.toContain('最近睡眠不太好')
+  })
+
+  test('_buildMemoryAwareGreeting 在第一次语音时使用温暖首见开场', () => {
+    const page = loadPage()
+    page.setData({ callMode: 'outgoing' })
+    const payload = page._buildMemoryAwareGreeting('方阿姨', {
+      elderMemory: { recentEvents: ['最近睡眠不太好'] },
+      xiaolinMemory: { followUps: ['最近睡眠不太好'] },
+    }, null, null, { isFirstVoiceCall: true })
+
+    expect(payload.text).toContain('方阿姨您好')
+    expect(payload.text).toContain('第一次和您通话')
+    expect(payload.text).toContain('慢慢聊')
+    expect(payload.text).not.toContain('喂')
+    expect(payload.text).not.toContain('最近睡眠不太好')
+    expect(payload.usedMemoryText).toBe('')
+  })
+
+  test('_isFirstVoiceCall 只在无历史会话和无通话记录时成立', () => {
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    page.setData({ callMode: 'outgoing' })
+
+    expect(page._isFirstVoiceCall('')).toBe(true)
+    expect(page._isFirstVoiceCall('dialog_1')).toBe(false)
+
+    store.addCallRecord({ id: 'call_existing' })
+    expect(page._isFirstVoiceCall('')).toBe(false)
+
+    page.setData({ callMode: 'incoming' })
+    expect(page._isFirstVoiceCall('')).toBe(false)
+  })
+
+  test('_buildMemoryAwareGreeting 在提醒来电时先确认是否方便，不直接问完成', () => {
+    const page = loadPage()
+    page.setData({ callMode: 'incoming' })
+    const payload = page._buildMemoryAwareGreeting('王阿姨', {
+      elderMemory: { recentEvents: [] },
+      xiaolinMemory: { followUps: [] },
+    }, { id: 'rem_1', title: '吃降压药' }, null)
+
+    expect(payload.text).toContain('到时间啦')
+    expect(payload.text).toContain('提醒您吃降压药')
+    expect(payload.text).toContain('方便看一下')
+    expect(payload.text).not.toContain('完成了吗')
   })
 
   test('_isReminderCommandLike 能识别“提醒某人起床”这类提醒句', () => {
@@ -206,6 +251,21 @@ describe('call 页面离线关键分支', () => {
     }, [])
     expect(followUps).toContain('明天去医院复查膝盖')
     expect(followUps.some(text => text.includes('提醒张叔叔'))).toBe(false)
+  })
+
+  test('_extractMemoryDelta 不把明确提醒指令写入健康记忆', () => {
+    const page = loadPage()
+    const delta = page._extractMemoryDelta({
+      id: 'call_health_reminder_1',
+      messages: [
+        { role: 'user', content: '哦，你提醒我明天九点吃药' },
+      ],
+    }, {
+      topics: ['健康关注'],
+      highlights: ['哦，你提醒我明天九点吃药'],
+    })
+
+    expect(delta.elderMemory.healthNotes).toEqual([])
   })
 
   test('_tryResolvePendingMemoryConfirmation 会按用户确认结果更新记忆状态', () => {
@@ -522,6 +582,23 @@ describe('call 页面离线关键分支', () => {
     const current = list.find(item => item.id === reminder.id)
     expect(current.status).toBe('done')
     expect(page.incomingFollowupState.waitingNoMoreChatConfirm).toBe(true)
+    expect(page.incomingFollowupState.shouldAutoEndAfterAssistant).toBe(false)
+  })
+
+  test('_handleIncomingReminderFollowup 不会把普通“没有”误判为结束', () => {
+    const page = loadPage()
+    page.incomingReminder = { id: 'rem_1', title: '复查' }
+    page.incomingFollowupState = {
+      reminderCompleted: false,
+      waitingNoMoreChatConfirm: false,
+      shouldAutoEndAfterAssistant: false,
+    }
+
+    page._handleIncomingReminderFollowup('没有，我还没去')
+    page._handleExplicitEndCallIntent('没有，我还没去')
+
+    expect(page.incomingFollowupState.shouldAutoEndAfterAssistant).toBe(false)
+    expect(page.callEndingState).toBeUndefined()
   })
 
   test('_handleIncomingReminderFollowup 在“没别的想聊”时会触发收尾结束标记', () => {
@@ -535,6 +612,17 @@ describe('call 页面离线关键分支', () => {
 
     page._handleIncomingReminderFollowup('没有了，就先这样吧')
     expect(page.incomingFollowupState.shouldAutoEndAfterAssistant).toBe(true)
+  })
+
+  test('_handleExplicitEndCallIntent 只在明确结束语时触发普通通话收尾', () => {
+    const page = loadPage()
+
+    page._handleExplicitEndCallIntent('没有，我想再听听')
+    expect(page.callEndingState).toBeUndefined()
+
+    page._handleExplicitEndCallIntent('今天先这样吧，我挂了')
+    expect(page.callEndingState.shouldAutoEndAfterAssistant).toBe(true)
+    expect(page.callEndingState.source).toBe('user_end_intent')
   })
 
   test('_maybeInjectOutgoingSmallTalkSteer 在“想聊聊”且无明确诉求时会注入兜底引导', () => {
@@ -564,6 +652,59 @@ describe('call 页面离线关键分支', () => {
 
     page._maybeInjectOutgoingSmallTalkSteer('我胸闷不舒服，想问问怎么办')
     expect(page.client.sendTextQuery).not.toHaveBeenCalled()
+  })
+
+  test('_maybeInjectOutgoingSmallTalkSteer 在明确要结束时不会注入兜底引导', () => {
+    const page = loadPage()
+    page.setData({ callMode: 'outgoing' })
+    page.assistantTurnCount = 1
+    page.client = {
+      sessionActive: true,
+      sendTextQuery: jest.fn(),
+    }
+    page._buildSmallTalkSteerPrompt = jest.fn(() => '用户想聊聊，请从兴趣继续')
+
+    page._maybeInjectOutgoingSmallTalkSteer('没啥事了，今天先这样吧')
+    expect(page.client.sendTextQuery).not.toHaveBeenCalled()
+  })
+
+  test('普通通话明确结束意图会等待小林最后一句播放完成后再结束', () => {
+    const page = loadPage()
+    page._markCallConnectedIfNeeded = jest.fn()
+    page._endCall = jest.fn()
+    page.client = {}
+    page.recorder = {}
+    page.player = {
+      appendChunk: jest.fn(),
+      playBuffered: jest.fn(),
+      stop: jest.fn(),
+      playing: true,
+    }
+    page.messages = []
+    page.chatBuffer = ''
+    page.pendingAssistantDraft = '好，那您先休息，咱们回头再聊。'
+    page.currentTurnBoundaryViolated = false
+    page.assistantTurnCount = 1
+    page.isBoundaryRepairing = false
+    page.currentLatencyTurn = null
+    page.callEndingState = {
+      shouldAutoEndAfterAssistant: false,
+      pendingAutoEndAfterPlayback: false,
+      source: '',
+    }
+    page.setData({
+      currentAssistantDraft: '好，那您先休息，咱们回头再聊。',
+      transcriptItems: [],
+    })
+
+    page._handleExplicitEndCallIntent('今天先这样吧，我挂了')
+    page._setupCallbacks()
+    page.client.onTTSEnd()
+    expect(page._endCall).not.toHaveBeenCalled()
+    expect(page.callEndingState.pendingAutoEndAfterPlayback).toBe(true)
+
+    page.player.onPlayEnd()
+    expect(page._endCall).toHaveBeenCalledTimes(1)
   })
 
   test('自动收尾会等待最后一句播放完成后再结束通话', () => {

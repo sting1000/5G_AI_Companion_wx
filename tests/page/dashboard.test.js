@@ -119,6 +119,32 @@ describe('dashboard 页面离线流程', () => {
     expect(page.data.healthTags).toEqual(expect.arrayContaining(['高血压', '失眠']))
   })
 
+  test('健康线索不会展示提醒句开头的语气词', () => {
+    const storeMock = createStoreMock({
+      getMemoryBundle: jest.fn(() => ({
+        elderMemory: {
+          healthNotes: ['哦，你提醒我明天九点吃药'],
+        },
+        memoryItems: [],
+      })),
+      getProfile: jest.fn(() => ({
+        hobbies: [],
+        health: '',
+      })),
+      getElderConfig: jest.fn(() => ({
+        parentName: '王阿姨',
+        phone: '13800138000',
+        health: '',
+      })),
+    })
+    const page = loadPageWithStore(storeMock)
+
+    page.onShow()
+    expect(page.data.hasHealthSignal).toBe(true)
+    expect(page.data.healthTags).toContain('用药')
+    expect(page.data.healthTags).not.toContain('哦')
+  })
+
   test('会从记忆标签与记忆项同步兴趣和健康信号（贴近原话）', () => {
     const storeMock = createStoreMock({
       getMemoryBundle: jest.fn(() => ({

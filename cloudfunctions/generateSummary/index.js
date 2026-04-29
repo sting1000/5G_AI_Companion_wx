@@ -73,6 +73,13 @@ exports.main = async (event, context) => {
 
     const prompt = `你是一个通话摘要分析师。请分析以下AI陪伴通话记录，生成结构化摘要，并谨慎抽取提醒候选。
 
+情绪识别规则：
+1. 只根据老人的表达判断整体情绪，不要根据小林的安抚语判断。
+2. 有担心、焦虑、害怕、失眠、不适、疼痛、胸闷、头晕等线索时优先输出“焦虑”。
+3. 有孤单、难过、低落、伤心、没意思等线索时输出“低落”。
+4. 有开心、高兴、放心、舒服多了、进展顺利等线索时输出“开心”。
+5. 只有没有明显情绪或状态稳定时，才输出“平静”，不要默认使用“平静”。
+
 提醒候选抽取规则：
 1. 只抽取老人明确要求设置提醒，或老人明确提到未来计划且适合下次确认的事项。
 2. 不要把小林主动提醒、回访询问、老人感谢提醒、老人确认已完成、健康问询或闲聊误抽为新提醒。
@@ -176,7 +183,7 @@ function parseModelSummary(rawText) {
 
 function normalizeSummaryData(rawData, meta) {
   const input = rawData && typeof rawData === 'object' ? rawData : {}
-  const moodLabel = normalizeMoodLabel(input.mood)
+  const moodLabel = normalizeMoodLabel(input.mood || input.moodLabel)
   const moodEmoji = normalizeMoodEmoji(input.moodEmoji, moodLabel)
   const reminders = Array.isArray(input.reminderCandidates)
     ? input.reminderCandidates.map(normalizeReminderCandidate).filter(Boolean).slice(0, 6)
@@ -211,18 +218,21 @@ function normalizeMoodLabel(input) {
   if (text === '开心' || text === '平静' || text === '低落' || text === '焦虑') {
     return text
   }
-  if (/开心|高兴|愉快/.test(text)) return '开心'
-  if (/焦虑|担心|紧张/.test(text)) return '焦虑'
-  if (/低落|难过|伤心/.test(text)) return '低落'
+  if (/焦虑|担心|紧张|害怕|不舒服|难受|疼|痛/.test(text)) return '焦虑'
+  if (/低落|难过|伤心|孤单|孤独|失落/.test(text)) return '低落'
+  if (/开心|高兴|愉快|放心|舒服多了|好多了|顺利/.test(text)) return '开心'
   return DEFAULT_SUMMARY.mood
 }
 
 function normalizeMoodEmoji(input, moodLabel) {
   const text = String(input || '').trim()
+  if (MOOD_EMOJI_MAP[moodLabel]) {
+    return MOOD_EMOJI_MAP[moodLabel]
+  }
   if (text === '😊' || text === '😌' || text === '😢' || text === '😟') {
     return text
   }
-  return MOOD_EMOJI_MAP[moodLabel] || DEFAULT_SUMMARY.moodEmoji
+  return DEFAULT_SUMMARY.moodEmoji
 }
 
 function normalizeReminderCandidate(item) {
@@ -254,6 +264,29 @@ function normalizeReminderCandidate(item) {
     missingFields,
     evidence: evidence || title,
   }
+}
+
+function inferMoodFromText(text) {
+  const normalized = String(text || '').replace(/\s+/g, '')
+  if (!normalized) return { mood: DEFAULT_SUMMARY.moodEmoji, moodLabel: DEFAULT_SUMMARY.mood }
+  if (/(担心|焦虑|紧张|害怕|慌|发愁|烦|睡不着|失眠|不舒服|难受|疼|痛|胸闷|胸痛|头晕|血压高|血糖高|没药|忘吃药)/.test(normalized)) {
+    return { mood: '😟', moodLabel: '焦虑' }
+  }
+  if (/(难过|低落|伤心|没意思|孤单|孤独|失落|想哭|不想说话|提不起劲)/.test(normalized)) {
+    return { mood: '😢', moodLabel: '低落' }
+  }
+  if (/(开心|高兴|不错|挺好|愉快|放心|舒服多了|好多了|顺利|满意)/.test(normalized)) {
+    return { mood: '😊', moodLabel: '开心' }
+  }
+  return { mood: DEFAULT_SUMMARY.moodEmoji, moodLabel: DEFAULT_SUMMARY.mood }
+}
+
+function inferMoodFromMessages(messages) {
+  const userText = (messages || [])
+    .filter(m => m && m.role === 'user')
+    .map(m => String(m.content || '').trim())
+    .join(' ')
+  return inferMoodFromText(userText)
 }
 
 /**
@@ -321,6 +354,7 @@ function generateLocalSummary(messages, elderName) {
     '家庭', '孩子', '天气', '散步', '公园', '邻居', '朋友', '睡眠', '吃饭', '买菜']
   const allText = messages.map(m => m.content).join(' ')
   const topics = topicKeywords.filter(k => allText.includes(k))
+  const inferredMood = inferMoodFromMessages(messages)
 
   // 简单摘要
   const totalMessages = messages.length
@@ -334,8 +368,8 @@ function generateLocalSummary(messages, elderName) {
       summary,
       topics: topics.length > 0 ? topics : ['日常聊天'],
       highlights: userMessages.slice(0, 3),
-      mood: DEFAULT_SUMMARY.mood,
-      moodEmoji: DEFAULT_SUMMARY.moodEmoji,
+      mood: inferredMood.moodLabel,
+      moodEmoji: inferredMood.mood,
       reminderCandidates: [],
     }, {
       source: 'local_rule',

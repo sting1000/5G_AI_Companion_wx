@@ -37,6 +37,7 @@ Page({
   _loadReminders() {
     const elderKey = store.getElderKey()
     const list = store.getReminders(elderKey).map(item => Object.assign({}, item, {
+      isCandidate: item.status === 'candidate',
       statusText: this._statusText(item.status),
       statusClass: this._statusClass(item.status),
       statusIcon: this._statusIcon(item.status),
@@ -168,7 +169,15 @@ Page({
     }
 
     if (this.data.editingId) {
-      store.updateReminder(this.data.editingId, payload, elderKey)
+      const current = this.data.reminders.find(item => item.id === this.data.editingId)
+      const updates = current && current.status === 'candidate'
+        ? Object.assign({}, payload, {
+          status: 'pending',
+          needsConfirmation: false,
+          missingFields: [],
+        })
+        : payload
+      store.updateReminder(this.data.editingId, updates, elderKey)
     } else {
       store.saveReminder(payload, elderKey)
     }
@@ -198,12 +207,8 @@ Page({
     if (!reminder) return
 
     if (reminder.status === 'candidate') {
-      store.updateReminder(id, {
-        status: 'pending',
-        needsConfirmation: false,
-        missingFields: [],
-      }, elderKey)
-      wx.showToast({ title: '已确认提醒', icon: 'success' })
+      this._confirmCandidateReminder(id)
+      return
     } else if (reminder.status === 'done') {
       store.updateReminder(id, {
         status: 'pending',
@@ -215,6 +220,28 @@ Page({
       wx.showToast({ title: '已标记完成', icon: 'none' })
     }
     this._loadReminders()
+  },
+
+  onConfirmCandidate(e) {
+    const id = e.currentTarget.dataset.id
+    if (!id) return
+    this._confirmCandidateReminder(id)
+  },
+
+  _confirmCandidateReminder(id) {
+    const elderKey = store.getElderKey()
+    const reminder = this.data.reminders.find(item => item.id === id)
+    if (!reminder || reminder.status !== 'candidate') return null
+    const updated = store.updateReminder(id, {
+      status: 'pending',
+      needsConfirmation: false,
+      missingFields: [],
+    }, elderKey)
+    if (updated) {
+      this._loadReminders()
+      wx.showToast({ title: '已确认提醒', icon: 'success' })
+    }
+    return updated
   },
 
   onTriggerIncoming(e) {

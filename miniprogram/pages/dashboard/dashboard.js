@@ -1,5 +1,28 @@
 const store = require('../../utils/store')
 const sharedRules = (() => {
+  const LOW_INFO_SPEECH_PARTICLES = new Set([
+    '嗯', '嗯嗯', '哦', '噢', '喔', '呃', '额', '啊', '呀', '呢', '好', '好的', '行', '可以',
+  ])
+
+  function stripLeadingSpeechParticles(text) {
+    let result = String(text || '').trim()
+    let changed = true
+    while (changed) {
+      const before = result
+      result = result
+        .replace(/^[，。,、；;！!？?\s]+/, '')
+        .replace(/^(嗯嗯|嗯|哦|噢|喔|呃|额|啊|呀|好的|好|行|可以)[，。,、；;！!？?\s]*/u, '')
+        .trim()
+      changed = result !== before
+    }
+    return result
+  }
+
+  function isLowInfoSpeechParticle(text) {
+    const normalized = String(text || '').trim().replace(/\s+/g, '')
+    return !normalized || normalized.length <= 1 || LOW_INFO_SPEECH_PARTICLES.has(normalized)
+  }
+
   function uniqTags(items) {
     const seen = {}
     const result = []
@@ -50,8 +73,9 @@ const sharedRules = (() => {
     const matchedKeywordList = filtered.reduce((all, item) => all.concat(item.matchedKeywords), [])
     const fallbackTags = text
       .split(/[，。,、；;！!？?\n]/)
-      .map(item => item.trim())
+      .map(item => stripLeadingSpeechParticles(item))
       .filter(Boolean)
+      .filter(item => !isLowInfoSpeechParticle(item))
       .filter(item => !matchedKeywordList.some(keyword => item.includes(keyword)))
       .map(item => (item.length > 8 ? `${item.slice(0, 8)}...` : item))
     return uniqTags([].concat(matched, fallbackTags))

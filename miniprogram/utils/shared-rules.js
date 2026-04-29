@@ -4,6 +4,28 @@ const MOOD_MAP = {
   低落: '😢',
   焦虑: '😟',
 }
+const LOW_INFO_SPEECH_PARTICLES = new Set([
+  '嗯', '嗯嗯', '哦', '噢', '喔', '呃', '额', '啊', '呀', '呢', '好', '好的', '行', '可以',
+])
+
+function stripLeadingSpeechParticles(text) {
+  let result = String(text || '').trim()
+  let changed = true
+  while (changed) {
+    const before = result
+    result = result
+      .replace(/^[，。,、；;！!？?\s]+/, '')
+      .replace(/^(嗯嗯|嗯|哦|噢|喔|呃|额|啊|呀|好的|好|行|可以)[，。,、；;！!？?\s]*/u, '')
+      .trim()
+    changed = result !== before
+  }
+  return result
+}
+
+function isLowInfoSpeechParticle(text) {
+  const normalized = String(text || '').trim().replace(/\s+/g, '')
+  return !normalized || normalized.length <= 1 || LOW_INFO_SPEECH_PARTICLES.has(normalized)
+}
 
 function uniqTags(items) {
   const seen = {}
@@ -57,8 +79,9 @@ function extractHealthTags(healthText) {
   const matchedKeywordList = filtered.reduce((all, item) => all.concat(item.matchedKeywords), [])
   const fallbackTags = text
     .split(/[，。,、；;！!？?\n]/)
-    .map(item => item.trim())
+    .map(item => stripLeadingSpeechParticles(item))
     .filter(Boolean)
+    .filter(item => !isLowInfoSpeechParticle(item))
     .filter(item => !matchedKeywordList.some(keyword => item.includes(keyword)))
     .map(item => (item.length > 8 ? `${item.slice(0, 8)}...` : item))
   return uniqTags([].concat(matched, fallbackTags))
@@ -79,17 +102,27 @@ function normalizeMoodLabel(input) {
   const text = String(input || '').trim()
   if (!text) return ''
   if (MOOD_MAP[text]) return text
-  if (/开心|高兴|愉快/.test(text)) return '开心'
-  if (/焦虑|担心|紧张/.test(text)) return '焦虑'
-  if (/低落|难过|伤心/.test(text)) return '低落'
+  if (/焦虑|担心|紧张|害怕|不舒服|难受|疼|痛/.test(text)) return '焦虑'
+  if (/低落|难过|伤心|孤单|孤独|失落/.test(text)) return '低落'
+  if (/开心|高兴|愉快|放心|舒服多了|好多了|顺利/.test(text)) return '开心'
   if (/平静|稳定|平稳/.test(text)) return '平静'
   return ''
 }
 
 function normalizeMoodEmoji(input, moodLabel) {
   const text = String(input || '').trim()
+  if (MOOD_MAP[moodLabel]) return MOOD_MAP[moodLabel]
   if (text === '😊' || text === '😌' || text === '😢' || text === '😟') return text
-  return MOOD_MAP[moodLabel] || ''
+  return ''
+}
+
+function inferMoodFromText(text) {
+  const normalized = String(text || '').replace(/\s+/g, '')
+  if (!normalized) return { mood: '😌', moodLabel: '平静' }
+  if (/(担心|焦虑|紧张|害怕|慌|发愁|烦|睡不着|失眠|不舒服|难受|疼|痛|胸闷|胸痛|头晕|血压高|血糖高|没药|忘吃药)/.test(normalized)) return { mood: '😟', moodLabel: '焦虑' }
+  if (/(难过|低落|伤心|没意思|孤单|孤独|失落|想哭|不想说话|提不起劲)/.test(normalized)) return { mood: '😢', moodLabel: '低落' }
+  if (/(开心|高兴|不错|挺好|愉快|放心|舒服多了|好多了|顺利|满意)/.test(normalized)) return { mood: '😊', moodLabel: '开心' }
+  return { mood: '😌', moodLabel: '平静' }
 }
 
 function inferMoodFromMessages(messages) {
@@ -97,19 +130,21 @@ function inferMoodFromMessages(messages) {
     .filter(item => item && item.role === 'user')
     .map(item => String(item.content || '').trim())
     .join(' ')
-  const normalized = userText.replace(/\s+/g, '')
-  if (!normalized) return { mood: '😌', moodLabel: '平静' }
-  if (/(担心|焦虑|紧张|害怕|睡不着|不舒服|难受|疼)/.test(normalized)) return { mood: '😟', moodLabel: '焦虑' }
-  if (/(难过|低落|伤心|没意思|孤单|失落)/.test(normalized)) return { mood: '😢', moodLabel: '低落' }
-  if (/(开心|高兴|不错|挺好|愉快|放心)/.test(normalized)) return { mood: '😊', moodLabel: '开心' }
-  return { mood: '😌', moodLabel: '平静' }
+  return inferMoodFromText(userText)
 }
 
 function normalizeSummaryPayload(summaryData, record, options) {
   const payload = summaryData && typeof summaryData === 'object' ? summaryData : {}
   const moodFromModel = normalizeMoodLabel(payload.mood || payload.moodLabel)
   const moodFallback = inferMoodFromMessages((record && record.messages) || [])
-  const finalMoodLabel = moodFromModel || moodFallback.moodLabel || '平静'
+  const summarySource = String(payload.summarySource || (options && options.preferSource) || 'local_rule').trim()
+  const shouldUseMoodFallback = moodFromModel === '平静'
+    && moodFallback.moodLabel
+    && moodFallback.moodLabel !== '平静'
+    && summarySource === 'local_rule'
+  const finalMoodLabel = shouldUseMoodFallback
+    ? moodFallback.moodLabel
+    : (moodFromModel || moodFallback.moodLabel || '平静')
   const finalMoodEmoji = normalizeMoodEmoji(payload.moodEmoji, finalMoodLabel) || moodFallback.mood || '😌'
   return {
     summary: String(payload.summary || '').trim(),
@@ -118,7 +153,7 @@ function normalizeSummaryPayload(summaryData, record, options) {
     reminderCandidates: Array.isArray(payload.reminderCandidates) ? payload.reminderCandidates : [],
     mood: finalMoodEmoji,
     moodLabel: finalMoodLabel,
-    summarySource: String(payload.summarySource || (options && options.preferSource) || 'local_rule').trim(),
+    summarySource,
     summaryModel: String(payload.summaryModel || '').trim(),
   }
 }
@@ -130,6 +165,7 @@ module.exports = {
   normalizeTextList,
   normalizeMoodLabel,
   normalizeMoodEmoji,
+  inferMoodFromText,
   inferMoodFromMessages,
   normalizeSummaryPayload,
 }

@@ -32,35 +32,46 @@ const normalizeSummaryPayload = (() => {
   function normalizeMoodLabel(input) {
     const text = String(input || '').trim()
     if (text === '开心' || text === '平静' || text === '低落' || text === '焦虑') return text
-    if (/开心|高兴|愉快/.test(text)) return '开心'
-    if (/焦虑|担心|紧张/.test(text)) return '焦虑'
-    if (/低落|难过|伤心/.test(text)) return '低落'
+    if (/焦虑|担心|紧张|害怕|不舒服|难受|疼|痛/.test(text)) return '焦虑'
+    if (/低落|难过|伤心|孤单|孤独|失落/.test(text)) return '低落'
+    if (/开心|高兴|愉快|放心|舒服多了|好多了|顺利/.test(text)) return '开心'
     if (/平静|稳定|平稳/.test(text)) return '平静'
     return ''
   }
   function normalizeMoodEmoji(input, moodLabel) {
     const text = String(input || '').trim()
-    if (text === '😊' || text === '😌' || text === '😢' || text === '😟') return text
     const map = { 开心: '😊', 平静: '😌', 低落: '😢', 焦虑: '😟' }
-    return map[moodLabel] || ''
+    if (map[moodLabel]) return map[moodLabel]
+    if (text === '😊' || text === '😌' || text === '😢' || text === '😟') return text
+    return ''
+  }
+  function inferMoodFromText(text) {
+    const normalized = String(text || '').replace(/\s+/g, '')
+    if (!normalized) return { mood: '😌', moodLabel: '平静' }
+    if (/(担心|焦虑|紧张|害怕|慌|发愁|烦|睡不着|失眠|不舒服|难受|疼|痛|胸闷|胸痛|头晕|血压高|血糖高|没药|忘吃药)/.test(normalized)) return { mood: '😟', moodLabel: '焦虑' }
+    if (/(难过|低落|伤心|没意思|孤单|孤独|失落|想哭|不想说话|提不起劲)/.test(normalized)) return { mood: '😢', moodLabel: '低落' }
+    if (/(开心|高兴|不错|挺好|愉快|放心|舒服多了|好多了|顺利|满意)/.test(normalized)) return { mood: '😊', moodLabel: '开心' }
+    return { mood: '😌', moodLabel: '平静' }
   }
   function inferMoodFromMessages(messages) {
     const userText = (messages || [])
       .filter(item => item && item.role === 'user')
       .map(item => String(item.content || '').trim())
       .join(' ')
-    const normalized = userText.replace(/\s+/g, '')
-    if (!normalized) return { mood: '😌', moodLabel: '平静' }
-    if (/(担心|焦虑|紧张|害怕|睡不着|不舒服|难受|疼)/.test(normalized)) return { mood: '😟', moodLabel: '焦虑' }
-    if (/(难过|低落|伤心|没意思|孤单|失落)/.test(normalized)) return { mood: '😢', moodLabel: '低落' }
-    if (/(开心|高兴|不错|挺好|愉快|放心)/.test(normalized)) return { mood: '😊', moodLabel: '开心' }
-    return { mood: '😌', moodLabel: '平静' }
+    return inferMoodFromText(userText)
   }
   const fallback = (summaryData, record, options) => {
     const payload = summaryData && typeof summaryData === 'object' ? summaryData : {}
     const moodFromModel = normalizeMoodLabel(payload.mood || payload.moodLabel)
     const moodFallback = inferMoodFromMessages((record && record.messages) || [])
-    const finalMoodLabel = moodFromModel || moodFallback.moodLabel || '平静'
+    const summarySource = String(payload.summarySource || (options && options.preferSource) || 'local_rule').trim()
+    const shouldUseMoodFallback = moodFromModel === '平静'
+      && moodFallback.moodLabel
+      && moodFallback.moodLabel !== '平静'
+      && summarySource === 'local_rule'
+    const finalMoodLabel = shouldUseMoodFallback
+      ? moodFallback.moodLabel
+      : (moodFromModel || moodFallback.moodLabel || '平静')
     const finalMoodEmoji = normalizeMoodEmoji(payload.moodEmoji, finalMoodLabel) || moodFallback.mood || '😌'
     return {
       summary: String(payload.summary || '').trim(),
@@ -69,7 +80,7 @@ const normalizeSummaryPayload = (() => {
       reminderCandidates: Array.isArray(payload.reminderCandidates) ? payload.reminderCandidates : [],
       mood: finalMoodEmoji,
       moodLabel: finalMoodLabel,
-      summarySource: String(payload.summarySource || (options && options.preferSource) || 'local_rule').trim(),
+      summarySource,
       summaryModel: String(payload.summaryModel || '').trim(),
     }
   }
@@ -98,9 +109,10 @@ const RECORDER_RESTART_COOLDOWN_MS = 3500
 const PLAYBACK_ECHO_TAIL_GUARD_MS = 420
 const REMINDER_COMPLETE_HINTS = ['完成了', '办好了', '弄好了', '已经好了', '处理好了', '做完了', '解决了']
 const REMINDER_INCOMPLETE_HINTS = ['还没', '没做完', '没完成', '还没弄好', '还没办好', '没处理完', '还在弄']
-const NO_MORE_CHAT_HINTS = ['没有了', '没了', '不用了', '先这样', '不聊了', '没什么了', '就这样吧', '不用聊了']
+const NO_MORE_CHAT_HINTS = ['没有了', '没了', '没别的', '没其他', '不用了', '先这样', '不聊了', '没什么了', '就这样吧', '不用聊了']
 const SMALL_TALK_INTENT_HINTS = ['聊聊天', '聊聊', '随便聊', '没啥事', '没什么事', '就是想聊', '想说说话', '陪我聊', '说说话']
 const CONCRETE_NEED_HINTS = ['提醒', '记得', '复查', '复诊', '吃药', '测血压', '血糖', '不舒服', '难受', '胸闷', '胸痛', '头晕', '帮我', '联系', '预约', '挂号', '怎么做', '怎么办']
+const END_CALL_INTENT_HINTS = ['先这样吧', '先这样了', '就这样吧', '我挂了', '挂了啊', '不聊了', '不用聊了', '回头再说', '下次再聊', '改天再聊', '今天先到这', '今天就到这', '先聊到这', '再见', '拜拜']
 const GREETING_MEMORY_COOLDOWN_MS = 48 * 60 * 60 * 1000
 const MIN_CONNECTING_UI_MS = 2200
 const CONNECTING_FALLBACK_MS = 6500
@@ -146,6 +158,12 @@ const LATENCY_BASELINE_TARGET = Object.freeze({
 const CARE_RESPONSE_PLAYBOOK = [
   '关怀策略卡：先接住情绪（复述感受）-> 再追问一个具体细节（时间/地点/人物）-> 再给1-2条电话内可执行建议 -> 最后温和收束并确认是否需要继续帮忙。',
   '场景路由：普通闲聊=多问生活细节、少说教；低落情绪=先安抚后建议；健康不适=先评估风险再转介家属/医生；提醒回访=先确认进展再给下一步。',
+].join('\n')
+const PHONE_CONVERSATION_GUIDE = [
+  '电话感规则：像熟人打电话，不报功能菜单；每轮1-2句，一次只推进一个重点。',
+  '追问规则：一次只问一个问题。用户停顿或回答很短时，先接住，再轻轻追问。',
+  '开场规则：第一句要短。用户主动打来时先确认来意，不在第一句带历史记忆。',
+  '收尾规则：用户明确说“先这样吧/我挂了/不聊了/回头再说/再见”时，只说一句短收尾，不继续抛新问题，等对方挂断。',
 ].join('\n')
 const VOICE_PRESET_CONFIG = {
   safe: {
@@ -243,6 +261,11 @@ Page({
       shouldAutoEndAfterAssistant: false,
       pendingAutoEndAfterPlayback: false,
     }
+    this.callEndingState = {
+      shouldAutoEndAfterAssistant: false,
+      pendingAutoEndAfterPlayback: false,
+      source: '',
+    }
     this.timeWeatherContext = store.getMockTimeWeatherContext()
     this.pendingMemoryConfirmation = null
     this.lastSmallTalkSteerAt = 0
@@ -308,7 +331,10 @@ Page({
       const memoryBundle = store.getMemoryBundle(this.currentElderKey)
       const pendingConfirm = this._pickPendingMemoryConfirmation()
       this.pendingMemoryConfirmation = pendingConfirm
-      const greetingPayload = this._buildMemoryAwareGreeting(title, memoryBundle, this.incomingReminder, pendingConfirm)
+      const isFirstVoiceCall = this._isFirstVoiceCall(dialogId)
+      const greetingPayload = this._buildMemoryAwareGreeting(title, memoryBundle, this.incomingReminder, pendingConfirm, {
+        isFirstVoiceCall,
+      })
       const memoryContext = store.buildMemoryContext
         ? store.buildMemoryContext(this.currentElderKey, {
           intent: this.data.callMode === 'incoming' ? 'opening' : 'outgoingNeed',
@@ -333,17 +359,20 @@ Page({
       })
       const reminderGuidance = greetingPayload.usedReminderId
         ? `\n当前通话是“提醒事项回访”。对话顺序必须遵守：
-1) 先确认“提醒事项是否已完成”；
-2) 若用户说已完成：先肯定，再明确追问“您还有什么想和我聊的吗？”；
-3) 若用户说没有其他想聊：礼貌收尾并结束对话；
-4) 若用户说未完成：先问阻碍并给1-2条可执行建议，再简短确认是否需要继续帮忙。
+1) 首句只提醒事项并确认现在是否方便看一下，不直接问“完成了吗”；
+2) 若用户说方便或正在处理，再确认提醒事项进展；
+3) 若用户说已完成：先肯定，再只追问一次“您还有别的事想和我说吗？”；
+4) 若用户说没有其他想聊：说一句短收尾，不继续追问；
+5) 若用户说未完成：先问阻碍并给1-2条可执行建议，再简短确认是否需要继续帮忙。
 不要再用“能聊聊吗/方便聊两句吗”作为开场。`
         : ''
       const pendingMemoryGuidance = pendingConfirm
         ? `\n当前有待确认记忆：${pendingConfirm.text}。请在本轮自然确认，不要诱导；若用户明确否认则放弃该记忆，若明确认可再继续使用。`
         : ''
       const outgoingGuidance = this.data.callMode === 'outgoing'
-        ? '\n当前是“立即通话”场景：第一句只做需求确认（如“您找我有什么事”），不要在第一句带入历史记忆。若用户表示“想聊聊/没啥事就聊聊”，第二轮再自然带出1条历史话题并追问近况。'
+        ? (isFirstVoiceCall
+          ? '\n当前是用户和小林第一次语音通话：语气比普通来电更温暖，先建立关系，不用“喂”开头，不急着追问需求，也不要引用历史记忆。'
+          : '\n当前是“立即通话”场景：第一句只做需求确认（如“您找我有什么事”），不要在第一句带入历史记忆。若用户表示“想聊聊/没啥事就聊聊”，第二轮再自然带出1条历史话题并追问近况。')
         : ''
       const systemRole = `你是小林，一个温柔亲切的大学女生陪伴助手，正在和${title}通电话。请全程用“您”称呼对方，句子短而自然，避免长句说教。
 如果对方说“叫我XXX”，请立即切换称呼并记住。
@@ -354,6 +383,7 @@ Page({
 遇到用户请求线下陪同/代办时，固定回复策略：先共情，再明确“我不能线下行动”，然后明确“我可以帮您联系对应的人”，并给电话内可执行方案（联系家属/120/社区服务/网约车）。
 遇到健康不适或生活困难时，先共情，再给电话内可执行建议，并提醒联系家属或专业机构。
 表达风格：口语化、真诚、有节奏停顿，不要模板化复读，不要夸张表演腔。
+${PHONE_CONVERSATION_GUIDE}
 ${CARE_RESPONSE_PLAYBOOK}
 ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${reminderGuidance}${pendingMemoryGuidance}${outgoingGuidance}`
 
@@ -494,6 +524,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         this.messages.push({ role: 'user', content: text })
         this._tryResolvePendingMemoryConfirmation(text)
         this._handleIncomingReminderFollowup(text)
+        this._handleExplicitEndCallIntent(text)
         this._maybeInjectOutgoingSmallTalkSteer(text)
         // P0：当用户在本轮明确说出“提醒/记得 + 具体时间/日期”时，立刻写入提醒，避免等待通话摘要
         this._tryUpsertReminderCandidatesFromASRFinal(text)
@@ -606,6 +637,11 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         this.incomingFollowupState.pendingAutoEndAfterPlayback = true
         this._startIncomingAutoEndGuard()
       }
+      if (this.callEndingState && this.callEndingState.shouldAutoEndAfterAssistant) {
+        this.callEndingState.shouldAutoEndAfterAssistant = false
+        this.callEndingState.pendingAutoEndAfterPlayback = true
+        this._startIncomingAutoEndGuard()
+      }
       console.log(FLOW_LOG_PREFIX, '本轮 TTS 结束')
       // 规避服务端轮次上限：每 8 轮自动续会话，保持同一 dialog_id
       if (ENABLE_AUTO_SESSION_REFRESH && this.assistantTurnCount > 0 && this.assistantTurnCount % 8 === 0) {
@@ -667,8 +703,8 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         console.log(FLOW_LOG_PREFIX, '首句欢迎语播放结束，解除回声保护')
       }
       this.playbackEchoGuardUntil = Date.now() + PLAYBACK_ECHO_TAIL_GUARD_MS
-      if (this.incomingFollowupState && this.incomingFollowupState.pendingAutoEndAfterPlayback) {
-        this.incomingFollowupState.pendingAutoEndAfterPlayback = false
+      if (this._hasPendingAutoEndAfterPlayback()) {
+        this._clearPendingAutoEndAfterPlayback()
         this._clearIncomingAutoEndGuard()
         this._endCall({
           reason: 'hangup',
@@ -772,8 +808,8 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
   _startIncomingAutoEndGuard() {
     this._clearIncomingAutoEndGuard()
     this.incomingAutoEndTimer = setTimeout(() => {
-      if (!this.incomingFollowupState || !this.incomingFollowupState.pendingAutoEndAfterPlayback) return
-      this.incomingFollowupState.pendingAutoEndAfterPlayback = false
+      if (!this._hasPendingAutoEndAfterPlayback()) return
+      this._clearPendingAutoEndAfterPlayback()
       this._endCall({
         reason: 'hangup',
         shouldDisconnect: true,
@@ -786,6 +822,22 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     if (this.incomingAutoEndTimer) {
       clearTimeout(this.incomingAutoEndTimer)
       this.incomingAutoEndTimer = null
+    }
+  },
+
+  _hasPendingAutoEndAfterPlayback() {
+    const incomingPending = this.incomingFollowupState && this.incomingFollowupState.pendingAutoEndAfterPlayback
+    const callEndingPending = this.callEndingState && this.callEndingState.pendingAutoEndAfterPlayback
+    return Boolean(incomingPending || callEndingPending)
+  },
+
+  _clearPendingAutoEndAfterPlayback() {
+    if (this.incomingFollowupState) {
+      this.incomingFollowupState.pendingAutoEndAfterPlayback = false
+    }
+    if (this.callEndingState) {
+      this.callEndingState.pendingAutoEndAfterPlayback = false
+      this.callEndingState.source = ''
     }
   },
 
@@ -1139,7 +1191,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       '优先级规则：安全约束 > 角色稳定规则 > 动态记忆事实；低优先级不得覆盖高优先级。',
       '角色底线：不能承诺线下行动（上门、陪同、代买代办、寄送等），只能提供电话内协助与转介。',
       `表达风格：${voicePreset.characterManifest || '温柔亲切，短句清晰，避免说教。'}`,
-      '沟通习惯：每次回复只推进一个重点，先共情再追问，避免连续抛出多个问题。',
+      '沟通习惯：像电话里熟悉的晚辈，每次回复只推进一个重点，先共情再追问，避免连续抛出多个问题。',
       careStrategies ? `陪伴策略：${careStrategies}` : '',
       stableInterests ? `动态记忆（兴趣，谨慎提及）：${stableInterests}` : '',
       stableHealth ? `动态记忆（健康背景，仅在相关场景提及）：${stableHealth}` : '',
@@ -1428,7 +1480,19 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     return store.pickNextIncomingReminder(elderKey) || null
   },
 
-  _buildMemoryAwareGreeting(title, memoryBundle, incomingReminder, pendingMemoryConfirmation) {
+  _isFirstVoiceCall(dialogId) {
+    if (this.data.callMode !== 'outgoing') return false
+    if (dialogId) return false
+    return !this._hasAnyCallHistory()
+  },
+
+  _hasAnyCallHistory() {
+    if (!store.getCallHistory) return false
+    const history = store.getCallHistory()
+    return Array.isArray(history) && history.length > 0
+  },
+
+  _buildMemoryAwareGreeting(title, memoryBundle, incomingReminder, pendingMemoryConfirmation, options) {
     const elderMemory = memoryBundle && memoryBundle.elderMemory ? memoryBundle.elderMemory : {}
     const xiaolinMemory = memoryBundle && memoryBundle.xiaolinMemory ? memoryBundle.xiaolinMemory : {}
     const followUp = this._pickFirstNotCooling(xiaolinMemory.followUps || [])
@@ -1441,15 +1505,16 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     if (this.data.callMode === 'incoming') {
       if (incomingReminder && incomingReminder.title) {
         const followupPrompt = this._buildIncomingReminderFollowupPrompt(incomingReminder.title)
+        const reminderTitle = this._normalizeMemorySentence(incomingReminder.title) || '这件事'
         return {
-          text: `${title}，是我小林呀！我来提醒您“${incomingReminder.title}”。这件事完成了吗？${followupPrompt}`,
+          text: `喂，${title}，我是小林。到时间啦，我提醒您${reminderTitle}，您现在方便看一下吗？${followupPrompt}`,
           usedMemoryText: '',
           usedReminderId: incomingReminder.id || '',
         }
       }
       if (pendingConfirmText) {
         return {
-          text: `${title}，是我小林呀。上次我记了件事“${pendingConfirmText}”，我怕记错了，想先和您确认一下对不对？`,
+          text: `喂，${title}，我是小林。上次我记了“${pendingConfirmText}”，怕记错了，想跟您确认一下。`,
           usedMemoryText: '',
           usedReminderId: '',
         }
@@ -1457,7 +1522,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       if (followUp) {
         const naturalFollowUp = this._humanizeGreetingMemoryText(followUp)
         return {
-          text: `${title}，是我小林呀！上次咱们聊到${naturalFollowUp}，我一直惦记着，今天来听听您这边近况怎么样？`,
+          text: `喂，${title}，我是小林。上次您说${naturalFollowUp}，我有点惦记，这两天怎么样？`,
           usedMemoryText: followUp,
           usedReminderId: '',
         }
@@ -1465,27 +1530,36 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       if (recentEvent) {
         const naturalRecentEvent = this._humanizeGreetingMemoryText(recentEvent)
         return {
-          text: `${title}，是我小林呀！上次咱们聊到${naturalRecentEvent}，这两天还顺利吗？要是有不方便的地方，我们可以一起想办法。`,
+          text: `喂，${title}，我是小林。上次您说${naturalRecentEvent}，这两天还顺利吗？`,
           usedMemoryText: recentEvent,
           usedReminderId: '',
         }
       }
       if (interest) {
         return {
-          text: `${title}，是我小林呀！还记得您对“${interest}”挺感兴趣，最近有没有新发现呀？`,
+          text: `喂，${title}，我是小林。您之前提到喜欢${interest}，最近还有继续吗？`,
           usedMemoryText: interest,
           usedReminderId: '',
         }
       }
       return {
-        text: `${title}，是我小林呀！想您了就给您打个电话，您最近怎么样呀？`,
+        text: `喂，${title}，我是小林。今天想听听您这两天怎么样。`,
+        usedMemoryText: '',
+        usedReminderId: '',
+      }
+    }
+
+    if (options && options.isFirstVoiceCall) {
+      const address = title ? `${title}您好` : '您好'
+      return {
+        text: `${address}，我是小林。第一次和您通话，我先陪您慢慢聊。您今天想先跟我说说什么？`,
         usedMemoryText: '',
         usedReminderId: '',
       }
     }
 
     return {
-      text: `${title}，您好呀！我是小林。您找我有什么事呀？想聊聊天或者设置提醒都可以，我在呢。`,
+      text: `喂，${title}，我是小林。您找我呀？`,
       usedMemoryText: '',
       usedReminderId: '',
     }
@@ -1493,17 +1567,17 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
 
   _buildIncomingReminderFollowupPrompt(reminderTitle) {
     const title = this._normalizeMemorySentence(reminderTitle)
-    if (!title) return '要是还没来得及也没关系，我可以陪您一起理理怎么更顺手。'
+    if (!title) return '不急，您方便时我陪您确认一下。'
     if (/(吃药|服药|药)/.test(title)) {
-      return '要是还没来得及吃也没关系，您现在方便的话，我陪您一步步来。'
+      return '不急，您方便时我陪您确认一下。'
     }
     if (/(复查|复诊|看医生|门诊|医院|体检)/.test(title)) {
-      return '要是还没安排上也不着急，我们一起看看哪天更方便。'
+      return '不急，您方便时我们再看看怎么安排。'
     }
     if (/(测血压|血压|血糖)/.test(title)) {
-      return '要是还没测也没关系，等您方便时我再陪您确认一次。'
+      return '不急，您方便时我陪您确认一下。'
     }
-    return '要是还没来得及也没关系，我可以陪您一起理理怎么更顺手。'
+    return '不急，您方便时我陪您确认一下。'
   },
 
   _pickFirstNotCooling(candidates) {
@@ -1569,6 +1643,29 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     }
   },
 
+  _handleExplicitEndCallIntent(userText) {
+    if (!this._hasExplicitEndCallIntent(userText)) return
+    if (!this.callEndingState) {
+      this.callEndingState = {
+        shouldAutoEndAfterAssistant: false,
+        pendingAutoEndAfterPlayback: false,
+        source: '',
+      }
+    }
+    this.callEndingState.shouldAutoEndAfterAssistant = true
+    this.callEndingState.pendingAutoEndAfterPlayback = false
+    this.callEndingState.source = 'user_end_intent'
+  },
+
+  _hasExplicitEndCallIntent(text) {
+    const normalized = this._normalizeMemorySentence(text)
+    if (!normalized) return false
+    if (END_CALL_INTENT_HINTS.some(keyword => normalized.includes(keyword))) return true
+    return /(今天|这次|咱们|我们)?(先|就)?聊到这(里)?吧?$/.test(normalized) ||
+      /^(那)?(我)?先挂(电话)?(了|啦|吧)?$/.test(normalized) ||
+      /^(那)?(回头|改天|下次)(再)?(聊|说)(吧)?$/.test(normalized)
+  },
+
   _pickPendingMemoryConfirmation() {
     if (!store.getPendingMemoryConfirmations) return null
     const pending = store.getPendingMemoryConfirmations(this.currentElderKey, { maxCount: 1 })
@@ -1599,6 +1696,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     if (this.data.callMode !== 'outgoing') return
     if (!this.client || !this.client.sessionActive || typeof this.client.sendTextQuery !== 'function') return
     if (this.assistantTurnCount < 1) return
+    if (this._hasExplicitEndCallIntent(userText)) return
     const normalized = this._normalizeMemorySentence(userText)
     if (!normalized) return
     if (!this._hasSmallTalkIntent(normalized)) return
@@ -1670,6 +1768,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     const xiaolinMemory = input.xiaolinMemory && typeof input.xiaolinMemory === 'object' ? input.xiaolinMemory : {}
     delta.elderMemory.interestTags = this._normalizeTextList(elderMemory.interestTags, 8)
     delta.elderMemory.healthNotes = this._normalizeTextList(elderMemory.healthNotes, 6)
+      .filter(text => !this._isReminderCommandLike(text))
     delta.elderMemory.routineNotes = this._normalizeTextList(elderMemory.routineNotes, 6)
     delta.elderMemory.recentEvents = this._normalizeTextList(elderMemory.recentEvents, 8)
     delta.xiaolinMemory.followUps = this._normalizeTextList(xiaolinMemory.followUps, 6)
@@ -1692,6 +1791,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       const type = this._normalizeMemoryItemType(rawItem.type)
       const text = this._normalizeMemorySentence(rawItem.text)
       if (!text || this._isLowInfoSentence(text)) return
+      if (type === 'healthNote' && this._isReminderCommandLike(text)) return
       const confidence = Math.max(0, Math.min(1, Number(rawItem.confidence || 0.7)))
       const sensitivity = rawItem.sensitivity || (type === 'healthNote' && confidence >= 0.85 ? 'sensitive' : 'normal')
       const needsConfirmation = typeof rawItem.needsConfirmation === 'boolean'
@@ -1884,6 +1984,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       const line = this._normalizeMemorySentence(text)
       if (!line) return
       if (this._isLowInfoSentence(line)) return
+      if (this._isReminderCommandLike(line)) return
       if (keywords.some(k => line.includes(k))) {
         result.push(line)
       }
@@ -2106,25 +2207,26 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     if (text === '开心' || text === '平静' || text === '低落' || text === '焦虑') {
       return text
     }
-    if (/开心|高兴|愉快/.test(text)) return '开心'
-    if (/焦虑|担心|紧张/.test(text)) return '焦虑'
-    if (/低落|难过|伤心/.test(text)) return '低落'
+    if (/焦虑|担心|紧张|害怕|不舒服|难受|疼|痛/.test(text)) return '焦虑'
+    if (/低落|难过|伤心|孤单|孤独|失落/.test(text)) return '低落'
+    if (/开心|高兴|愉快|放心|舒服多了|好多了|顺利/.test(text)) return '开心'
     if (/平静|稳定|平稳/.test(text)) return '平静'
     return ''
   },
 
   _normalizeMoodEmoji(input, moodLabel) {
     const text = String(input || '').trim()
-    if (text === '😊' || text === '😌' || text === '😢' || text === '😟') {
-      return text
-    }
     const moodMap = {
       开心: '😊',
       平静: '😌',
       低落: '😢',
       焦虑: '😟',
     }
-    return moodMap[moodLabel] || ''
+    if (moodMap[moodLabel]) return moodMap[moodLabel]
+    if (text === '😊' || text === '😌' || text === '😢' || text === '😟') {
+      return text
+    }
+    return ''
   },
 
   _inferMoodFromMessages(messages) {
@@ -2134,13 +2236,13 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       .join(' ')
     const normalized = userText.replace(/\s+/g, '')
     if (!normalized) return { mood: '😌', moodLabel: '平静' }
-    if (/(担心|焦虑|紧张|害怕|睡不着|不舒服|难受|疼)/.test(normalized)) {
+    if (/(担心|焦虑|紧张|害怕|慌|发愁|烦|睡不着|失眠|不舒服|难受|疼|痛|胸闷|胸痛|头晕|血压高|血糖高|没药|忘吃药)/.test(normalized)) {
       return { mood: '😟', moodLabel: '焦虑' }
     }
-    if (/(难过|低落|伤心|没意思|孤单|失落)/.test(normalized)) {
+    if (/(难过|低落|伤心|没意思|孤单|孤独|失落|想哭|不想说话|提不起劲)/.test(normalized)) {
       return { mood: '😢', moodLabel: '低落' }
     }
-    if (/(开心|高兴|不错|挺好|愉快|放心)/.test(normalized)) {
+    if (/(开心|高兴|不错|挺好|愉快|放心|舒服多了|好多了|顺利|满意)/.test(normalized)) {
       return { mood: '😊', moodLabel: '开心' }
     }
     return { mood: '😌', moodLabel: '平静' }

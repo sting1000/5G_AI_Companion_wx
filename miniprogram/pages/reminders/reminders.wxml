@@ -28,6 +28,9 @@
           <text class="status">{{item.statusText}}</text>
         </view>
         <text class="card-subtitle">{{item.scheduleText}}</text>
+        <view class="candidate-actions" wx:if="{{item.isCandidate}}">
+          <button class="candidate-confirm-btn" data-id="{{item.id}}" catchtap="onConfirmCandidate">确认提醒</button>
+        </view>
       </view>
     </view>
   </view>

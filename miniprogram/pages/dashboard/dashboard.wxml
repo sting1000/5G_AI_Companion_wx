@@ -4,10 +4,6 @@
       <text class="nav-kicker">亲情陪伴</text>
       <text class="nav-title">AI 陪伴看护台</text>
     </view>
-    <view class="nav-status">
-      <view class="nav-status-dot"></view>
-      <text>在线</text>
-    </view>
   </view>
 
   <view class="warning-bar" wx:if="{{hasWarning}}">
@@ -18,7 +14,13 @@
   <view class="scroll-content">
     <view class="hero-panel">
       <view class="hero-copy">
-        <text class="hero-label">当前陪伴对象</text>
+        <view class="hero-label-row">
+          <text class="hero-label">当前陪伴对象</text>
+          <view class="hero-status">
+            <view class="hero-status-dot"></view>
+            <text>在线</text>
+          </view>
+        </view>
         <view class="elder-row">
           <view class="elder-avatar">
             <text>{{elderInitial}}</text>
