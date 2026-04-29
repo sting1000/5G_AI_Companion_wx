@@ -1,6 +1,6 @@
 .container {
   min-height: 100vh;
-  background-color: #F8F9FA;
+  background: linear-gradient(180deg, #FFF7EE 0%, #F6F2EC 58%, #FFFDF9 100%);
   padding-bottom: 40rpx;
 }
 
@@ -10,7 +10,7 @@
   justify-content: space-between;
   align-items: center;
   padding: 100rpx 40rpx 20rpx;
-  background-color: #F8F9FA;
+  background: transparent;
 }
 
 .nav-left {
@@ -77,17 +77,17 @@
   font-size: 48rpx;
   font-weight: bold;
   padding: 20rpx 40rpx 32rpx;
-  color: #333;
+  color: #2D2A26;
 }
 
 /* Segmented Control */
 .segment-control {
   display: flex;
-  background: white;
+  background: rgba(255, 255, 255, 0.88);
   margin: 0 40rpx 32rpx;
-  border-radius: 16rpx;
+  border-radius: 20rpx;
   padding: 8rpx;
-  box-shadow: 0 4rpx 12rpx rgba(0,0,0,0.03);
+  box-shadow: 0 14rpx 40rpx rgba(75, 68, 58, 0.07);
 }
 
 .segment-item {
@@ -95,23 +95,24 @@
   text-align: center;
   padding: 20rpx 0;
   font-size: 30rpx;
-  color: #666;
-  border-radius: 12rpx;
+  color: #8A8580;
+  border-radius: 16rpx;
   transition: all 0.3s ease;
 }
 
 .segment-item.active {
-  background-color: #FF6B4A;
+  background: linear-gradient(135deg, #FF7A59 0%, #E9503D 100%);
   color: white;
-  font-weight: 500;
+  font-weight: 700;
+  box-shadow: 0 10rpx 24rpx rgba(233, 80, 61, 0.22);
 }
 
 /* 卡片通用类 */
 .card {
-  background: white;
-  border-radius: 24rpx;
+  background: rgba(255, 255, 255, 0.90);
+  border-radius: 28rpx;
   margin: 0 40rpx 32rpx;
-  box-shadow: 0 4rpx 16rpx rgba(0,0,0,0.02);
+  box-shadow: 0 14rpx 46rpx rgba(75, 68, 58, 0.08);
   padding: 32rpx;
 }
 
@@ -148,18 +149,18 @@
 
 .stat-label {
   font-size: 28rpx;
-  color: #666;
+  color: #8A8580;
 }
 
 .stat-value {
   font-size: 32rpx;
   font-weight: bold;
-  color: #333;
+  color: #2D2A26;
 }
 
 .section-title {
   font-size: 28rpx;
-  color: #999;
+  color: #8A8580;
   margin: 0 40rpx 16rpx;
   display: block;
 }
@@ -169,18 +170,67 @@
   display: flex;
   align-items: center;
   margin-bottom: 24rpx;
+  padding: 30rpx;
 }
 
-.record-icon {
-  width: 80rpx;
-  height: 80rpx;
+.record-stamp {
+  position: relative;
+  width: 84rpx;
+  height: 84rpx;
   border-radius: 50%;
   display: flex;
   justify-content: center;
   align-items: center;
-  font-size: 40rpx;
   margin-right: 24rpx;
-  background-color: #F8F9FA;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, #FF996D 0%, #E9503D 100%);
+  box-shadow: inset 0 0 0 2rpx rgba(255, 255, 255, 0.44), 0 12rpx 28rpx rgba(233, 80, 61, 0.18);
+}
+
+.record-stamp::after {
+  content: '';
+  position: absolute;
+  top: 8rpx;
+  right: 8rpx;
+  bottom: 8rpx;
+  left: 8rpx;
+  border-radius: 50%;
+  border: 2rpx solid rgba(255, 255, 255, 0.58);
+}
+
+.record-stamp-text {
+  position: relative;
+  z-index: 1;
+  font-size: 34rpx;
+  line-height: 84rpx;
+  font-weight: 900;
+  color: #FFFFFF;
+  text-align: center;
+  text-shadow: 0 2rpx 6rpx rgba(95, 43, 26, 0.22);
+}
+
+.mood-stamp-happy {
+  background: linear-gradient(135deg, #FFB75A 0%, #FF765B 100%);
+}
+
+.mood-stamp-calm {
+  background: linear-gradient(135deg, #FF996D 0%, #E9503D 100%);
+}
+
+.mood-stamp-low {
+  background: linear-gradient(135deg, #A8A19A 0%, #6F625B 100%);
+}
+
+.mood-stamp-anxious {
+  background: linear-gradient(135deg, #E07B59 0%, #A73F34 100%);
+}
+
+.mood-stamp-pending {
+  background: linear-gradient(135deg, #D1A266 0%, #9D7538 100%);
+}
+
+.mood-stamp-missed {
+  background: linear-gradient(135deg, #B8B0AA 0%, #7E7670 100%);
 }
 
 .missed-icon {
@@ -195,14 +245,14 @@
 
 .record-date {
   font-size: 30rpx;
-  color: #333;
-  font-weight: 500;
+  color: #2D2A26;
+  font-weight: 800;
   margin-bottom: 8rpx;
 }
 
 .record-desc {
   font-size: 26rpx;
-  color: #999;
+  color: #8A8580;
 }
 
 /* Status Tag */
@@ -218,7 +268,8 @@
 }
 
 .status-summary {
-  color: #FF6B4A;
+  color: #E9503D;
+  font-weight: 700;
 }
 
 .status-pending {

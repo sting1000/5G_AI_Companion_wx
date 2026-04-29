@@ -43,10 +43,9 @@
     <view class="record-list">
       <!-- 循环历史记录 -->
       <view class="card record-item" wx:for="{{allRecords}}" wx:key="id" bindtap="goSummary" data-id="{{item.id}}">
-        <view class="record-icon">
-          <!-- 模拟图标 -->
-          <text wx:if="{{item.missed}}" class="missed-icon">🚫</text>
-          <text wx:else class="mood-icon">{{item.mood}}</text>
+        <view class="record-stamp {{item.moodStampClass}}">
+          <text class="record-stamp-text" wx:if="{{item.moodStampText}}">{{item.moodStampText}}</text>
+          <text class="record-stamp-text" wx:else>平</text>
         </view>
         <view class="record-info">
           <text class="record-date">{{item.date}}</text>

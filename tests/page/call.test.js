@@ -321,6 +321,55 @@ describe('call 页面离线关键分支', () => {
     expect(store.pickNextIncomingReminder(elderKey)).toBe(null)
   })
 
+  test('ASR 先写入口语化提醒后，摘要候选不会重复新增', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-28T10:00:00.000+08:00'))
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+
+    const elderKey = 'elder:test:asr-summary-reminder-dedup'
+    page.currentElderKey = elderKey
+    page._markCallConnectedIfNeeded = jest.fn()
+    page._tryResolvePendingMemoryConfirmation = jest.fn()
+    page.pendingMemoryConfirmation = null
+    page.messages = []
+    page.client = {}
+    page.recorder = {}
+    page.player = { appendChunk: jest.fn(), playBuffered: jest.fn(), stop: jest.fn(), playing: false }
+
+    page._setupCallbacks()
+    page.client.onASRText('提醒我明天九点出门吧', true)
+
+    let list = store.getReminders(elderKey)
+    expect(list).toHaveLength(1)
+    expect(list[0].title).toBe('出门')
+
+    await page._evolveMemory({
+      id: 'call_reminder_particle_1',
+      messages: [
+        { role: 'user', content: '提醒我明天九点出门吧' },
+      ],
+    }, {
+      summary: '用户要求明天九点出门提醒',
+      reminderCandidates: [
+        {
+          title: '出门',
+          scheduleType: 'once',
+          remindDate: '2026-04-29',
+          timeOfDay: '09:00',
+          confidence: 0.92,
+          intentType: 'explicit_reminder',
+          needsConfirmation: false,
+          evidence: '提醒我明天九点出门吧',
+        },
+      ],
+    })
+
+    list = store.getReminders(elderKey)
+    expect(list).toHaveLength(1)
+    expect(list[0].title).toBe('出门')
+    expect(list[0].confidence).toBe(0.92)
+  })
+
   test('模拟呼入提醒回访后，不会重复新增同名提醒', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
     const page = loadPage()

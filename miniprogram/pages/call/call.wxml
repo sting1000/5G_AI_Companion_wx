@@ -1,22 +1,32 @@
-<view class="call-page" wx:if="{{!showIncoming}}">
-  <!-- 计时器 -->
-  <view class="timer-area">
-    <text class="timer-label">{{status === 'connecting' ? connectionHint : '通话中'}}</text>
-    <text class="timer-text">{{elapsedText}}</text>
-  </view>
+<view class="call-page video-call-page" wx:if="{{!showIncoming}}">
+  <image class="call-bg" src="/assets/images/companion-xiaolin-call.jpg" mode="aspectFill"></image>
+  <view class="call-shade call-shade-top"></view>
+  <view class="call-shade call-shade-bottom"></view>
 
-  <!-- 头像区 -->
-  <view class="avatar-area">
-    <view class="avatar-glow"></view>
-    <view class="avatar">
-      <text class="avatar-emoji">👧</text>
+  <view class="call-header">
+    <view class="call-action">
+      <image class="call-action-icon" src="/assets/icons/video-expand.svg" mode="aspectFit"></image>
     </view>
-    <text class="avatar-name">小林</text>
+    <view class="call-identity">
+      <text class="call-name">AI 小林</text>
+      <text class="call-time">{{elapsedText}}</text>
+      <text class="call-status">{{status === 'connecting' ? connectionHint : (isAssistantSpeaking ? '小林正在回复' : (isSpeaking ? '正在听您说话' : '陪伴通话中'))}}</text>
+    </view>
+    <view class="call-action">
+      <image class="call-action-icon" src="/assets/icons/video-user-add.svg" mode="aspectFit"></image>
+    </view>
   </view>
 
-  <!-- 字幕区 -->
-  <view class="subtitle-area">
-    <scroll-view class="subtitle-box transcript-scroll" scroll-y scroll-into-view="{{transcriptAnchorId}}" scroll-top="{{transcriptScrollTop}}" scroll-with-animation lower-threshold="48" bindscroll="onTranscriptScroll" bindscrolltolower="onTranscriptScrollToLower" wx:if="{{transcriptItems.length > 0 || currentUserDraft || currentAssistantDraft}}">
+  <view class="call-caption-layer">
+    <view class="reminder-chip" wx:if="{{incomingReminderTitle}}">
+      <view class="reminder-pill-icon">
+        <view class="reminder-pill-head"></view>
+        <view class="reminder-pill-tail"></view>
+      </view>
+      <text class="reminder-chip-text">{{incomingReminderTitle}}</text>
+    </view>
+
+    <scroll-view class="transcript-panel transcript-scroll" scroll-y scroll-into-view="{{transcriptAnchorId}}" scroll-top="{{transcriptScrollTop}}" scroll-with-animation lower-threshold="48" bindscroll="onTranscriptScroll" bindscrolltolower="onTranscriptScrollToLower" wx:if="{{transcriptItems.length > 0 || currentUserDraft || currentAssistantDraft}}">
       <view
         wx:for="{{transcriptItems}}"
         wx:key="id"
@@ -35,54 +45,92 @@
       </view>
       <view class="transcript-anchor" id="{{transcriptAnchorId}}"></view>
     </scroll-view>
-    <view class="subtitle-box" wx:elif="{{status === 'connecting'}}">
+
+    <view class="call-prompt glass-panel" wx:elif="{{status === 'connecting'}}">
       <text class="connecting-main-hint">{{connectionHint}}</text>
       <text class="connecting-sub-hint">请稍等，马上为您接通</text>
     </view>
-    <view class="subtitle-box" wx:else>
+    <view class="call-prompt glass-panel" wx:else>
       <text class="subtitle-hint">正在聆听，直接说话即可</text>
     </view>
   </view>
 
-  <!-- 底部：声波指示 + 挂断 -->
-  <view class="bottom-area">
-    <view class="status-card">
+  <view class="video-bottom">
+    <view class="voice-state">
       <view class="status-dot {{status === 'connecting' ? 'status-dot-waiting' : (isAssistantSpeaking ? 'status-dot-assistant' : (isSpeaking ? 'status-dot-speaking' : 'status-dot-listening'))}}"></view>
-      <view class="status-copy">
-        <text class="status-title">{{status === 'connecting' ? '连接中...' : (isAssistantSpeaking ? '小林正在回复' : (isSpeaking ? '您说话中' : '正在聆听'))}}</text>
-        <text class="status-desc">{{status === 'connecting' ? connectionHint : (isAssistantSpeaking ? '请稍听，小林马上说完' : '免按键通话，直接说话即可')}}</text>
-      </view>
+      <text class="voice-state-text">{{status === 'connecting' ? '连接中...' : (isAssistantSpeaking ? '小林说话中' : (isSpeaking ? '您说话中' : '实时聆听中'))}}</text>
     </view>
 
-    <view class="hangup-btn" catchtap="onHangup">
-      <text class="hangup-icon">📞</text>
+    <view class="waveform {{isAssistantSpeaking || isSpeaking ? 'waveform-active' : ''}}">
+      <view class="wave-bar wave-bar-1"></view>
+      <view class="wave-bar wave-bar-2"></view>
+      <view class="wave-bar wave-bar-3"></view>
+      <view class="wave-bar wave-bar-4"></view>
+      <view class="wave-bar wave-bar-5"></view>
+      <view class="wave-bar wave-bar-6"></view>
+      <view class="wave-bar wave-bar-7"></view>
+      <view class="wave-bar wave-bar-8"></view>
+      <view class="wave-bar wave-bar-9"></view>
+      <view class="wave-bar wave-bar-10"></view>
+      <view class="wave-bar wave-bar-11"></view>
+      <view class="wave-bar wave-bar-12"></view>
+      <view class="wave-bar wave-bar-13"></view>
+      <view class="wave-bar wave-bar-14"></view>
+      <view class="wave-bar wave-bar-15"></view>
+      <view class="wave-bar wave-bar-16"></view>
+      <view class="wave-bar wave-bar-17"></view>
+      <view class="wave-bar wave-bar-18"></view>
+      <view class="wave-bar wave-bar-19"></view>
     </view>
-    <text class="hangup-label">挂断</text>
+
+    <view class="control-row">
+      <view class="control-item">
+        <view class="control-circle control-circle-light">
+          <image class="control-icon" src="/assets/icons/control-mic-off.svg" mode="aspectFit"></image>
+        </view>
+        <text class="control-label">静音</text>
+      </view>
+      <view class="control-item">
+        <view class="control-circle control-circle-danger" catchtap="onHangup">
+          <image class="control-icon control-icon-phone" src="/assets/icons/control-phone-off.svg" mode="aspectFit"></image>
+        </view>
+        <text class="control-label">挂断</text>
+      </view>
+      <view class="control-item">
+        <view class="control-circle control-circle-light">
+          <image class="control-icon" src="/assets/icons/control-speaker.svg" mode="aspectFit"></image>
+        </view>
+        <text class="control-label">扬声器</text>
+      </view>
+    </view>
   </view>
 </view>
 
-<!-- 模拟来电界面 -->
 <view class="incoming-page" wx:if="{{showIncoming}}">
-  <view class="incoming-content">
-    <view class="incoming-avatar">
-      <text class="incoming-emoji">👧</text>
-    </view>
+  <image class="call-bg" src="/assets/images/companion-xiaolin-call.jpg" mode="aspectFill"></image>
+  <view class="incoming-blur"></view>
+  <view class="call-shade call-shade-top"></view>
+  <view class="call-shade call-shade-bottom"></view>
+
+  <view class="incoming-card">
+    <text class="incoming-label">AI 陪伴来电</text>
     <text class="incoming-name">小林</text>
-    <text class="incoming-desc">来电</text>
-    <view class="incoming-ring-text">
-      <text>{{incomingHint}}</text>
+    <text class="incoming-desc">{{incomingHint}}</text>
+    <view class="incoming-reminder" wx:if="{{incomingReminderTitle}}">
+      <text>{{incomingReminderTitle}}</text>
     </view>
   </view>
+
   <view class="incoming-actions">
     <view class="incoming-action-group">
-      <view class="decline-btn {{isIncomingAnswering ? 'incoming-btn-disabled' : ''}}" catchtap="onDecline">
-        <text>📞</text>
+      <view class="incoming-control incoming-control-decline {{isIncomingAnswering ? 'incoming-btn-disabled' : ''}}" catchtap="onDecline">
+        <image class="incoming-control-icon" src="/assets/icons/control-phone-off.svg" mode="aspectFit"></image>
       </view>
       <text class="incoming-action-label">拒绝</text>
     </view>
     <view class="incoming-action-group">
-      <view class="accept-btn {{isIncomingAnswering ? 'incoming-btn-disabled' : ''}}" catchtap="onAccept">
-        <text>📞</text>
+      <view class="incoming-control incoming-control-accept {{isIncomingAnswering ? 'incoming-btn-disabled' : ''}}" catchtap="onAccept">
+        <image class="incoming-control-icon" src="/assets/icons/control-phone-off.svg" mode="aspectFit"></image>
       </view>
       <text class="incoming-action-label">{{isIncomingAnswering ? '接听中' : '接听'}}</text>
     </view>

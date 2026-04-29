@@ -69,10 +69,12 @@ Page({
     // 老人信息
     elderName: '',
     elderEmoji: '👩',
+    elderInitial: '亲',
     // 最近通话
     lastCallTime: '',
     lastMood: '',
     lastMoodLabel: '',
+    lastMoodClass: 'mood-calm',
     hasCallHistory: false,
     // 统计
     totalCalls: 0,
@@ -115,8 +117,10 @@ Page({
 
   // 加载老人基本信息
   _loadElderInfo(config) {
+    const elderName = config.parentName || '未设置'
     this.setData({
-      elderName: config.parentName || '未设置',
+      elderName,
+      elderInitial: elderName && elderName !== '未设置' ? elderName.slice(0, 1) : '亲',
     })
   },
 
@@ -137,11 +141,19 @@ Page({
       const mood = latest.summaryStatus === 'pending'
         ? '⏳'
         : (latest.mood || '😌')
+      const moodClassMap = {
+        开心: 'mood-happy',
+        平静: 'mood-calm',
+        低落: 'mood-low',
+        焦虑: 'mood-anxious',
+        分析中: 'mood-pending',
+      }
       this.setData({
         hasCallHistory: true,
         lastCallTime: '上次通话：' + (latest.date || '未知'),
         lastMood: mood,
         lastMoodLabel: moodLabel,
+        lastMoodClass: moodClassMap[moodLabel] || 'mood-calm',
         totalCalls: history.length,
         totalDurationText: this._formatDuration(totalDurationSeconds),
       })
@@ -151,6 +163,7 @@ Page({
         lastCallTime: '还没有通话记录',
         lastMood: '',
         lastMoodLabel: '',
+        lastMoodClass: 'mood-calm',
         totalCalls: 0,
         totalDurationText: '0秒',
       })

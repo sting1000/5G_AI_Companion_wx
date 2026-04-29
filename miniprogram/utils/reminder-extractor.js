@@ -279,6 +279,21 @@ function removeTimePrefix(text) {
   return result
 }
 
+function stripTrailingSpeechParticles(text) {
+  let result = String(text || '').trim()
+  let changed = true
+  while (changed) {
+    const before = result
+    result = result
+      .replace(/[。！？!?,，、；;\s]+$/g, '')
+      .replace(/(?:吧|啦|啊|呀|呢|嘛|咯|喽)$/u, '')
+      .replace(/[。！？!?,，、；;\s]+$/g, '')
+      .trim()
+    changed = result !== before
+  }
+  return result
+}
+
 function stripReminderTrigger(text) {
   const raw = String(text || '').trim()
   const trigger = /(记得提醒我|提醒我一下|提醒一下我|提醒我|提醒一下|提醒下我|提醒下|帮我提醒|帮忙提醒|帮提醒|叫我|告诉我|通知我|到时候提醒我|到时候叫我|别忘了提醒我|别忘提醒我)/
@@ -303,6 +318,7 @@ function normalizeTitle(text, isExplicitIntent) {
     .replace(/^(一趟|一下|一声)[，。！？、\s]*/u, '')
     .replace(/^[，。！？、\s]+/, '')
     .replace(/[。！？!?,，、；;]+$/g, '')
+  title = stripTrailingSpeechParticles(title)
 
   if (/^吃药$/.test(title)) return title
   if (/^服药$/.test(title)) return '吃药'

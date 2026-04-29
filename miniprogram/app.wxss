@@ -1,7 +1,7 @@
 /* 全局样式 - 适老化设计 */
 page {
   font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  background-color: #FBF8F4;
+  background-color: #FFF7EE;
   color: #2D2A26;
   font-size: 32rpx;
   line-height: 1.6;
@@ -9,15 +9,18 @@ page {
 
 /* 设计 token（阶段一保守模式：仅收口，不重塑视觉） */
 :root {
-  --color-bg-page: #FBF8F4;
+  --color-bg-page: #FFF7EE;
   --color-bg-card: #FFFFFF;
-  --color-bg-subtle: #F7F5F2;
+  --color-bg-subtle: #F7F1EA;
   --color-text-primary: #2D2A26;
   --color-text-secondary: #66615C;
   --color-text-muted: #8A8580;
   --color-border: #E8E4DF;
-  --color-brand: #FF6B4A;
-  --color-brand-pressed: #E55A3A;
+  --color-brand: #FF7A59;
+  --color-brand-pressed: #E9503D;
+  --color-care-deep: #7A4B36;
+  --color-care-green: #7C8F62;
+  --color-accent-blue: #FF8A65;
   --color-success-soft: #EAF8ED;
   --color-success-text: #2E7D32;
   --color-warning-soft: #FFF8DB;
@@ -35,7 +38,7 @@ page {
   --font-title: 36rpx;
   --font-body: 30rpx;
   --font-caption: 24rpx;
-  --shadow-card: 0 4rpx 16rpx rgba(0, 0, 0, 0.04);
+  --shadow-card: 0 14rpx 46rpx rgba(75, 68, 58, 0.08);
 }
 
 /* 通用基础类 */

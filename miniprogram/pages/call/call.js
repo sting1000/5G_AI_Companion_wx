@@ -189,6 +189,7 @@ Page({
     callMode: 'outgoing', // outgoing | incoming
     isIncomingAnswering: false,
     incomingHint: '正在响铃...',
+    incomingReminderTitle: '',
   },
 
   onLoad(options) {
@@ -249,7 +250,11 @@ Page({
     // incoming 模式：先显示来电界面
     if (options.mode === 'incoming') {
       this.incomingReminder = this._resolveIncomingReminder(options)
-      this.setData({ showIncoming: true, callMode: 'incoming' })
+      this.setData({
+        showIncoming: true,
+        callMode: 'incoming',
+        incomingReminderTitle: this.incomingReminder && this.incomingReminder.title ? this.incomingReminder.title : '',
+      })
     } else {
       this._startCall()
     }

@@ -47,15 +47,36 @@ Page({
       active: value <= moodScore,
     }))
     const topics = Array.isArray(record.topics) ? record.topics : []
+    const highlights = Array.isArray(record.highlights) ? record.highlights : []
+    const summaryStatus = record.summaryStatus || (record.summary ? 'done' : '')
     const hasHealthSignal = topics.some(tag => /(健康|心脏病|胸闷|胸痛|吃药|血压|血糖|失眠|复查|复诊)/.test(String(tag || '')))
     const signalTitle = hasHealthSignal ? '健康信号' : '兴趣信号'
     const signalIcon = hasHealthSignal ? '🩺' : '📡'
     const signalTip = hasHealthSignal
       ? '检测到健康风险相关线索，建议优先关注用药与就医安排。'
       : 'AI将适时为老人推荐相关内容，帮助丰富日常生活。'
+    const summaryStateText = summaryStatus === 'pending'
+      ? '摘要生成中'
+      : (summaryStatus === 'failed' ? '摘要暂不可用' : '摘要已完成')
+    const moodToneClass = {
+      开心: 'mood-happy',
+      平静: 'mood-calm',
+      低落: 'mood-low',
+      焦虑: 'mood-anxious',
+      分析中: 'mood-pending',
+    }[moodLabel] || 'mood-calm'
     const decoratedRecord = Object.assign({}, record, {
+      durationText: record.duration || '0秒',
+      hasHighlights: highlights.length > 0,
+      hasTopics: topics.length > 0,
+      highlightCount: highlights.length,
+      topicCount: topics.length,
+      moodPercent: Math.max(0, Math.min(100, moodScore * 20)),
       moodScore,
       moodStars,
+      moodToneClass,
+      summaryStateText,
+      summaryStateClass: summaryStatus === 'pending' ? 'summary-state-pending' : (summaryStatus === 'failed' ? 'summary-state-failed' : 'summary-state-done'),
       signalTitle,
       signalIcon,
       signalTip,

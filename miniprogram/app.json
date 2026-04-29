@@ -17,10 +17,10 @@
     "backgroundTextStyle": "dark"
   },
   "tabBar": {
-    "color": "#999999",
-    "selectedColor": "#FF6B4A",
-    "backgroundColor": "#ffffff",
-    "borderStyle": "black",
+    "color": "#B8B0AA",
+    "selectedColor": "#FF6A4F",
+    "backgroundColor": "#FFFDF9",
+    "borderStyle": "white",
     "list": [
       {
         "pagePath": "pages/dashboard/dashboard",

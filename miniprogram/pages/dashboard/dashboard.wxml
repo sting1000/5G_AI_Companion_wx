@@ -1,59 +1,64 @@
-<view class="container">
-  <!-- 自定义导航栏 -->
-  <view class="custom-nav">
+<view class="dashboard-page">
+  <view class="dashboard-nav">
+    <view>
+      <text class="nav-kicker">亲情陪伴</text>
+      <text class="nav-title">AI 陪伴看护台</text>
+    </view>
+    <view class="nav-status">
+      <view class="nav-status-dot"></view>
+      <text>在线</text>
+    </view>
   </view>
 
-  <!-- 预警条 -->
   <view class="warning-bar" wx:if="{{hasWarning}}">
-    <text>⚠️ 妈妈今日连续3次未接听 — 点击处理 ›</text>
+    <view class="warning-dot"></view>
+    <text>妈妈今日连续3次未接听，点击处理</text>
   </view>
 
   <view class="scroll-content">
-    <!-- 父母信息卡片 -->
-    <view class="card parent-card">
-      <view class="parent-avatar">
-        <text>{{elderEmoji}}</text>
-      </view>
-      <view class="parent-info">
-        <text class="parent-name">{{elderName}}</text>
-        <text class="last-call">{{lastCallTime}}</text>
-        <view class="mood-badge" wx:if="{{lastMood}}">
-          <text>{{lastMood}} {{lastMoodLabel}}</text>
+    <view class="hero-panel">
+      <view class="hero-copy">
+        <text class="hero-label">当前陪伴对象</text>
+        <view class="elder-row">
+          <view class="elder-avatar">
+            <text>{{elderInitial}}</text>
+          </view>
+          <view class="elder-info">
+            <text class="elder-name">{{elderName}}</text>
+            <text class="last-call">{{lastCallTime}}</text>
+          </view>
+        </view>
+        <view class="mood-badge {{lastMoodClass}}" wx:if="{{lastMoodLabel}}">
+          <text>{{lastMoodLabel}}</text>
         </view>
       </view>
+      <image class="hero-companion" src="/assets/images/companion-xiaolin-call.jpg" mode="aspectFill"></image>
     </view>
 
-    <!-- 统计卡片 -->
-    <view class="card stats-card">
-      <view class="sparkle-icon">✨</view>
-      <view class="stat-item">
+    <view class="stats-panel">
+      <view class="stat-tile">
         <text class="stat-value">{{totalCalls}}</text>
         <text class="stat-label">通话次数</text>
       </view>
-      <view class="stat-divider"></view>
-      <view class="stat-item">
+      <view class="stat-tile">
         <text class="stat-value">{{totalDurationText}}</text>
-        <text class="stat-label">通话总时长</text>
+        <text class="stat-label">累计陪伴</text>
       </view>
     </view>
 
-    <!-- 无通话时的引导卡片 -->
-    <view class="card signal-card" wx:if="{{!hasCallHistory}}">
-      <view class="signal-header">
-        <view class="signal-icon">💡</view>
-        <view class="signal-title-box">
-          <text class="signal-title">开始第一次陪伴通话</text>
-          <text class="signal-desc">点击下方按钮，和小林一起聊聊天吧</text>
-        </view>
+    <view class="insight-card start-card" wx:if="{{!hasCallHistory}}">
+      <view class="card-mark card-mark-warm"></view>
+      <view class="signal-title-box">
+        <text class="signal-title">开始第一次陪伴通话</text>
+        <text class="signal-desc">点击下方按钮，让小林先陪老人聊几句。</text>
       </view>
     </view>
 
-    <!-- 发现兴趣信号卡片 -->
-    <view class="card signal-card" wx:if="{{hasSignal}}">
+    <view class="insight-card" wx:if="{{hasSignal}}">
       <view class="signal-header">
-        <view class="signal-icon">📡</view>
+        <view class="card-mark card-mark-interest"></view>
         <view class="signal-title-box">
-          <text class="signal-title">发现兴趣信号</text>
+          <text class="signal-title">兴趣信号</text>
           <text class="signal-desc">近期识别的兴趣标签</text>
         </view>
       </view>
@@ -62,32 +67,29 @@
       </view>
     </view>
 
-    <!-- 健康信号卡片 -->
-    <view class="card signal-card health-signal-card" wx:if="{{hasCallHistory || hasHealthSignal}}">
+    <view class="insight-card health-signal-card" wx:if="{{hasCallHistory || hasHealthSignal}}">
       <view class="signal-header">
-        <view class="signal-icon">🩺</view>
+        <view class="card-mark card-mark-health"></view>
         <view class="signal-title-box">
-          <text class="signal-title">发现健康信号</text>
-          <text class="signal-desc">来自健康备注与对话线索</text>
+          <text class="signal-title">健康线索</text>
+          <text class="signal-desc">来自健康备注与对话内容</text>
         </view>
       </view>
       <view class="tag-list" wx:if="{{healthTags.length > 0}}">
         <text class="tag-item health-tag" wx:for="{{healthTags}}" wx:key="*this">{{item}}</text>
       </view>
       <view class="signal-action" wx:else>
-        <text>暂无健康标签，可在配置页补充健康备注</text>
+        <text>暂无健康标签，可在配置页补充健康备注。</text>
       </view>
     </view>
   </view>
 
-  <!-- 底部固定通话按钮 -->
   <view class="bottom-action">
     <button class="call-btn-large" bindtap="goCall">
-      <text class="btn-icon">📞</text>
-      <text>立即通话</text>
+      <text>立即视频陪伴</text>
     </button>
     <button class="call-btn-secondary" bindtap="goSimulatedIncoming">
-      <text>模拟呼入</text>
+      <text>模拟小林呼入</text>
     </button>
   </view>
 </view>

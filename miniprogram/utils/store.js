@@ -733,6 +733,21 @@ function _normalizeReminderText(text) {
   return String(text || '').trim()
 }
 
+function _stripTrailingSpeechParticles(text) {
+  let result = _normalizeReminderText(text)
+  let changed = true
+  while (changed) {
+    const before = result
+    result = result
+      .replace(/[。！？!?,，、；;\s]+$/g, '')
+      .replace(/(?:吧|啦|啊|呀|呢|嘛|咯|喽)$/u, '')
+      .replace(/[。！？!?,，、；;\s]+$/g, '')
+      .trim()
+    changed = result !== before
+  }
+  return result
+}
+
 function _sliceFromReminderTrigger(text) {
   const raw = _normalizeReminderText(text)
   if (!raw) return ''
@@ -779,6 +794,7 @@ function _normalizeReminderTitle(text) {
     title = withTimeRemoved
   }
 
+  title = _stripTrailingSpeechParticles(title)
   return title || raw
 }
 

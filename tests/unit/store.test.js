@@ -214,6 +214,33 @@ describe('store 离线规则', () => {
     expect(list[0].title).toBe('医院复查')
   })
 
+  test('提醒候选会归一化句末语气词避免 ASR 和摘要重复入库', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:dedup-reminder-particle'
+    store.upsertExtractedReminderCandidates([
+      {
+        title: '提醒我明天九点出门吧',
+        confidence: 0.9,
+        scheduleType: 'once',
+        timeOfDay: '09:00',
+        remindDate: '2026-04-16',
+      },
+      {
+        title: '出门',
+        confidence: 0.92,
+        scheduleType: 'once',
+        timeOfDay: '09:00',
+        remindDate: '2026-04-16',
+      },
+    ], elderKey)
+
+    const list = store.getReminders(elderKey)
+    expect(list).toHaveLength(1)
+    expect(list[0].title).toBe('出门')
+    expect(list[0].confidence).toBe(0.92)
+  })
+
   test('提醒状态流转: triggered -> done', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
     const store = loadStore()
