@@ -165,6 +165,11 @@ const PHONE_CONVERSATION_GUIDE = [
   '开场规则：第一句要短。用户主动打来时先确认来意，不在第一句带历史记忆。',
   '收尾规则：用户明确说“先这样吧/我挂了/不聊了/回头再说/再见”时，只说一句短收尾，不继续抛新问题，等对方挂断。',
 ].join('\n')
+const REMINDER_RESPONSE_GUIDE = [
+  '提醒能力：你可以记录并设置小程序内提醒。用户明确说“提醒我/叫我/通知我/帮我提醒”且给出时间和事项时，直接确认已经记上，到时会提醒。',
+  '提醒确认话术：只复述时间和事项，例如“好，我记上了，明早9点提醒您吃药”。不要说无法直接设置闹钟、手机闹钟、日历，也不要指导用户自己去手机里设置。',
+  '提醒补全规则：如果缺时间或事项，只追问缺失的一项；如果用户问如何自己设置手机闹钟，才可以给手机操作建议。',
+].join('\n')
 const VOICE_PRESET_CONFIG = {
   safe: {
     label: '自然稳健',
@@ -377,13 +382,14 @@ Page({
       const systemRole = `你是小林，一个温柔亲切的大学女生陪伴助手，正在和${title}通电话。请全程用“您”称呼对方，句子短而自然，避免长句说教。
 如果对方说“叫我XXX”，请立即切换称呼并记住。
 如果有历史记忆，优先在需求已明确后自然带出1条，不重复盘问。
-你可以做的事：聊天陪伴、情绪安抚、提醒复述、给出现实可执行建议（如联系家属/医生/社区服务），并在用户提出诉求时主动协助其联系对应人员。
+你可以做的事：聊天陪伴、情绪安抚、记录并设置小程序内提醒、给出现实可执行建议（如联系家属/医生/社区服务），并在用户提出诉求时主动协助其联系对应人员。
 你绝对不能做的事：承诺或描述你会线下执行任何动作（上门照料、陪同就医、代买代办、寄送物品、按摩护理等）。
 禁止句式示例（绝对不要说）：我陪您去医院、我马上过去、我去帮您买药、我替您办好。
 遇到用户请求线下陪同/代办时，固定回复策略：先共情，再明确“我不能线下行动”，然后明确“我可以帮您联系对应的人”，并给电话内可执行方案（联系家属/120/社区服务/网约车）。
 遇到健康不适或生活困难时，先共情，再给电话内可执行建议，并提醒联系家属或专业机构。
 表达风格：口语化、真诚、有节奏停顿，不要模板化复读，不要夸张表演腔。
 ${PHONE_CONVERSATION_GUIDE}
+${REMINDER_RESPONSE_GUIDE}
 ${CARE_RESPONSE_PLAYBOOK}
 ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${reminderGuidance}${pendingMemoryGuidance}${outgoingGuidance}`
 
@@ -1190,6 +1196,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       '关系连续性：优先记住上次约定、近期生活变化和称呼偏好；若信息不确定，先确认再引用。',
       '优先级规则：安全约束 > 角色稳定规则 > 动态记忆事实；低优先级不得覆盖高优先级。',
       '角色底线：不能承诺线下行动（上门、陪同、代买代办、寄送等），只能提供电话内协助与转介。',
+      '提醒能力：可以记录并设置小程序内提醒；用户要求提醒且时间事项明确时，确认已记上，不转去指导手机闹钟。',
       `表达风格：${voicePreset.characterManifest || '温柔亲切，短句清晰，避免说教。'}`,
       '沟通习惯：像电话里熟悉的晚辈，每次回复只推进一个重点，先共情再追问，避免连续抛出多个问题。',
       careStrategies ? `陪伴策略：${careStrategies}` : '',
@@ -1417,10 +1424,10 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
 
   _applyMeridiemToHour(hour, normalizedText) {
     const normalized = this._normalizeMemorySentence(normalizedText)
-    const hasAfternoon = /下午/.test(normalized)
-    const hasEvening = /晚上|今晚|夜里|夜间/.test(normalized)
-    const hasNoon = /中午/.test(normalized)
-    const hasMorning = /上午|早上|清晨/.test(normalized)
+    const hasAfternoon = /明下午|下午/.test(normalized)
+    const hasEvening = /明晚|晚上|今晚|夜里|夜间/.test(normalized)
+    const hasNoon = /明中午|中午/.test(normalized)
+    const hasMorning = /明早|明上午|上午|早上|清晨/.test(normalized)
     const hasEarlyMorning = /凌晨/.test(normalized)
 
     let h = Math.min(23, Math.max(0, Number(hour) || 0))
@@ -1504,10 +1511,9 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
 
     if (this.data.callMode === 'incoming') {
       if (incomingReminder && incomingReminder.title) {
-        const followupPrompt = this._buildIncomingReminderFollowupPrompt(incomingReminder.title)
         const reminderTitle = this._normalizeMemorySentence(incomingReminder.title) || '这件事'
         return {
-          text: `喂，${title}，我是小林。到时间啦，我提醒您${reminderTitle}，您现在方便看一下吗？${followupPrompt}`,
+          text: `喂，${title}，我是小林。到时间啦，我提醒您${reminderTitle}，${this._buildIncomingReminderQuestion(reminderTitle)}`,
           usedMemoryText: '',
           usedReminderId: incomingReminder.id || '',
         }
@@ -1565,19 +1571,19 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     }
   },
 
-  _buildIncomingReminderFollowupPrompt(reminderTitle) {
+  _buildIncomingReminderQuestion(reminderTitle) {
     const title = this._normalizeMemorySentence(reminderTitle)
-    if (!title) return '不急，您方便时我陪您确认一下。'
+    if (!title) return '您现在方便处理一下吗？'
     if (/(吃药|服药|药)/.test(title)) {
-      return '不急，您方便时我陪您确认一下。'
+      return '您现在方便吃吗？'
     }
     if (/(复查|复诊|看医生|门诊|医院|体检)/.test(title)) {
-      return '不急，您方便时我们再看看怎么安排。'
+      return '您现在方便看一下安排吗？'
     }
     if (/(测血压|血压|血糖)/.test(title)) {
-      return '不急，您方便时我陪您确认一下。'
+      return '您现在方便测一下吗？'
     }
-    return '不急，您方便时我陪您确认一下。'
+    return '您现在方便处理一下吗？'
   },
 
   _pickFirstNotCooling(candidates) {

@@ -15,6 +15,20 @@ describe('reminder-extractor 提醒抽取规则', () => {
     expect(candidate.confidence).toBeGreaterThanOrEqual(0.78)
   })
 
+  test('明确提醒支持“明早9点”这类口语日期', () => {
+    const candidate = extractor.buildReminderCandidateFromText('明早9点提醒我吃药', { now })
+    const eveningCandidate = extractor.buildReminderCandidateFromText('明晚9点提醒我关煤气', { now })
+
+    expect(candidate).toBeTruthy()
+    expect(candidate.title).toBe('吃药')
+    expect(candidate.remindDate).toBe('2026-04-29')
+    expect(candidate.timeOfDay).toBe('09:00')
+    expect(candidate.needsConfirmation).toBe(false)
+    expect(eveningCandidate).toBeTruthy()
+    expect(eveningCandidate.remindDate).toBe('2026-04-29')
+    expect(eveningCandidate.timeOfDay).toBe('21:00')
+  })
+
   test('明确提醒会去掉句末口语语气词', () => {
     const candidate = extractor.buildReminderCandidateFromText('提醒我明天九点出门吧', { now })
 

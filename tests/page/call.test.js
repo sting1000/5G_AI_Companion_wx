@@ -224,7 +224,7 @@ describe('call 页面离线关键分支', () => {
     expect(page._isFirstVoiceCall('')).toBe(false)
   })
 
-  test('_buildMemoryAwareGreeting 在提醒来电时先确认是否方便，不直接问完成', () => {
+  test('_buildMemoryAwareGreeting 在吃药提醒来电时使用吃药语境提问', () => {
     const page = loadPage()
     page.setData({ callMode: 'incoming' })
     const payload = page._buildMemoryAwareGreeting('王阿姨', {
@@ -234,8 +234,22 @@ describe('call 页面离线关键分支', () => {
 
     expect(payload.text).toContain('到时间啦')
     expect(payload.text).toContain('提醒您吃降压药')
-    expect(payload.text).toContain('方便看一下')
+    expect(payload.text).toContain('方便吃吗')
+    expect(payload.text).not.toContain('方便看一下')
+    expect(payload.text).not.toContain('不急')
     expect(payload.text).not.toContain('完成了吗')
+  })
+
+  test('_buildCharacterManifest 明确提醒能力，避免引导手机闹钟', () => {
+    const page = loadPage()
+    const manifest = page._buildCharacterManifest({
+      title: '王阿姨',
+      voicePreset: { characterManifest: '温柔亲切', careStrategies: [] },
+      memoryBundle: { elderMemory: {}, xiaolinMemory: {} },
+    })
+
+    expect(manifest).toContain('设置小程序内提醒')
+    expect(manifest).toContain('不转去指导手机闹钟')
   })
 
   test('_isReminderCommandLike 能识别“提醒某人起床”这类提醒句', () => {
@@ -303,6 +317,32 @@ describe('call 页面离线关键分支', () => {
     expect(list).toHaveLength(1)
     expect(list[0].title).toBe('吃药')
     expect(list[0].scheduleType).toBe('once')
+    expect(list[0].timeOfDay).toBe('09:00')
+    expect(list[0].status).toBe('pending')
+  })
+
+  test('ASR 最终识别支持“明早9点提醒我吃药”并直接入库', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+
+    const elderKey = 'elder:test:asr-reminder-tomorrow-morning'
+    page.currentElderKey = elderKey
+    page._markCallConnectedIfNeeded = jest.fn()
+    page._tryResolvePendingMemoryConfirmation = jest.fn()
+    page.pendingMemoryConfirmation = null
+    page.messages = []
+    page.client = {}
+    page.recorder = {}
+    page.player = { appendChunk: jest.fn(), playBuffered: jest.fn(), stop: jest.fn(), playing: false }
+
+    page._setupCallbacks()
+    page.client.onASRText('明早9点提醒我吃药', true)
+
+    const list = store.getReminders(elderKey)
+    expect(list).toHaveLength(1)
+    expect(list[0].title).toBe('吃药')
+    expect(list[0].remindDate).toBe('2026-04-16')
     expect(list[0].timeOfDay).toBe('09:00')
     expect(list[0].status).toBe('pending')
   })

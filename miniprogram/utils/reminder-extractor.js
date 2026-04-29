@@ -55,10 +55,10 @@ function parseChineseNumber(text) {
 function applyMeridiemToHour(hour, normalizedText) {
   const normalized = normalizeSentence(normalizedText)
   let h = Math.min(23, Math.max(0, Number(hour) || 0))
-  const hasAfternoon = /下午/.test(normalized)
-  const hasEvening = /晚上|今晚|夜里|夜间/.test(normalized)
-  const hasNoon = /中午/.test(normalized)
-  const hasMorning = /上午|早上|清晨/.test(normalized)
+  const hasAfternoon = /明下午|下午/.test(normalized)
+  const hasEvening = /明晚|晚上|今晚|夜里|夜间/.test(normalized)
+  const hasNoon = /明中午|中午/.test(normalized)
+  const hasMorning = /明早|明上午|上午|早上|清晨/.test(normalized)
   const hasEarlyMorning = /凌晨/.test(normalized)
 
   if ((hasAfternoon || hasEvening) && h > 0 && h < 12) h += 12
@@ -102,16 +102,16 @@ function normalizeTime(rawTime, text) {
           }
         }
         hasConcreteTime = true
-      } else if (/晚上|今晚/.test(normalized)) {
+      } else if (/明晚|晚上|今晚/.test(normalized)) {
         hour = 20
         hasPeriodOnly = true
-      } else if (/上午|早上|清晨/.test(normalized)) {
+      } else if (/明早|明上午|上午|早上|清晨/.test(normalized)) {
         hour = 9
         hasPeriodOnly = true
-      } else if (/中午/.test(normalized)) {
+      } else if (/明中午|中午/.test(normalized)) {
         hour = 12
         hasPeriodOnly = true
-      } else if (/下午/.test(normalized)) {
+      } else if (/明下午|下午/.test(normalized)) {
         hour = 14
         hasPeriodOnly = true
       }
@@ -187,7 +187,7 @@ function resolveRelativeDate(text, options) {
   const today = startOfDay(options && options.now)
   if (/大后天/.test(normalized)) return formatDateOffset(today, 3)
   if (/后天/.test(normalized)) return formatDateOffset(today, 2)
-  if (/明天/.test(normalized)) return formatDateOffset(today, 1)
+  if (/明天|明早|明上午|明中午|明下午|明晚/.test(normalized)) return formatDateOffset(today, 1)
   if (/今天|今晚/.test(normalized)) return formatDateOffset(today, 0)
 
   const weekDate = resolveWeekPhraseDate(normalized, today)
@@ -254,14 +254,14 @@ function hasReminderNoise(normalized) {
 }
 
 function hasPlanStatementIntent(normalized) {
-  const hasFutureTime = /(今天|今晚|明天|后天|大后天|下周|本周|这周|周[一二三四五六日天]|星期[一二三四五六日天]|礼拜[一二三四五六日天]|\d{1,2}月\d{1,2}[日号]?|\d{1,2}号)/.test(normalized)
+  const hasFutureTime = /(今天|今晚|明天|明早|明上午|明中午|明下午|明晚|后天|大后天|下周|本周|这周|周[一二三四五六日天]|星期[一二三四五六日天]|礼拜[一二三四五六日天]|\d{1,2}月\d{1,2}[日号]?|\d{1,2}号)/.test(normalized)
   const hasAction = /(要去|得去|想去|准备去|去|复查|复诊|看医生|门诊|医院|吃药|服药|测血压|测血糖|锻炼|散步|买菜|取药|出门|起床|关煤气|缴费|打电话|联系|预约|挂号)/.test(normalized)
   return hasFutureTime && hasAction
 }
 
 function removeTimePrefix(text) {
   let result = String(text || '')
-  const timeWordPrefix = /^(?:(今天|今晚|明天|后天|大后天|下周[一二三四五六日天]?|本周[一二三四五六日天]?|这周[一二三四五六日天]?|周[一二三四五六日天]|星期[一二三四五六日天]|礼拜[一二三四五六日天]|每天|每日|天天|每周[一二三四五六日天]?|每星期[一二三四五六日天]?|每礼拜[一二三四五六日天]?|每月|每个月|\d{1,2}月\d{1,2}[日号]?|\d{1,2}号|凌晨|早上|上午|中午|下午|晚上|夜里|夜间|清晨)[，。！？、\s]*)+/u
+  const timeWordPrefix = /^(?:(今天|今晚|明天|明早|明上午|明中午|明下午|明晚|后天|大后天|下周[一二三四五六日天]?|本周[一二三四五六日天]?|这周[一二三四五六日天]?|周[一二三四五六日天]|星期[一二三四五六日天]|礼拜[一二三四五六日天]|每天|每日|天天|每周[一二三四五六日天]?|每星期[一二三四五六日天]?|每礼拜[一二三四五六日天]?|每月|每个月|\d{1,2}月\d{1,2}[日号]?|\d{1,2}号|凌晨|早上|上午|中午|下午|晚上|夜里|夜间|清晨)[，。！？、\s]*)+/u
   const timeClockPrefix = /^(\d{1,2}([:：]\d{1,2})?|[零〇一二两三四五六七八九十]{1,3})(点(半|[零〇一二两三四五六七八九十\d]{1,3}分?)?(?:钟)?)?[，。！？、\s]*/u
   let changed = true
   while (changed) {
