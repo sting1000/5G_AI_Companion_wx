@@ -107,8 +107,8 @@ const UPLINK_IDLE_TRIGGER_MS = 1800
 const GREETING_ECHO_GUARD_MAX_MS = 8000
 const RECORDER_RESTART_COOLDOWN_MS = 3500
 const PLAYBACK_ECHO_TAIL_GUARD_MS = 420
-const REMINDER_COMPLETE_HINTS = ['完成了', '办好了', '弄好了', '已经好了', '处理好了', '做完了', '解决了']
-const REMINDER_INCOMPLETE_HINTS = ['还没', '没做完', '没完成', '还没弄好', '还没办好', '没处理完', '还在弄']
+const REMINDER_COMPLETE_HINTS = ['完成了', '已完成', '已经完成', '完成啦', '办好了', '办完了', '弄好了', '弄完了', '已经好了', '处理好了', '处理完了', '做完了', '搞定了', '解决了']
+const REMINDER_INCOMPLETE_HINTS = ['还没', '还没有', '没做完', '没完成', '没有完成', '未完成', '还没弄好', '还没办好', '没处理完', '还在弄', '没来得及', '忘了']
 const NO_MORE_CHAT_HINTS = ['没有了', '没了', '没别的', '没其他', '不用了', '先这样', '不聊了', '没什么了', '就这样吧', '不用聊了']
 const SMALL_TALK_INTENT_HINTS = ['聊聊天', '聊聊', '随便聊', '没啥事', '没什么事', '就是想聊', '想说说话', '陪我聊', '说说话']
 const CONCRETE_NEED_HINTS = ['提醒', '记得', '复查', '复诊', '吃药', '测血压', '血糖', '不舒服', '难受', '胸闷', '胸痛', '头晕', '帮我', '联系', '预约', '挂号', '怎么做', '怎么办']
@@ -1606,19 +1606,75 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       .map(item => String(item.content || ''))
       .join(' ')
     if (!userTexts) return false
-    return REMINDER_COMPLETE_HINTS.some(keyword => userTexts.includes(keyword))
+    return this._inferReminderFollowupStatus(userTexts) === 'done'
   },
 
   _isReminderCompletedByUserText(text) {
-    const normalized = this._normalizeMemorySentence(text)
-    if (!normalized) return false
-    return REMINDER_COMPLETE_HINTS.some(keyword => normalized.includes(keyword))
+    return this._inferReminderFollowupStatus(text) === 'done'
   },
 
   _isReminderIncompleteByUserText(text) {
-    const normalized = this._normalizeMemorySentence(text)
-    if (!normalized) return false
-    return REMINDER_INCOMPLETE_HINTS.some(keyword => normalized.includes(keyword))
+    return this._inferReminderFollowupStatus(text) === 'incomplete'
+  },
+
+  _inferReminderFollowupStatus(text) {
+    const normalized = this._normalizeReminderFollowupText(text)
+    if (!normalized) return 'unknown'
+    // 先判定未完成，避免“还没完成”被宽松完成规则误判。
+    if (this._matchesReminderIncompleteText(normalized)) return 'incomplete'
+    if (this._matchesReminderCompleteText(normalized)) return 'done'
+    return 'unknown'
+  },
+
+  _normalizeReminderFollowupText(text) {
+    let normalized = this._normalizeMemorySentence(text)
+    let changed = true
+    while (changed) {
+      const before = normalized
+      normalized = normalized
+        .replace(/^(嗯嗯|嗯|哦|噢|喔|呃|额|啊|呀|好的|好(?!了|啦)|行|可以(?!了|啦)|对的|对|是的|没错)+/u, '')
+        .replace(/(啦|咯|哈|呀|啊|呢)$/u, '')
+      changed = normalized !== before
+    }
+    return normalized
+  },
+
+  _matchesReminderIncompleteText(normalized) {
+    if (REMINDER_INCOMPLETE_HINTS.some(keyword => normalized.includes(keyword))) return true
+    return /(还没|还没有|没有|没|未)(完成|做完|办完|弄完|处理完|搞定|解决|吃|服药|测|量|去|联系|打电话)/.test(normalized) ||
+      /(还没|还没有).{0,6}(吃|做|办|弄|处理|测|量|去|联系|打电话)/.test(normalized) ||
+      /(忘了|忘记了|没来得及).{0,8}(吃|做|办|弄|处理|测|量|去|联系|打电话)?/.test(normalized) ||
+      /(等会|一会儿|待会|稍后|晚点).{0,8}(再|去)?(吃|做|办|弄|处理|测|量|去|联系|打电话)/.test(normalized)
+  },
+
+  _matchesReminderCompleteText(normalized) {
+    if (REMINDER_COMPLETE_HINTS.some(keyword => normalized.includes(keyword))) return true
+    if (/(已|已经|刚刚|刚才|都)?(完成|做完|办完|弄完|处理完|搞定|解决)(了|啦|咯|哈|呀|啊|呢)?/.test(normalized)) return true
+    if (/(已经|都|刚刚|刚才)?(好了|可以了)/.test(normalized)) return true
+    return this._matchesReminderTypeCompleteText(normalized)
+  },
+
+  _matchesReminderTypeCompleteText(normalized) {
+    const title = this.incomingReminder && this.incomingReminder.title
+      ? this._normalizeMemorySentence(this.incomingReminder.title)
+      : ''
+    if (!title) return false
+    if (/(吃药|服药|药|降压药|降糖药|药片|药丸)/.test(title)) {
+      return /(吃了|吃过了|吃完了|服了|服过了|服完了|喝了|喝过了|用过了)/.test(normalized)
+    }
+    if (/(测血压|量血压|血压|测血糖|量血糖|血糖|测量)/.test(title)) {
+      return /(测了|测过了|量了|量过了|看了|看过了)/.test(normalized)
+    }
+    if (/(复查|复诊|看医生|门诊|医院|体检|挂号|预约)/.test(title)) {
+      return /(去了|去过了|看了|看过了|复查了|复诊了|挂好了|约好了|预约好了)/.test(normalized)
+    }
+    if (/(联系|打电话|电话|问一下|通知)/.test(title)) {
+      return /(打了|打过了|联系了|联系过了|说了|说过了|问了|问过了|通知了|通知过了)/.test(normalized)
+    }
+    if (/(关煤气|关火|关门|关窗|缴费|交费|取药|买菜|出门|起床|锻炼|散步)/.test(title)) {
+      return /(关了|关好了|交了|缴了|取了|买了|出门了|起来了|起了|锻炼了|散步了|去了|去过了)/.test(normalized)
+    }
+    return false
   },
 
   _hasNoMoreChatIntent(text) {

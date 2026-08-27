@@ -617,12 +617,30 @@ describe('call 页面离线关键分支', () => {
       shouldAutoEndAfterAssistant: false,
     }
 
-    page._handleIncomingReminderFollowup('嗯，今天已经做完了')
+    page._handleIncomingReminderFollowup('嗯，已完成啦')
     const list = store.getReminders(elderKey)
     const current = list.find(item => item.id === reminder.id)
     expect(current.status).toBe('done')
     expect(page.incomingFollowupState.waitingNoMoreChatConfirm).toBe(true)
     expect(page.incomingFollowupState.shouldAutoEndAfterAssistant).toBe(false)
+  })
+
+  test('_isReminderCompletedByUserText 按三层规则识别口语完成和未完成', () => {
+    const page = loadPage()
+
+    page.incomingReminder = { id: 'rem_1', title: '吃降压药' }
+    expect(page._isReminderCompletedByUserText('嗯，已完成啦')).toBe(true)
+    expect(page._isReminderCompletedByUserText('已经搞定啦')).toBe(true)
+    expect(page._isReminderCompletedByUserText('刚才吃了')).toBe(true)
+    expect(page._isReminderCompletedByUserText('还没完成')).toBe(false)
+    expect(page._isReminderIncompleteByUserText('还没完成')).toBe(true)
+    expect(page._isReminderCompletedByUserText('没来得及吃')).toBe(false)
+    expect(page._isReminderIncompleteByUserText('没来得及吃')).toBe(true)
+
+    page.incomingReminder = { id: 'rem_2', title: '测血压' }
+    expect(page._isReminderCompletedByUserText('我刚量过了')).toBe(true)
+    expect(page._isReminderCompletedByUserText('还没有量')).toBe(false)
+    expect(page._isReminderIncompleteByUserText('还没有量')).toBe(true)
   })
 
   test('_handleIncomingReminderFollowup 不会把普通“没有”误判为结束', () => {
