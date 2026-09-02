@@ -122,7 +122,9 @@ const EVENT = {
 const SERVER_EVENT = {
   CONNECTION_STARTED: 50,
   CONNECTION_FAILED: 51,
+  CONNECTION_FINISHED: 52,
   SESSION_STARTED: 150,
+  SESSION_FINISHED: 152,
   SESSION_FAILED: 153,
   TTS_SENTENCE_START: 350,
   TTS_SENTENCE_END: 351,
@@ -369,11 +371,14 @@ class RealtimeAPIClient {
     this._closeTimer = null
 
     // 事件回调
+    this.onASRStart = null       // (meta) => {}
     this.onASRText = null        // (text, isFinal) => {}
     this.onASREnd = null         // () => {} 用户停止说话
     this.onChatText = null       // (text) => {}
+    this.onChatEnd = null        // (meta) => {}
     this.onAudioData = null      // (audioBuffer) => {}
     this.onTTSStart = null       // (text) => {}
+    this.onTTSSentenceEnd = null // (meta) => {}
     this.onTTSEnd = null         // () => {}
     this.onSessionStarted = null // (dialogId) => {}
     this.onError = null          // (error) => {}
@@ -382,6 +387,13 @@ class RealtimeAPIClient {
     this.onFirstTTSAudioPacket = null // (timestampMs) => {}
     this._firstChatPacketSeen = false
     this._firstTTSPacketSeen = false
+    this._eventSeq = 0
+    this._activeQuestionId = ''
+    this._activeReplyId = ''
+    this._asrTurnStarted = false
+    this._pendingTextQueryCount = 0
+    this._textQueryTransitionQuestionId = ''
+    this._textQueryTransitionPreviousQuestionId = ''
   }
 
   /**
@@ -478,8 +490,13 @@ class RealtimeAPIClient {
   startSession(options = {}) {
     return new Promise((resolve, reject) => {
       this.sessionId = generateUUID()
-      this._firstChatPacketSeen = false
-      this._firstTTSPacketSeen = false
+      this._resetTurnPacketMarkers()
+      this._activeQuestionId = ''
+      this._activeReplyId = ''
+      this._asrTurnStarted = false
+      this._pendingTextQueryCount = 0
+      this._textQueryTransitionQuestionId = ''
+      this._textQueryTransitionPreviousQuestionId = ''
       const ttsAudioConfig = options.ttsAudioConfig || {}
       const asrConfig = options.asrConfig || {}
       const speechRate = clampNumber(ttsAudioConfig.speechRate, -50, 100)
@@ -624,6 +641,7 @@ class RealtimeAPIClient {
       this.sessionId,
       { content: text }
     )
+    this._pendingTextQueryCount += 1
     this.socket.send({ data: frame })
   }
 
@@ -706,13 +724,23 @@ class RealtimeAPIClient {
       return
     }
 
-    const { msgType, eventId, payload, audioData } = parsed
+    const { msgType, eventId, payload, audioData, sessionId } = parsed
+    const meta = this._buildEventMeta(eventId, payload, null, sessionId)
     if (DEBUG_LOG) {
       if (msgType === MSG_TYPE.AUDIO_SERVER) {
         logDebug('[RealtimeAPI] 收到音频事件:', eventId, `size=${audioData ? audioData.byteLength : 0}`)
       } else {
         logDebug('[RealtimeAPI] 收到事件:', eventId, JSON.stringify(payload || {}))
       }
+    }
+
+    if (eventId >= 100 && sessionId && this.sessionId && sessionId !== this.sessionId) {
+      logger.warn('忽略旧 session 迟到事件', {
+        eventId,
+        eventSessionId: sessionId,
+        activeSessionId: this.sessionId,
+      })
+      return
     }
 
     // 错误处理
@@ -740,6 +768,10 @@ class RealtimeAPIClient {
         }
         break
 
+      case SERVER_EVENT.CONNECTION_FINISHED:
+        this.connected = false
+        break
+
       case SERVER_EVENT.SESSION_STARTED:
         this.sessionActive = true
         this.dialogId = payload?.dialog_id || ''
@@ -761,47 +793,97 @@ class RealtimeAPIClient {
         }
         break
 
+      case SERVER_EVENT.SESSION_FINISHED:
+        this.sessionActive = false
+        break
+
       case SERVER_EVENT.ASR_INFO:
-        // 用户开始说话，可用于打断 TTS 播放
+        this._resetTurnPacketMarkers()
+        this._asrTurnStarted = true
+        if (payload?.question_id) this._activeQuestionId = String(payload.question_id)
+        this._activeReplyId = ''
+        this._textQueryTransitionQuestionId = ''
+        this._textQueryTransitionPreviousQuestionId = ''
+        if (this.onASRStart) this.onASRStart(this._buildEventMeta(eventId, payload, meta))
         break
 
       case SERVER_EVENT.ASR_RESPONSE:
+        if (this._asrTurnStarted && this._isStaleQuestionEvent(payload)) break
+        if (!this._asrTurnStarted) {
+          this._resetTurnPacketMarkers()
+          this._asrTurnStarted = true
+          this._activeQuestionId = String(payload?.question_id || '')
+          this._activeReplyId = ''
+          if (this.onASRStart) {
+            this.onASRStart(Object.assign(
+              {},
+              this._buildEventMeta(eventId, payload, meta),
+              {
+                synthetic: true,
+                synthesizedEvent: 'asr_start_fallback',
+              }
+            ))
+          }
+        }
         if (payload?.results && this.onASRText) {
+          const asrMeta = this._buildEventMeta(eventId, payload, meta)
           for (const result of payload.results) {
-            this.onASRText(result.text, !result.is_interim)
+            this.onASRText(result.text, !result.is_interim, asrMeta)
           }
         }
         break
 
       case SERVER_EVENT.ASR_ENDED:
         logger.info('收到 ASR_ENDED')
-        if (this.onASREnd) this.onASREnd()
+        if (!this._asrTurnStarted) {
+          this._resetTurnPacketMarkers()
+          this._activeQuestionId = ''
+          this._activeReplyId = ''
+        }
+        this._asrTurnStarted = false
+        if (this.onASREnd) this.onASREnd(this._buildEventMeta(eventId, payload, meta))
         break
 
       case SERVER_EVENT.CHAT_RESPONSE:
+        if (this._isStaleQuestionEvent(payload)) break
         if (payload?.content && this.onChatText) {
+          if (payload?.question_id) this._activeQuestionId = String(payload.question_id)
+          if (payload?.reply_id) this._activeReplyId = String(payload.reply_id)
+          const chatMeta = this._buildEventMeta(eventId, payload, meta)
           if (!this._firstChatPacketSeen) {
             this._firstChatPacketSeen = true
-            if (this.onFirstChatPacket) this.onFirstChatPacket(Date.now())
+            if (this.onFirstChatPacket) this.onFirstChatPacket(chatMeta.receivedAt, chatMeta)
           }
-          this.onChatText(payload.content)
+          this.onChatText(payload.content, chatMeta)
         }
         break
 
       case SERVER_EVENT.CHAT_ENDED:
+        if (this._isStaleQuestionEvent(payload)) break
         logger.info('收到 CHAT_ENDED')
+        if (this.onChatEnd) this.onChatEnd(this._buildEventMeta(eventId, payload, meta))
         break
 
       case SERVER_EVENT.TTS_SENTENCE_START:
+        if (this._isStaleQuestionEvent(payload)) break
         logger.info('收到 TTS_SENTENCE_START')
-        if (this.onTTSStart) this.onTTSStart(payload?.text || '')
+        if (payload?.question_id) this._activeQuestionId = String(payload.question_id)
+        if (payload?.reply_id) this._activeReplyId = String(payload.reply_id)
+        if (this.onTTSStart) this.onTTSStart(payload?.text || '', this._buildEventMeta(eventId, payload, meta))
+        break
+
+      case SERVER_EVENT.TTS_SENTENCE_END:
+        if (this._isStaleQuestionEvent(payload)) break
+        logger.info('收到 TTS_SENTENCE_END')
+        if (this.onTTSSentenceEnd) this.onTTSSentenceEnd(this._buildEventMeta(eventId, payload, meta))
         break
 
       case SERVER_EVENT.TTS_RESPONSE:
         if (audioData) {
+          const audioMeta = this._buildEventMeta(eventId, payload, meta)
           if (!this._firstTTSPacketSeen) {
             this._firstTTSPacketSeen = true
-            if (this.onFirstTTSAudioPacket) this.onFirstTTSAudioPacket(Date.now())
+            if (this.onFirstTTSAudioPacket) this.onFirstTTSAudioPacket(audioMeta.receivedAt, audioMeta)
           }
           // 首包音频格式检测
           if (!this._ttsFormatLogged && DEBUG_LOG) {
@@ -812,14 +894,69 @@ class RealtimeAPIClient {
             logger.info('TTS 首包音频头字节:', header, isOgg ? '(OGG格式!)' : '(非 OGG, 可能是 PCM)')
             logger.info('TTS 音频包大小:', audioData.byteLength, 'bytes')
           }
-          if (this.onAudioData) this.onAudioData(audioData)
+          if (this.onAudioData) this.onAudioData(audioData, audioMeta)
         }
         break
 
       case SERVER_EVENT.TTS_ENDED:
+        if (this._isStaleQuestionEvent(payload)) break
         logger.info('收到 TTS_ENDED')
-        if (this.onTTSEnd) this.onTTSEnd()
+        if (this.onTTSEnd) this.onTTSEnd(this._buildEventMeta(eventId, payload, meta))
+        this._activeReplyId = ''
         break
+    }
+  }
+
+  _resetTurnPacketMarkers() {
+    this._firstChatPacketSeen = false
+    this._firstTTSPacketSeen = false
+  }
+
+  _isStaleQuestionEvent(payload) {
+    const questionId = String((payload && payload.question_id) || '')
+    if (!questionId || !this._activeQuestionId || questionId === this._activeQuestionId) {
+      return false
+    }
+    if (this._pendingTextQueryCount > 0) {
+      this._pendingTextQueryCount -= 1
+      this._textQueryTransitionPreviousQuestionId = this._activeQuestionId
+      this._textQueryTransitionQuestionId = questionId
+      this._activeQuestionId = questionId
+      this._activeReplyId = ''
+      this._resetTurnPacketMarkers()
+      return false
+    }
+    logger.warn('忽略旧 question 迟到事件', {
+      eventQuestionId: questionId,
+      activeQuestionId: this._activeQuestionId,
+    })
+    return true
+  }
+
+  _buildEventMeta(eventId, payload, existingMeta, sessionId) {
+    const base = existingMeta || {}
+    const body = payload && typeof payload === 'object' ? payload : {}
+    if (!existingMeta) this._eventSeq += 1
+    return {
+      eventId,
+      eventSeq: base.eventSeq || this._eventSeq,
+      receivedAt: base.receivedAt || Date.now(),
+      sessionId: String(sessionId || base.sessionId || this.sessionId || ''),
+      questionId: String(body.question_id || this._activeQuestionId || ''),
+      replyId: String(body.reply_id || this._activeReplyId || ''),
+      ttsType: String(body.tts_type || ''),
+      statusCode: String(body.status_code || ''),
+      synthetic: Boolean(base.synthetic),
+      clientTextQueryTransition: Boolean(
+        body.question_id
+        && String(body.question_id) === this._textQueryTransitionQuestionId
+      ),
+      previousQuestionId: String(
+        body.question_id
+        && String(body.question_id) === this._textQueryTransitionQuestionId
+          ? this._textQueryTransitionPreviousQuestionId
+          : ''
+      ),
     }
   }
 

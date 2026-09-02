@@ -91,6 +91,74 @@ describe('call 页面离线关键分支', () => {
     expect(page.data.transcriptItems[0].content).toBe('您好呀，我是小林。')
   })
 
+  test('同一回复的多次 TTS_SENTENCE_START 不会清空整轮文本', () => {
+    const page = loadPage()
+    page._markCallConnectedIfNeeded = jest.fn()
+    page.client = {}
+    page.recorder = {}
+    page.player = {
+      appendChunk: jest.fn(),
+      playBuffered: jest.fn(),
+      stop: jest.fn(),
+      playing: false,
+    }
+    page.messages = []
+    page.chatBuffer = '第一句完整内容。第二句也要保留。'
+    page.pendingAssistantDraft = page.chatBuffer
+    page.currentAssistantReplyId = ''
+    page.currentTurnBoundaryViolated = false
+    page.assistantTurnCount = 1
+    page.isBoundaryRepairing = false
+    page.currentLatencyTurn = null
+    page.setData({
+      currentAssistantDraft: page.chatBuffer,
+      transcriptItems: [],
+    })
+
+    page._setupCallbacks()
+    const meta = { questionId: 'q-multi', replyId: 'r-multi', receivedAt: 1000 }
+    page.client.onTTSStart('第一句完整内容。', meta)
+    page.client.onTTSStart('第二句也要保留。', Object.assign({}, meta, { receivedAt: 1100 }))
+
+    expect(page.chatBuffer).toBe('第一句完整内容。第二句也要保留。')
+    page.client.onTTSEnd(Object.assign({}, meta, { receivedAt: 1200 }))
+    expect(page.messages).toHaveLength(1)
+    expect(page.messages[0].content).toBe('第一句完整内容。第二句也要保留。')
+  })
+
+  test('没有 Chat 分片时会累积同一回复的多句 TTS 文本', () => {
+    const page = loadPage()
+    page._markCallConnectedIfNeeded = jest.fn()
+    page.client = {}
+    page.recorder = {}
+    page.player = {
+      appendChunk: jest.fn(),
+      playBuffered: jest.fn(),
+      stop: jest.fn(),
+      playing: false,
+    }
+    page.messages = []
+    page.chatBuffer = ''
+    page.pendingAssistantDraft = ''
+    page.currentAssistantReplyId = ''
+    page.ttsSentenceBuffer = ''
+    page.ttsSentenceReplyId = ''
+    page.currentTurnBoundaryViolated = false
+    page.assistantTurnCount = 1
+    page.isBoundaryRepairing = false
+    page.currentLatencyTurn = null
+    page.setData({ currentAssistantDraft: '', transcriptItems: [] })
+
+    page._setupCallbacks()
+    const meta = { questionId: 'q-tts-only', replyId: 'r-tts-only' }
+    page.client.onTTSStart('第一句。', meta)
+    page.client.onTTSStart('第二句。', meta)
+    page.client.onTTSEnd(meta)
+
+    expect(page.messages).toHaveLength(1)
+    expect(page.messages[0].content).toBe('第一句。第二句。')
+  })
+
   test('_sendAudioIn20msFrames 会按 640 字节分片并缓存余量', () => {
     const page = loadPage()
     const sendAudio = jest.fn()
@@ -106,6 +174,238 @@ describe('call 页面离线关键分支', () => {
     expect(sendAudio).toHaveBeenCalledTimes(2)
     expect(sendAudio.mock.calls[1][0].byteLength).toBe(640)
     expect(page.uplinkRemainder.byteLength).toBe(20)
+  })
+
+  test('半双工在 AI 生成或播放期间阻断上行且不触发打断', () => {
+    const page = loadPage()
+    const sendAudio = jest.fn()
+    page.client = {
+      sessionActive: true,
+      sendAudio,
+    }
+    page.recorder = {}
+    page.player = {
+      playing: false,
+      preparingSegment: false,
+      webPreparing: false,
+    }
+    page.initialEchoGuardActive = false
+    page.assistantTurnInProgress = true
+    page.playbackEchoGuardUntil = 0
+    page.lastUplinkBlockReason = ''
+    page.uplinkRemainder = new Uint8Array(0)
+
+    page._setupCallbacks()
+    page.recorder.onFrameData(new Uint8Array(640).buffer)
+
+    expect(sendAudio).not.toHaveBeenCalled()
+    expect(page.player.stop).toBeUndefined()
+  })
+
+  test('时延样本必须等真实 onPlay，TTS_ENDED 不能提前封口', () => {
+    const page = loadPage()
+    page._markCallConnectedIfNeeded = jest.fn()
+    page.client = {}
+    page.recorder = {}
+    page.player = {
+      appendChunk: jest.fn(),
+      playBuffered: jest.fn(),
+      stop: jest.fn(),
+      playing: false,
+      getEstimatedRemainingMs: jest.fn(() => 1000),
+    }
+    page.messages = []
+    page.chatBuffer = ''
+    page.pendingAssistantDraft = ''
+    page.currentTurnBoundaryViolated = false
+    page.assistantTurnCount = 1
+    page.isBoundaryRepairing = false
+    page.latencySamples = []
+    page.localVadState = {
+      noiseFloor: 180,
+      threshold: 540,
+      speechActive: false,
+      voicedFrames: 0,
+      silenceFrames: 5,
+      lastVoiceAt: 1000,
+      confidence: 0.9,
+    }
+    page.incomingFollowupState = {
+      reminderCompleted: false,
+      waitingNoMoreChatConfirm: false,
+      shouldAutoEndAfterAssistant: false,
+      pendingAutoEndAfterPlayback: false,
+    }
+    page.callEndingState = {
+      shouldAutoEndAfterAssistant: false,
+      pendingAutoEndAfterPlayback: false,
+      source: '',
+    }
+    page.setData({ transcriptItems: [] })
+
+    page._setupCallbacks()
+    page.client.onASRStart({ questionId: 'q-latency', receivedAt: 1050, eventSeq: 1 })
+    page.client.onASRText('我说完了', true, {
+      questionId: 'q-latency',
+      receivedAt: 2000,
+      eventSeq: 2,
+    })
+    page.client.onASREnd({ questionId: 'q-latency', receivedAt: 2300, eventSeq: 3 })
+    page.client.onChatText('我听见了，您慢慢说。', {
+      questionId: 'q-latency',
+      replyId: 'r-latency',
+      receivedAt: 2500,
+      eventSeq: 4,
+    })
+    page.client.onAudioData(new Uint8Array(640).buffer, {
+      questionId: 'q-latency',
+      replyId: 'r-latency',
+      receivedAt: 2700,
+      eventSeq: 5,
+    })
+    page.client.onTTSEnd({
+      questionId: 'q-latency',
+      replyId: 'r-latency',
+      receivedAt: 3000,
+      eventSeq: 6,
+    })
+
+    expect(page.currentLatencyTurn).toBeTruthy()
+    expect(page.latencySamples).toHaveLength(0)
+
+    page.player.onPlaybackEvent({ name: 'wav_write_start', at: 3100, generation: 2 })
+    page.player.onPlaybackEvent({ name: 'wav_write_end', at: 3200, generation: 2, success: true })
+    page.player.onPlaybackEvent({ name: 'play_requested', at: 3300, requestedAt: 3300, generation: 2 })
+    page.player.onPlayStart({
+      at: 3500,
+      source: 'inner_audio_on_play',
+      authoritative: true,
+      generation: 2,
+    })
+
+    expect(page.currentLatencyTurn).toBe(null)
+    expect(page.latencySamples).toHaveLength(1)
+    expect(page.latencySamples[0]).toEqual(expect.objectContaining({
+      valid: true,
+      vadWaitMs: 1300,
+      firstPlayMs: 2500,
+      playStartSource: 'inner_audio_on_play',
+    }))
+    expect(page.localVadState).toEqual(expect.objectContaining({
+      speechActive: false,
+      voicedFrames: 0,
+      silenceFrames: 0,
+      candidateVoiceAt: 0,
+      lastVoiceAt: 0,
+    }))
+    expect(wx.getStorageSync('realtimeLatencySamplesV2')).toHaveLength(1)
+    expect(page._getLatencyInvalidReason(Object.assign({}, page.latencySamples[0], {
+      firstChatAt: 0,
+    }))).toBe('missing_first_chat')
+    expect(page._getLatencyInvalidReason(Object.assign({}, page.latencySamples[0], {
+      asrStartSynthetic: true,
+    }))).toBe('synthetic_asr_start')
+  })
+
+  test('旧 question/reply 的迟到 Chat/TTS 不会污染当前轮', () => {
+    const page = loadPage()
+    page._markCallConnectedIfNeeded = jest.fn()
+    page.client = {}
+    page.recorder = {}
+    page.player = {
+      appendChunk: jest.fn(),
+      playBuffered: jest.fn(),
+      stop: jest.fn(),
+      playing: false,
+    }
+    page.chatBuffer = ''
+    page.pendingAssistantDraft = ''
+    page.latencySamples = []
+    const turn = page._ensureLatencyTurn({
+      questionId: 'q-new',
+      replyId: 'r-new',
+      receivedAt: 1000,
+    })
+
+    page._setupCallbacks()
+    const staleMeta = {
+      questionId: 'q-old',
+      replyId: 'r-old',
+      receivedAt: 1100,
+    }
+    page.client.onChatText('旧回复', staleMeta)
+    page.client.onAudioData(new Uint8Array(640).buffer, staleMeta)
+    page.client.onTTSEnd(staleMeta)
+
+    expect(page.chatBuffer).toBe('')
+    expect(page.player.appendChunk).not.toHaveBeenCalled()
+    expect(page.player.playBuffered).not.toHaveBeenCalled()
+    expect(turn.droppedStaleEventCount).toBe(3)
+  })
+
+  test('客户端文本查询的新 question 会转换当前逻辑轮而不是被丢弃', () => {
+    const page = loadPage()
+    page._markCallConnectedIfNeeded = jest.fn()
+    page.client = {}
+    page.recorder = {}
+    page.player = {
+      appendChunk: jest.fn(),
+      playBuffered: jest.fn(),
+      stop: jest.fn(),
+      playing: false,
+    }
+    page.chatBuffer = ''
+    page.pendingAssistantDraft = ''
+    page.latencySamples = []
+    const turn = page._ensureLatencyTurn({
+      questionId: 'q-audio',
+      receivedAt: 1000,
+    })
+
+    page._setupCallbacks()
+    page.client.onChatText('安全重说内容', {
+      questionId: 'q-text',
+      replyId: 'r-text',
+      previousQuestionId: 'q-audio',
+      clientTextQueryTransition: true,
+      receivedAt: 1200,
+      eventSeq: 2,
+    })
+
+    expect(turn.originalQuestionId).toBe('q-audio')
+    expect(turn.questionId).toBe('q-text')
+    expect(turn.replyId).toBe('r-text')
+    expect(page.chatBuffer).toBe('安全重说内容')
+    page._clearAssistantTurnProgress('test_cleanup')
+  })
+
+  test('本地能量 VAD 不会把单帧突发噪声当成用户语音结束', () => {
+    const page = loadPage()
+    page.localVadState = {
+      noiseFloor: 180,
+      threshold: 540,
+      speechActive: false,
+      voicedFrames: 0,
+      silenceFrames: 0,
+      candidateVoiceAt: 0,
+      candidateConfidence: 0,
+      lastVoiceAt: 0,
+      confidence: 0,
+    }
+    const loudFrame = new ArrayBuffer(640)
+    const samples = new Int16Array(loudFrame)
+    samples.fill(2000)
+    const silentFrame = new ArrayBuffer(640)
+
+    page._trackLocalVoiceFrame(loudFrame, 1000)
+    expect(page.localVadState.lastVoiceAt).toBe(0)
+    page._trackLocalVoiceFrame(silentFrame, 1020)
+    expect(page.localVadState.lastVoiceAt).toBe(0)
+
+    page._trackLocalVoiceFrame(loudFrame, 2000)
+    page._trackLocalVoiceFrame(loudFrame, 2020)
+    expect(page.localVadState.lastVoiceAt).toBe(2020)
+    expect(page.localVadState.speechActive).toBe(true)
   })
 
   test('_isLowInfoSentence 能识别泛化短答与否定短答', () => {
@@ -840,8 +1140,80 @@ describe('call 页面离线关键分支', () => {
     expect(page._endCall).not.toHaveBeenCalled()
     expect(page.incomingFollowupState.pendingAutoEndAfterPlayback).toBe(true)
 
-    jest.advanceTimersByTime(1800)
+    jest.advanceTimersByTime(4999)
+    expect(page._endCall).not.toHaveBeenCalled()
+    jest.advanceTimersByTime(1)
     expect(page._endCall).toHaveBeenCalledTimes(1)
+    jest.useRealTimers()
+  })
+
+  test('自动收尾兜底会覆盖预计剩余播放时长而非固定 1.8 秒', () => {
+    jest.useFakeTimers()
+    const page = loadPage()
+    page._endCall = jest.fn()
+    page.currentLatencyTurn = null
+    page.player = {
+      getEstimatedRemainingMs: jest.fn(() => 10000),
+    }
+    page.callEndingState = {
+      shouldAutoEndAfterAssistant: false,
+      pendingAutoEndAfterPlayback: true,
+      source: 'user_end_intent',
+    }
+    page.incomingFollowupState = {
+      pendingAutoEndAfterPlayback: false,
+    }
+
+    page._startIncomingAutoEndGuard()
+    jest.advanceTimersByTime(12999)
+    expect(page._endCall).not.toHaveBeenCalled()
+    jest.advanceTimersByTime(1)
+    expect(page._endCall).toHaveBeenCalledTimes(1)
+    jest.useRealTimers()
+  })
+
+  test('自动收尾到期时播放器仍忙会续期而不是截断', () => {
+    jest.useFakeTimers()
+    const page = loadPage()
+    page._endCall = jest.fn()
+    page.currentLatencyTurn = null
+    page.player = {
+      playing: true,
+      preparingSegment: false,
+      webPreparing: false,
+      getEstimatedRemainingMs: jest.fn(() => 1000),
+    }
+    page.callEndingState = {
+      shouldAutoEndAfterAssistant: false,
+      pendingAutoEndAfterPlayback: true,
+      source: 'user_end_intent',
+    }
+    page.incomingFollowupState = {
+      pendingAutoEndAfterPlayback: false,
+    }
+
+    page._startIncomingAutoEndGuard()
+    jest.advanceTimersByTime(5000)
+    expect(page._endCall).not.toHaveBeenCalled()
+
+    page.player.playing = false
+    jest.advanceTimersByTime(5000)
+    expect(page._endCall).toHaveBeenCalledTimes(1)
+    jest.useRealTimers()
+  })
+
+  test('AI 生成状态异常时会解锁半双工生成锁', () => {
+    jest.useFakeTimers()
+    const page = loadPage()
+    page.currentLatencyTurn = null
+    page.assistantTurnInProgress = false
+    page.assistantTurnProgressTimer = null
+
+    page._markAssistantTurnInProgress()
+    expect(page.assistantTurnInProgress).toBe(true)
+    jest.advanceTimersByTime(45000)
+    expect(page.assistantTurnInProgress).toBe(false)
+    expect(page.assistantTurnProgressTimer).toBe(null)
     jest.useRealTimers()
   })
 })

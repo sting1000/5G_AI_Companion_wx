@@ -133,7 +133,7 @@ describe('realtime-api 离线协议与生命周期', () => {
     wx.__socketTask.__emitMessage(buildServerFrame({
       msgType: 0b1001,
       eventId: SERVER_EVENT.SESSION_STARTED,
-      sessionId: 'sid-test',
+      sessionId: client.sessionId,
       payload: { dialog_id: 'dialog-new' },
     }))
     await expect(startPromise).resolves.toBe('dialog-new')
@@ -226,5 +226,243 @@ describe('realtime-api 离线协议与生命周期', () => {
       expect.anything()
     )
     warnSpy.mockRestore()
+  })
+
+  test('完整 ASR/Chat/TTS 事件会透传逐轮元数据和真实事件顺序', () => {
+    const client = loadClient()
+    const observed = []
+    client.onASRStart = meta => observed.push(['asr_start', meta])
+    client.onASRText = (text, isFinal, meta) => observed.push(['asr_text', meta, text, isFinal])
+    client.onASREnd = meta => observed.push(['asr_end', meta])
+    client.onChatText = (text, meta) => observed.push(['chat', meta, text])
+    client.onChatEnd = meta => observed.push(['chat_end', meta])
+    client.onTTSStart = (text, meta) => observed.push(['tts_start', meta, text])
+    client.onAudioData = (audio, meta) => observed.push(['tts_audio', meta, audio.byteLength])
+    client.onTTSSentenceEnd = meta => observed.push(['tts_sentence_end', meta])
+    client.onTTSEnd = meta => observed.push(['tts_end', meta])
+    client.connect()
+
+    const emit = (eventId, payload = {}) => {
+      wx.__socketTask.__emitMessage(buildServerFrame({
+        msgType: 0b1001,
+        eventId,
+        sessionId: 'sid-turn',
+        payload,
+      }))
+    }
+    emit(SERVER_EVENT.ASR_INFO, { question_id: 'q1' })
+    emit(SERVER_EVENT.ASR_RESPONSE, {
+      results: [{ text: '提醒我明天吃药', is_interim: false }],
+    })
+    emit(SERVER_EVENT.ASR_ENDED)
+    emit(SERVER_EVENT.CHAT_RESPONSE, {
+      content: '好，',
+      question_id: 'q1',
+      reply_id: 'r1',
+    })
+    emit(SERVER_EVENT.CHAT_ENDED, { question_id: 'q1', reply_id: 'r1' })
+    emit(SERVER_EVENT.TTS_SENTENCE_START, {
+      text: '好，明天提醒您。',
+      question_id: 'q1',
+      reply_id: 'r1',
+      tts_type: 'default',
+    })
+    wx.__socketTask.__emitMessage(buildServerFrame({
+      msgType: 0b1011,
+      eventId: SERVER_EVENT.TTS_RESPONSE,
+      sessionId: 'sid-turn',
+      audioData: new Uint8Array(640).buffer,
+    }))
+    emit(SERVER_EVENT.TTS_SENTENCE_END, { question_id: 'q1', reply_id: 'r1' })
+    emit(SERVER_EVENT.TTS_ENDED, {
+      question_id: 'q1',
+      reply_id: 'r1',
+      status_code: '0',
+    })
+
+    expect(observed.map(item => item[0])).toEqual([
+      'asr_start',
+      'asr_text',
+      'asr_end',
+      'chat',
+      'chat_end',
+      'tts_start',
+      'tts_audio',
+      'tts_sentence_end',
+      'tts_end',
+    ])
+    const sequences = observed.map(item => item[1].eventSeq)
+    expect(sequences).toEqual(sequences.slice().sort((a, b) => a - b))
+    observed.forEach(item => {
+      expect(item[1].questionId).toBe('q1')
+    })
+    expect(observed[5][1]).toEqual(expect.objectContaining({
+      replyId: 'r1',
+      ttsType: 'default',
+    }))
+    expect(observed[8][1].statusCode).toBe('0')
+  })
+
+  test('首 Chat/TTS 包标记会按 ASR 轮次重置而不是按 session 重置', () => {
+    const client = loadClient()
+    const firstChat = jest.fn()
+    const firstTTS = jest.fn()
+    client.onFirstChatPacket = firstChat
+    client.onFirstTTSAudioPacket = firstTTS
+    client.onChatText = jest.fn()
+    client.onAudioData = jest.fn()
+    client.connect()
+
+    const emitText = (eventId, payload) => {
+      wx.__socketTask.__emitMessage(buildServerFrame({
+        msgType: 0b1001,
+        eventId,
+        sessionId: 'sid-reset',
+        payload,
+      }))
+    }
+    const emitAudio = () => {
+      wx.__socketTask.__emitMessage(buildServerFrame({
+        msgType: 0b1011,
+        eventId: SERVER_EVENT.TTS_RESPONSE,
+        sessionId: 'sid-reset',
+        audioData: new Uint8Array(640).buffer,
+      }))
+    }
+
+    emitText(SERVER_EVENT.ASR_INFO, { question_id: 'q1' })
+    emitText(SERVER_EVENT.CHAT_RESPONSE, { content: '一', question_id: 'q1', reply_id: 'r1' })
+    emitAudio()
+    emitText(SERVER_EVENT.TTS_ENDED, { question_id: 'q1', reply_id: 'r1' })
+    emitText(SERVER_EVENT.ASR_INFO, { question_id: 'q2' })
+    emitText(SERVER_EVENT.CHAT_RESPONSE, { content: '二', question_id: 'q2', reply_id: 'r2' })
+    emitAudio()
+
+    expect(firstChat).toHaveBeenCalledTimes(2)
+    expect(firstTTS).toHaveBeenCalledTimes(2)
+    expect(firstChat.mock.calls[1][1].questionId).toBe('q2')
+    expect(firstTTS.mock.calls[1][1]).toEqual(expect.objectContaining({
+      questionId: 'q2',
+      replyId: 'r2',
+    }))
+  })
+
+  test('旧 session 的迟到结束事件不能关闭当前新会话', () => {
+    const client = loadClient()
+    client.connect()
+    client.sessionId = 'sid-new'
+    client.sessionActive = true
+
+    wx.__socketTask.__emitMessage(buildServerFrame({
+      msgType: 0b1001,
+      eventId: SERVER_EVENT.SESSION_FINISHED,
+      sessionId: 'sid-old',
+      payload: {},
+    }))
+    expect(client.sessionActive).toBe(true)
+
+    wx.__socketTask.__emitMessage(buildServerFrame({
+      msgType: 0b1001,
+      eventId: SERVER_EVENT.SESSION_FINISHED,
+      sessionId: 'sid-new',
+      payload: {},
+    }))
+    expect(client.sessionActive).toBe(false)
+  })
+
+  test('缺失 ASR_INFO 时的回退开始事件会明确标记 synthetic', () => {
+    const client = loadClient()
+    const onASRStart = jest.fn()
+    client.onASRStart = onASRStart
+    client.onASRText = jest.fn()
+    client.connect()
+
+    wx.__socketTask.__emitMessage(buildServerFrame({
+      msgType: 0b1001,
+      eventId: SERVER_EVENT.ASR_RESPONSE,
+      sessionId: 'sid-synthetic',
+      payload: {
+        question_id: 'q-synthetic',
+        results: [{ text: '测试', is_interim: false }],
+      },
+    }))
+
+    expect(onASRStart).toHaveBeenCalledWith(expect.objectContaining({
+      eventId: SERVER_EVENT.ASR_RESPONSE,
+      questionId: 'q-synthetic',
+      synthetic: true,
+      synthesizedEvent: 'asr_start_fallback',
+    }))
+  })
+
+  test('旧 question 的迟到 Chat 不会消耗当前轮首包标记', () => {
+    const client = loadClient()
+    const onChatText = jest.fn()
+    const onFirstChatPacket = jest.fn()
+    client.onChatText = onChatText
+    client.onFirstChatPacket = onFirstChatPacket
+    client.connect()
+
+    const emit = (eventId, payload) => {
+      wx.__socketTask.__emitMessage(buildServerFrame({
+        msgType: 0b1001,
+        eventId,
+        sessionId: 'sid-question-order',
+        payload,
+      }))
+    }
+    emit(SERVER_EVENT.ASR_INFO, { question_id: 'q-new' })
+    emit(SERVER_EVENT.CHAT_RESPONSE, {
+      question_id: 'q-old',
+      reply_id: 'r-old',
+      content: '旧回复',
+    })
+    emit(SERVER_EVENT.CHAT_RESPONSE, {
+      question_id: 'q-new',
+      reply_id: 'r-new',
+      content: '新回复',
+    })
+
+    expect(onChatText).toHaveBeenCalledTimes(1)
+    expect(onChatText).toHaveBeenCalledWith(
+      '新回复',
+      expect.objectContaining({ questionId: 'q-new', replyId: 'r-new' })
+    )
+    expect(onFirstChatPacket).toHaveBeenCalledTimes(1)
+    expect(onFirstChatPacket.mock.calls[0][1].questionId).toBe('q-new')
+  })
+
+  test('sendTextQuery 允许一次有明确标记的 question 转换', () => {
+    const client = loadClient()
+    const onChatText = jest.fn()
+    client.onChatText = onChatText
+    client.connect()
+    wx.__socketTask.__emitMessage(buildServerFrame({
+      msgType: 0b1001,
+      eventId: SERVER_EVENT.ASR_INFO,
+      sessionId: 'sid-text-query',
+      payload: { question_id: 'q-audio' },
+    }))
+
+    client.sendTextQuery('请安全重说')
+    wx.__socketTask.__emitMessage(buildServerFrame({
+      msgType: 0b1001,
+      eventId: SERVER_EVENT.CHAT_RESPONSE,
+      sessionId: 'sid-text-query',
+      payload: {
+        question_id: 'q-text',
+        reply_id: 'r-text',
+        content: '我不能线下行动，但可以帮您联系家人。',
+      },
+    }))
+
+    expect(onChatText).toHaveBeenCalledWith(
+      '我不能线下行动，但可以帮您联系家人。',
+      expect.objectContaining({
+        questionId: 'q-text',
+        clientTextQueryTransition: true,
+        previousQuestionId: 'q-audio',
+      })
+    )
   })
 })

@@ -28,10 +28,14 @@ const RECORDER_FRAME_SIZE_KB = 1
 const USE_LOW_LATENCY_TTS = true
 // 当前优先“连贯无卡顿”，单句只播放一个分段，避免“第三个字稳定卡”。
 const FORCE_SINGLE_SEGMENT_PER_TURN = true
+const PLAYBACK_MODE_SINGLE_WAV = 'single_wav'
+const PLAYBACK_MODE_WEB_AUDIO = 'web_audio'
+const DEFAULT_PLAYBACK_MODE = PLAYBACK_MODE_SINGLE_WAV
 // 用户反馈优先“说话连贯”，因此进一步减少句内切段次数（目标 1~2 段）。
 const TTS_START_BUFFER_MS = 680
-const TTS_STREAM_SEGMENT_MS = 6000
+const WEB_AUDIO_CHUNK_MS = 200
 const PLAYBACK_WATCHDOG_MS = 20000
+const PLAYBACK_WATCHDOG_MARGIN_MS = 5000
 const FLOW_LOG_PREFIX = '[AudioFlow]'
 const DEBUG_AUDIO_TRACE = false
 const AUDIO_STUTTER_WARN_SEGMENTS = 2
@@ -95,8 +99,11 @@ class AudioRecorder {
  * 缓冲收到的 PCM 数据，合并后播放
  */
 class AudioPlayer {
-  constructor() {
+  constructor(options = {}) {
+    this.playbackMode = options.playbackMode || DEFAULT_PLAYBACK_MODE
+    this.useWebAudioImplement = Boolean(options.useWebAudioImplement)
     this.audioCtx = null
+    this.webAudioCtx = null
     this.pcmChunks = []
     this.pendingChunks = []
     this.pendingBytes = 0
@@ -106,22 +113,49 @@ class AudioPlayer {
     this.preparingSegment = false
     this.turnSealRequested = false
     this.playWatchdogTimer = null
+    this.playbackGeneration = 1
+    this.pendingPlayStart = null
+    this.activeFilePath = ''
+    this.tempFilePaths = []
+    this.currentSegmentDurationMs = 0
+    this.preparingSegmentDurationMs = 0
+    this.currentSegmentStartedAt = 0
+    this.onPlaybackScheduled = null
+    this.onPlaybackEvent = null
+    this.onPlayError = null
+    this.webPendingChunks = []
+    this.webPendingBytes = 0
+    this.webNextStartTime = 0
+    this.webActiveSources = []
+    this.webStarted = false
+    this.webPreparing = false
+    this.webFirstScheduledAt = 0
+    this.webUnderrunCount = 0
+    this.webWatchdogTimer = null
     this._fileIndex = 0
     this.onPlayStart = null
     this.onPlayEnd = null
     this.traceState = null
 
-    this._ensureAudioContext()
+    if (this.playbackMode === PLAYBACK_MODE_WEB_AUDIO) {
+      this._ensureWebAudioContext()
+    } else {
+      this._ensureAudioContext()
+    }
   }
 
   /**
    * 添加 PCM 音频数据块
    */
   appendChunk(pcmBuffer) {
+    if (this.playbackMode === PLAYBACK_MODE_WEB_AUDIO) {
+      this._appendWebAudioChunk(pcmBuffer)
+      return
+    }
     const chunk = new Uint8Array(pcmBuffer)
     this.pcmChunks.push(chunk)
     this.turnSealRequested = false
-    this._ensureTraceState()
+    this._startPlaybackTurnIfNeeded()
     this.traceState.inputBytes += chunk.byteLength
 
     if (FORCE_SINGLE_SEGMENT_PER_TURN) return
@@ -145,6 +179,11 @@ class AudioPlayer {
    */
   playBuffered() {
     this.turnSealRequested = true
+    if (this.playbackMode === PLAYBACK_MODE_WEB_AUDIO) {
+      this._flushWebAudioPending(true)
+      this._maybeFinishWebAudioPlayback()
+      return
+    }
     if (this.pcmChunks.length === 0) {
       this._maybeFinishTurnPlayback()
       return
@@ -197,24 +236,40 @@ class AudioPlayer {
     // 写入临时文件
     const filePath = `${wx.env.USER_DATA_PATH}/tts_${this._fileIndex++}.wav`
     const fs = wx.getFileSystemManager()
+    const generation = this.playbackGeneration
+    const segmentDurationMs = Math.ceil((pcmData.byteLength / (SAMPLE_RATE * CHANNELS * (BIT_DEPTH / 8))) * 1000)
+    this._emitPlaybackEvent('wav_write_start', { filePath, generation, segmentDurationMs })
     fs.writeFile({
       filePath,
       data: wavBuffer,
       encoding: 'binary',
       success: () => {
-        this.playing = true
-        this._armPlayWatchdog()
-        logger.info(FLOW_LOG_PREFIX, '开始播放整句缓冲音频')
-        if (!this._playFile(filePath)) {
-          this.playing = false
-          this._clearPlayWatchdog()
+        this._emitPlaybackEvent('wav_write_end', { filePath, generation, success: true })
+        if (generation !== this.playbackGeneration) {
+          this._deleteTempFile(filePath)
           return
         }
-        if (this.onPlayStart) this.onPlayStart()
+        this._trackTempFile(filePath)
+        this.playing = true
+        this.activeFilePath = filePath
+        this.currentSegmentDurationMs = segmentDurationMs
+        this.currentSegmentStartedAt = 0
+        this._armPlayWatchdog(segmentDurationMs, generation)
+        logger.info(FLOW_LOG_PREFIX, '开始播放整句缓冲音频')
+        if (!this._playFile(filePath, generation)) {
+          this.playing = false
+          this._clearPlayWatchdog()
+          this._deleteTempFile(filePath)
+          return
+        }
       },
       fail: (err) => {
+        this._emitPlaybackEvent('wav_write_end', { filePath, generation, success: false })
+        this._deleteTempFile(filePath)
+        if (generation !== this.playbackGeneration) return
         logger.error('AudioPlayer write file error:', err)
         this.playing = false
+        if (this.onPlayError) this.onPlayError({ stage: 'write', error: err, generation })
       },
     })
   }
@@ -279,6 +334,7 @@ class AudioPlayer {
     }
 
     const nextPcmBuffer = this.segmentQueue.shift()
+    const generation = this.playbackGeneration
     this._ensureTraceState()
     const traceRef = this.traceState
     if (DEBUG_AUDIO_TRACE) {
@@ -290,16 +346,26 @@ class AudioPlayer {
     const filePath = `${wx.env.USER_DATA_PATH}/tts_${this._fileIndex++}.wav`
     const fs = wx.getFileSystemManager()
     const writeStartAt = Date.now()
+    const segmentDurationMs = Math.ceil((nextPcmBuffer.byteLength / (SAMPLE_RATE * CHANNELS * (BIT_DEPTH / 8))) * 1000)
     this.preparingSegment = true
+    this.preparingSegmentDurationMs = segmentDurationMs
+    this._emitPlaybackEvent('wav_write_start', { filePath, generation, segmentDurationMs })
     fs.writeFile({
       filePath,
       data: wavBuffer,
       encoding: 'binary',
       success: () => {
+        this._emitPlaybackEvent('wav_write_end', { filePath, generation, success: true })
+        if (generation !== this.playbackGeneration) {
+          this._deleteTempFile(filePath)
+          return
+        }
         this.preparingSegment = false
+        this.preparingSegmentDurationMs = 0
         // 仅在同一条 TTS trace 下继续，避免异步回调串到下一句。
         if (!this.traceState || this.traceState.traceId !== traceRef.traceId) {
           traceRef.staleCallbackCount += 1
+          this._deleteTempFile(filePath)
           if (DEBUG_AUDIO_TRACE) {
             console.warn('[AudioTrace] stale-write-callback', {
               expectedTraceId: traceRef.traceId,
@@ -309,24 +375,32 @@ class AudioPlayer {
           this._tryPlayNextSegment()
           return
         }
+        this._trackTempFile(filePath)
         this.traceState.writeCostMs.push(Date.now() - writeStartAt)
         traceRef.playSegmentCount += 1
         if (traceRef.lastEndedAt) {
           traceRef.switchGapMs.push(Date.now() - traceRef.lastEndedAt)
         }
         this.playing = true
-        this._armPlayWatchdog()
-        if (!this._playFile(filePath)) {
+        this.currentSegmentDurationMs = segmentDurationMs
+        this.currentSegmentStartedAt = 0
+        this.activeFilePath = filePath
+        this._armPlayWatchdog(segmentDurationMs, generation)
+        if (!this._playFile(filePath, generation)) {
           this.playing = false
           this._clearPlayWatchdog()
+          this._deleteTempFile(filePath)
           this._tryPlayNextSegment()
           this._maybeFinishTurnPlayback()
           return
         }
-        if (this.onPlayStart) this.onPlayStart()
       },
       fail: (err) => {
+        this._emitPlaybackEvent('wav_write_end', { filePath, generation, success: false })
+        this._deleteTempFile(filePath)
+        if (generation !== this.playbackGeneration) return
         this.preparingSegment = false
+        this.preparingSegmentDurationMs = 0
         if (!this.traceState || this.traceState.traceId !== traceRef.traceId) {
           traceRef.staleCallbackCount += 1
           if (DEBUG_AUDIO_TRACE) {
@@ -340,6 +414,9 @@ class AudioPlayer {
         }
         console.error('[AudioPlayer] write segment error:', err)
         this.playing = false
+        if (this.onPlayError) {
+          this.onPlayError({ stage: 'write', error: err, generation })
+        }
         // 当前片段写失败时尝试继续后续片段，避免整句静音
         this._tryPlayNextSegment()
         this._maybeFinishTurnPlayback()
@@ -365,17 +442,29 @@ class AudioPlayer {
     return true
   }
 
-  _armPlayWatchdog() {
+  _armPlayWatchdog(expectedDurationMs, generation) {
     this._clearPlayWatchdog()
+    const timeoutMs = Math.max(
+      PLAYBACK_WATCHDOG_MS,
+      Number(expectedDurationMs || 0) + PLAYBACK_WATCHDOG_MARGIN_MS
+    )
     this.playWatchdogTimer = setTimeout(() => {
+      if (generation !== this.playbackGeneration) return
       console.warn('[AudioPlayer] 播放超时，强制解锁播放状态')
       console.warn(FLOW_LOG_PREFIX, '播放 watchdog 触发，准备解锁并续播')
       this.playing = false
       try {
         this.audioCtx.stop()
       } catch (e) {}
+      if (this.onPlayError) {
+        this.onPlayError({ stage: 'watchdog', generation, timeoutMs })
+      }
+      this._emitPlaybackEvent('play_watchdog', { generation, timeoutMs })
+      this._deleteTempFile(this.activeFilePath)
+      this.activeFilePath = ''
       this._tryPlayNextSegment()
-    }, PLAYBACK_WATCHDOG_MS)
+      this._maybeFinishTurnPlayback()
+    }, timeoutMs)
   }
 
   _clearPlayWatchdog() {
@@ -385,14 +474,59 @@ class AudioPlayer {
     }
   }
 
+  _armWebAudioWatchdog(generation) {
+    this._clearWebAudioWatchdog()
+    const timeoutMs = Math.max(
+      PLAYBACK_WATCHDOG_MARGIN_MS,
+      this.getEstimatedRemainingMs() + PLAYBACK_WATCHDOG_MARGIN_MS
+    )
+    this.webWatchdogTimer = setTimeout(() => {
+      if (generation !== this.playbackGeneration) return
+      this.webWatchdogTimer = null
+      const timedOutSources = this.webActiveSources.slice()
+      this.webActiveSources = []
+      timedOutSources.forEach(entry => {
+        const source = entry && entry.source ? entry.source : entry
+        try { source.stop() } catch (e) {}
+        try { source.disconnect() } catch (e) {}
+      })
+      this.playing = false
+      this.webStarted = false
+      this.webNextStartTime = 0
+      if (this.onPlayError) {
+        this.onPlayError({ stage: 'web_audio_watchdog', generation, timeoutMs })
+      }
+      this._emitPlaybackEvent('web_audio_watchdog', { generation, timeoutMs })
+      this._maybeFinishWebAudioPlayback()
+    }, timeoutMs)
+  }
+
+  _clearWebAudioWatchdog() {
+    if (this.webWatchdogTimer) {
+      clearTimeout(this.webWatchdogTimer)
+      this.webWatchdogTimer = null
+    }
+  }
+
   /**
    * 停止播放（用于用户打断）
    */
   stop() {
+    this.playbackGeneration += 1
     this._clearPlayWatchdog()
-    if (this.audioCtx) {
-      try { this.audioCtx.stop() } catch (e) {}
+    this._clearWebAudioWatchdog()
+    const previousAudioCtx = this.audioCtx
+    this.audioCtx = null
+    if (previousAudioCtx) {
+      try { previousAudioCtx.stop() } catch (e) {}
+      try { previousAudioCtx.destroy() } catch (e) {}
     }
+    this.webActiveSources.forEach(entry => {
+      const source = entry && entry.source ? entry.source : entry
+      try { source.stop() } catch (e) {}
+      try { source.disconnect() } catch (e) {}
+    })
+    this.webActiveSources = []
     this.pcmChunks = []
     this.pendingChunks = []
     this.pendingBytes = 0
@@ -401,23 +535,86 @@ class AudioPlayer {
     this.playing = false
     this.preparingSegment = false
     this.turnSealRequested = false
+    this.pendingPlayStart = null
+    this.currentSegmentDurationMs = 0
+    this.preparingSegmentDurationMs = 0
+    this.currentSegmentStartedAt = 0
+    this.webPendingChunks = []
+    this.webPendingBytes = 0
+    this.webNextStartTime = 0
+    this.webStarted = false
+    this.webPreparing = false
+    this.webUnderrunCount = 0
+    this.traceState = null
+    this._cleanupTempFiles()
+    this.activeFilePath = ''
   }
 
   destroy() {
-    this._clearPlayWatchdog()
+    this.stop()
     if (this.audioCtx) {
       try { this.audioCtx.destroy() } catch (e) {}
       this.audioCtx = null
+    }
+    if (this.webAudioCtx) {
+      try {
+        const closeResult = this.webAudioCtx.close()
+        if (closeResult && typeof closeResult.catch === 'function') closeResult.catch(() => {})
+      } catch (e) {}
+      this.webAudioCtx = null
     }
   }
 
   _ensureAudioContext() {
     if (this.audioCtx) return
-    const ctx = wx.createInnerAudioContext()
+    const ctx = wx.createInnerAudioContext({
+      useWebAudioImplement: this.useWebAudioImplement,
+    })
     this.audioCtx = ctx
+    if (typeof ctx.onPlay === 'function') {
+      ctx.onPlay(() => {
+        if (ctx !== this.audioCtx) return
+        const pending = this.pendingPlayStart
+        if (!pending || pending.generation !== this.playbackGeneration) return
+        this.currentSegmentStartedAt = Date.now()
+        this.pendingPlayStart = null
+        if (this.onPlayStart) {
+          this.onPlayStart({
+            at: this.currentSegmentStartedAt,
+            requestedAt: pending.requestedAt,
+            generation: pending.generation,
+            source: 'inner_audio_on_play',
+            authoritative: true,
+          })
+        }
+        this._emitPlaybackEvent('inner_audio_on_play', {
+          requestedAt: pending.requestedAt,
+          generation: pending.generation,
+          filePath: pending.filePath,
+        })
+      })
+    }
+    if (typeof ctx.onWaiting === 'function') {
+      ctx.onWaiting(() => {
+        if (ctx !== this.audioCtx) return
+        this._emitPlaybackEvent('inner_audio_waiting', {
+          generation: this.playbackGeneration,
+          filePath: this.activeFilePath,
+        })
+      })
+    }
     ctx.onEnded(() => {
+      if (ctx !== this.audioCtx) return
       this.playing = false
       this._clearPlayWatchdog()
+      this.pendingPlayStart = null
+      this._deleteTempFile(this.activeFilePath)
+      this.activeFilePath = ''
+      this.currentSegmentDurationMs = 0
+      this.currentSegmentStartedAt = 0
+      this._emitPlaybackEvent('inner_audio_ended', {
+        generation: this.playbackGeneration,
+      })
       if (this.traceState) {
         this.traceState.lastEndedAt = Date.now()
         this.traceState.endedCount += 1
@@ -431,32 +628,65 @@ class AudioPlayer {
       this._maybeFinishTurnPlayback()
     })
     ctx.onError((err) => {
+      if (ctx !== this.audioCtx) return
       console.error('[AudioPlayer] error:', err)
       console.error(FLOW_LOG_PREFIX, '播放错误，尝试继续后续分段', err)
       const errMsg = String((err && err.errMsg) || '')
       let shouldDelayedRetry = false
+      const retryFilePath = this.activeFilePath
+      const generation = this.playbackGeneration
       if (errMsg.includes('audioInstance is not set')) {
         try { ctx.destroy() } catch (e) {}
         this.audioCtx = null
-        shouldDelayedRetry = true
+        shouldDelayedRetry = Boolean(retryFilePath)
       }
       this.playing = false
       this._clearPlayWatchdog()
       if (shouldDelayedRetry) {
         setTimeout(() => {
-          this._tryPlayNextSegment()
+          if (generation !== this.playbackGeneration) return
+          this.playing = true
+          this._armPlayWatchdog(this.currentSegmentDurationMs, generation)
+          if (!this._playFile(retryFilePath, generation)) {
+            this.playing = false
+            this._deleteTempFile(retryFilePath)
+            this.activeFilePath = ''
+            this._tryPlayNextSegment()
+            this._maybeFinishTurnPlayback()
+          }
         }, 80)
         return
       }
+      this.pendingPlayStart = null
+      this._deleteTempFile(this.activeFilePath)
+      this.activeFilePath = ''
+      if (this.onPlayError) {
+        this.onPlayError({ stage: 'playback', error: err, generation })
+      }
+      this._emitPlaybackEvent('inner_audio_error', {
+        generation,
+        error: String((err && err.errMsg) || err || ''),
+      })
       this._tryPlayNextSegment()
+      this._maybeFinishTurnPlayback()
     })
   }
 
-  _playFile(filePath) {
+  _playFile(filePath, generation) {
     this._ensureAudioContext()
     if (!this.audioCtx) return false
     try {
       this.audioCtx.src = filePath
+      this.pendingPlayStart = {
+        filePath,
+        generation,
+        requestedAt: Date.now(),
+      }
+      this._emitPlaybackEvent('play_requested', {
+        filePath,
+        generation,
+        requestedAt: this.pendingPlayStart.requestedAt,
+      })
       this.audioCtx.play()
       return true
     } catch (err) {
@@ -467,6 +697,17 @@ class AudioPlayer {
       if (!this.audioCtx) return false
       try {
         this.audioCtx.src = filePath
+        this.pendingPlayStart = {
+          filePath,
+          generation,
+          requestedAt: Date.now(),
+        }
+        this._emitPlaybackEvent('play_requested', {
+          filePath,
+          generation,
+          requestedAt: this.pendingPlayStart.requestedAt,
+          retry: true,
+        })
         this.audioCtx.play()
         return true
       } catch (retryErr) {
@@ -474,6 +715,236 @@ class AudioPlayer {
         return false
       }
     }
+  }
+
+  _appendWebAudioChunk(pcmBuffer) {
+    const chunk = new Uint8Array(pcmBuffer)
+    if (!chunk.byteLength) return
+    this.turnSealRequested = false
+    this.webPendingChunks.push(chunk)
+    this.webPendingBytes += chunk.byteLength
+    this._startPlaybackTurnIfNeeded()
+    this.traceState.inputBytes += chunk.byteLength
+    const thresholdMs = this.webStarted ? WEB_AUDIO_CHUNK_MS : TTS_START_BUFFER_MS
+    if (this.webPendingBytes >= this._bytesFromMs(thresholdMs)) {
+      this._flushWebAudioPending(false)
+    }
+  }
+
+  _flushWebAudioPending(forceFlush) {
+    if (this.webPendingBytes <= 0 || this.webPreparing) return
+    const minBytes = forceFlush ? 1 : this._bytesFromMs(this.webStarted ? WEB_AUDIO_CHUNK_MS : TTS_START_BUFFER_MS)
+    if (this.webPendingBytes < minBytes) return
+
+    const pcmData = new Uint8Array(this.webPendingBytes)
+    let offset = 0
+    this.webPendingChunks.forEach(chunk => {
+      pcmData.set(chunk, offset)
+      offset += chunk.byteLength
+    })
+    this.webPendingChunks = []
+    this.webPendingBytes = 0
+    const generation = this.playbackGeneration
+    const ctx = this._ensureWebAudioContext()
+    if (!ctx) {
+      if (this.onPlayError) this.onPlayError({ stage: 'web_audio_context', generation })
+      this._maybeFinishWebAudioPlayback()
+      return
+    }
+
+    const schedule = () => {
+      if (generation !== this.playbackGeneration) return
+      this.webPreparing = false
+      this._scheduleWebAudioPcm(pcmData, generation)
+      this._flushWebAudioPending(this.turnSealRequested)
+      this._maybeFinishWebAudioPlayback()
+    }
+
+    if (ctx.state === 'suspended' && typeof ctx.resume === 'function') {
+      this.webPreparing = true
+      try {
+        const result = ctx.resume()
+        if (result && typeof result.then === 'function') {
+          result.then(schedule).catch(err => {
+            if (generation !== this.playbackGeneration) return
+            this.webPreparing = false
+            if (this.onPlayError) this.onPlayError({ stage: 'web_audio_resume', error: err, generation })
+            this._maybeFinishWebAudioPlayback()
+          })
+          return
+        }
+      } catch (err) {
+        this.webPreparing = false
+        if (this.onPlayError) this.onPlayError({ stage: 'web_audio_resume', error: err, generation })
+        this._maybeFinishWebAudioPlayback()
+        return
+      }
+    }
+    schedule()
+  }
+
+  _scheduleWebAudioPcm(pcmData, generation) {
+    const ctx = this.webAudioCtx
+    if (!ctx || !pcmData || pcmData.byteLength < 2) return
+    const sampleCount = Math.floor(pcmData.byteLength / 2)
+    const audioBuffer = ctx.createBuffer(CHANNELS, sampleCount, SAMPLE_RATE)
+    const samples = audioBuffer.getChannelData(0)
+    const view = new DataView(pcmData.buffer, pcmData.byteOffset, pcmData.byteLength)
+    for (let i = 0; i < sampleCount; i += 1) {
+      samples[i] = view.getInt16(i * 2, true) / 32768
+    }
+
+    const source = ctx.createBufferSource()
+    source.buffer = audioBuffer
+    source.connect(ctx.destination)
+    const now = Number(ctx.currentTime || 0)
+    const minimumStartAt = now + 0.05
+    if (this.webNextStartTime && this.webNextStartTime < minimumStartAt) {
+      const gapMs = Math.round((minimumStartAt - this.webNextStartTime) * 1000)
+      this.webUnderrunCount += 1
+      if (this.traceState) this.traceState.switchGapMs.push(gapMs)
+      if (this.onPlayError) {
+        this.onPlayError({
+          stage: 'web_audio_underrun',
+          gapMs,
+          generation,
+        })
+      }
+    }
+    const startAt = Math.max(this.webNextStartTime || 0, minimumStartAt)
+    const durationSec = sampleCount / SAMPLE_RATE
+    const previousNextStartTime = this.webNextStartTime
+    this.webNextStartTime = startAt + durationSec
+    const entry = { source, generation, startAt, endAt: this.webNextStartTime }
+    this.webActiveSources.push(entry)
+    source.onended = () => {
+      if (generation !== this.playbackGeneration) return
+      try { source.disconnect() } catch (e) {}
+      this.webActiveSources = this.webActiveSources.filter(item => item !== entry)
+      if (this.traceState) this.traceState.endedCount += 1
+      if (this.webActiveSources.length === 0) this._clearWebAudioWatchdog()
+      this._maybeFinishWebAudioPlayback()
+    }
+    try {
+      source.start(startAt)
+    } catch (err) {
+      this.webActiveSources = this.webActiveSources.filter(item => item !== entry)
+      this.webNextStartTime = previousNextStartTime
+      this.webStarted = this.webActiveSources.length > 0
+      this.playing = this.webActiveSources.length > 0
+      try { source.disconnect() } catch (e) {}
+      if (this.onPlayError) {
+        this.onPlayError({ stage: 'web_audio_start', error: err, generation })
+      }
+      this._emitPlaybackEvent('web_audio_start_error', {
+        generation,
+        error: String((err && err.message) || err || ''),
+      })
+      return
+    }
+    this.webStarted = true
+    this.playing = true
+    this.traceState.segmentEnqueueCount += 1
+    this.traceState.playSegmentCount += 1
+    this.traceState.queuePeak = Math.max(this.traceState.queuePeak, this.webActiveSources.length)
+    this._armWebAudioWatchdog(generation)
+    this._emitPlaybackEvent('web_audio_scheduled', {
+      generation,
+      contextStartAt: startAt,
+      durationMs: Math.round(durationSec * 1000),
+    })
+    if (!this.webFirstScheduledAt) {
+      this.webFirstScheduledAt = Date.now()
+      if (this.onPlaybackScheduled) {
+        this.onPlaybackScheduled({
+          at: this.webFirstScheduledAt,
+          contextStartAt: startAt,
+          generation,
+          source: 'web_audio_schedule',
+          authoritative: false,
+        })
+      }
+    }
+  }
+
+  _ensureWebAudioContext() {
+    if (this.webAudioCtx) return this.webAudioCtx
+    if (!wx.createWebAudioContext) return null
+    try {
+      this.webAudioCtx = wx.createWebAudioContext()
+      return this.webAudioCtx
+    } catch (err) {
+      if (this.onPlayError) {
+        this.onPlayError({ stage: 'web_audio_create', error: err, generation: this.playbackGeneration })
+      }
+      return null
+    }
+  }
+
+  _maybeFinishWebAudioPlayback() {
+    if (!this.turnSealRequested) return false
+    if (this.webPreparing || this.webPendingBytes > 0 || this.webActiveSources.length > 0) return false
+    this._clearWebAudioWatchdog()
+    this.playing = false
+    this.webStarted = false
+    this.webNextStartTime = 0
+    this.webFirstScheduledAt = 0
+    if (this.traceState) this._flushTraceSummary()
+    this.turnSealRequested = false
+    if (this.onPlayEnd) this.onPlayEnd()
+    return true
+  }
+
+  getEstimatedRemainingMs() {
+    if (this.playbackMode === PLAYBACK_MODE_WEB_AUDIO && this.webAudioCtx) {
+      return Math.max(0, Math.ceil((this.webNextStartTime - Number(this.webAudioCtx.currentTime || 0)) * 1000))
+    }
+    const elapsed = this.currentSegmentStartedAt ? Date.now() - this.currentSegmentStartedAt : 0
+    const currentRemaining = Math.max(0, this.currentSegmentDurationMs - elapsed)
+    const queuedBytes = this.segmentQueue.reduce((sum, item) => sum + (item ? item.byteLength : 0), 0)
+      + this.pendingBytes
+    return currentRemaining
+      + this.preparingSegmentDurationMs
+      + Math.ceil((queuedBytes / (SAMPLE_RATE * CHANNELS * (BIT_DEPTH / 8))) * 1000)
+  }
+
+  _trackTempFile(filePath) {
+    if (!filePath || this.tempFilePaths.includes(filePath)) return
+    this.tempFilePaths.push(filePath)
+  }
+
+  _deleteTempFile(filePath) {
+    if (!filePath) return
+    this.tempFilePaths = this.tempFilePaths.filter(item => item !== filePath)
+    try {
+      const fs = wx.getFileSystemManager()
+      if (!fs || typeof fs.unlink !== 'function') return
+      fs.unlink({
+        filePath,
+        fail: () => {},
+      })
+    } catch (e) {}
+  }
+
+  _cleanupTempFiles() {
+    const paths = this.tempFilePaths.slice()
+    this.tempFilePaths = []
+    paths.forEach(filePath => this._deleteTempFile(filePath))
+  }
+
+  _emitPlaybackEvent(name, details) {
+    if (!this.onPlaybackEvent) return
+    this.onPlaybackEvent(Object.assign({
+      name,
+      at: Date.now(),
+      generation: this.playbackGeneration,
+    }, details || {}))
+  }
+
+  _startPlaybackTurnIfNeeded() {
+    if (this.traceState) return
+    this.playbackGeneration += 1
+    this._ensureTraceState()
   }
 
   _ensureTraceState() {
@@ -503,6 +974,7 @@ class AudioPlayer {
       : 0
     console.log('[AudioTrace] summary', {
       traceId: this.traceState.traceId,
+      playbackMode: this.playbackMode,
       inputBytes: this.traceState.inputBytes,
       enqueueSegments: this.traceState.segmentEnqueueCount,
       playedSegments: this.traceState.playSegmentCount,
@@ -511,13 +983,20 @@ class AudioPlayer {
       endedCount: this.traceState.endedCount,
       writeAvgMs: writeAvg,
       switchAvgMs: switchAvg,
+      webUnderrunCount: this.webUnderrunCount,
       staleCallbackCount: this.traceState.staleCallbackCount,
     })
-    if (this.traceState.playSegmentCount > AUDIO_STUTTER_WARN_SEGMENTS || switchAvg > AUDIO_STUTTER_WARN_SWITCH_AVG_MS) {
+    const hasTooManyFileSegments = this.playbackMode !== PLAYBACK_MODE_WEB_AUDIO
+      && this.traceState.playSegmentCount > AUDIO_STUTTER_WARN_SEGMENTS
+    if (hasTooManyFileSegments
+      || switchAvg > AUDIO_STUTTER_WARN_SWITCH_AVG_MS
+      || this.webUnderrunCount > 0) {
       console.warn('[AudioTrace] stutter-risk', {
         traceId: this.traceState.traceId,
+        playbackMode: this.playbackMode,
         playedSegments: this.traceState.playSegmentCount,
         switchAvgMs: switchAvg,
+        webUnderrunCount: this.webUnderrunCount,
         thresholds: {
           playedSegments: AUDIO_STUTTER_WARN_SEGMENTS,
           switchAvgMs: AUDIO_STUTTER_WARN_SWITCH_AVG_MS,
@@ -585,4 +1064,6 @@ module.exports = {
   AudioPlayer,
   SAMPLE_RATE,
   FRAME_SIZE,
+  PLAYBACK_MODE_SINGLE_WAV,
+  PLAYBACK_MODE_WEB_AUDIO,
 }

@@ -27,6 +27,9 @@ function createRecorderManagerMock() {
 
 function createInnerAudioContextMock() {
   const handlers = {
+    onPlay: null,
+    onCanplay: null,
+    onWaiting: null,
     onEnded: null,
     onError: null,
   }
@@ -35,8 +38,20 @@ function createInnerAudioContextMock() {
     play: jest.fn(),
     stop: jest.fn(),
     destroy: jest.fn(),
+    onPlay: jest.fn((cb) => { handlers.onPlay = cb }),
+    onCanplay: jest.fn((cb) => { handlers.onCanplay = cb }),
+    onWaiting: jest.fn((cb) => { handlers.onWaiting = cb }),
     onEnded: jest.fn((cb) => { handlers.onEnded = cb }),
     onError: jest.fn((cb) => { handlers.onError = cb }),
+    __emitPlay() {
+      if (handlers.onPlay) handlers.onPlay()
+    },
+    __emitCanplay() {
+      if (handlers.onCanplay) handlers.onCanplay()
+    },
+    __emitWaiting() {
+      if (handlers.onWaiting) handlers.onWaiting()
+    },
     __emitEnded() {
       if (handlers.onEnded) handlers.onEnded()
     },
@@ -44,6 +59,44 @@ function createInnerAudioContextMock() {
       if (handlers.onError) handlers.onError(err)
     },
   }
+}
+
+function createWebAudioContextMock() {
+  const sources = []
+  const context = {
+    state: 'running',
+    currentTime: 0,
+    destination: {},
+    createBuffer: jest.fn((channels, length, sampleRate) => {
+      const channelData = new Float32Array(length)
+      return {
+        numberOfChannels: channels,
+        length,
+        sampleRate,
+        duration: length / sampleRate,
+        getChannelData: jest.fn(() => channelData),
+      }
+    }),
+    createBufferSource: jest.fn(() => {
+      const source = {
+        buffer: null,
+        onended: null,
+        connect: jest.fn(),
+        disconnect: jest.fn(),
+        start: jest.fn(),
+        stop: jest.fn(),
+        __emitEnded() {
+          if (source.onended) source.onended()
+        },
+      }
+      sources.push(source)
+      return source
+    }),
+    resume: jest.fn(() => Promise.resolve()),
+    close: jest.fn(() => Promise.resolve()),
+    __sources: sources,
+  }
+  return context
 }
 
 function createSocketTaskMock() {
@@ -78,23 +131,48 @@ function createSocketTaskMock() {
 function createWxMock() {
   const storage = {}
   const recorder = createRecorderManagerMock()
-  const audioContext = createInnerAudioContextMock()
+  const audioContexts = []
+  const webAudioContext = createWebAudioContextMock()
   const socketTask = createSocketTaskMock()
 
+  let autoCompleteWrites = true
+  const pendingWrites = []
   const fsMock = {
-    writeFile: jest.fn(({ success }) => {
+    writeFile: jest.fn((options) => {
+      if (autoCompleteWrites) {
+        if (options.success) options.success()
+        return
+      }
+      pendingWrites.push(options)
+    }),
+    unlink: jest.fn(({ success }) => {
       if (success) success()
     }),
+    __setAutoComplete(value) {
+      autoCompleteWrites = Boolean(value)
+    },
+    __completeNextWrite() {
+      const options = pendingWrites.shift()
+      if (options && options.success) options.success()
+    },
+    __failNextWrite(error = { errMsg: 'write failed' }) {
+      const options = pendingWrites.shift()
+      if (options && options.fail) options.fail(error)
+    },
   }
 
-  const wx = {
+  let wx = null
+  wx = {
     env: {
       USER_DATA_PATH: '/tmp',
     },
     __storage: storage,
     __recorder: recorder,
-    __audioContext: audioContext,
+    __audioContext: null,
+    __audioContexts: audioContexts,
+    __webAudioContext: webAudioContext,
     __socketTask: socketTask,
+    __fs: fsMock,
     getStorageSync: jest.fn((key) => storage[key]),
     setStorageSync: jest.fn((key, value) => {
       storage[key] = value
@@ -104,7 +182,13 @@ function createWxMock() {
     }),
     connectSocket: jest.fn(() => socketTask),
     getRecorderManager: jest.fn(() => recorder),
-    createInnerAudioContext: jest.fn(() => audioContext),
+    createInnerAudioContext: jest.fn(() => {
+      const audioContext = createInnerAudioContextMock()
+      audioContexts.push(audioContext)
+      wx.__audioContext = audioContext
+      return audioContext
+    }),
+    createWebAudioContext: jest.fn(() => webAudioContext),
     getFileSystemManager: jest.fn(() => fsMock),
     authorize: jest.fn(({ success }) => {
       if (success) success()

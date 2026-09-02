@@ -1,5 +1,11 @@
 const { RealtimeAPIClient } = require('../../utils/realtime-api')
-const { AudioRecorder, AudioPlayer, FRAME_SIZE } = require('../../utils/audio')
+const {
+  AudioRecorder,
+  AudioPlayer,
+  FRAME_SIZE,
+  PLAYBACK_MODE_SINGLE_WAV,
+  PLAYBACK_MODE_WEB_AUDIO,
+} = require('../../utils/audio')
 const store = require('../../utils/store')
 const { generateSummary, applyLocalSummary } = require('../../utils/call-finalizer')
 const reminderExtractor = require('../../utils/reminder-extractor')
@@ -99,6 +105,8 @@ const console = {
 const SUBTITLE_THROTTLE_MS = 120
 const USER_DRAFT_THROTTLE_MS = 120
 const TRANSCRIPT_MAX_ITEMS = 30
+const LATENCY_SAMPLE_STORAGE_KEY = 'realtimeLatencySamplesV2'
+const LATENCY_SAMPLE_STORAGE_MAX = 200
 const ENABLE_AUTO_SESSION_REFRESH = false
 const FLOW_LOG_PREFIX = '[CallFlow]'
 const ALLOW_UPLINK_DURING_PLAYBACK = false
@@ -107,6 +115,7 @@ const UPLINK_IDLE_TRIGGER_MS = 1800
 const GREETING_ECHO_GUARD_MAX_MS = 8000
 const RECORDER_RESTART_COOLDOWN_MS = 3500
 const PLAYBACK_ECHO_TAIL_GUARD_MS = 420
+const ASSISTANT_TURN_PROGRESS_MAX_MS = 45000
 const REMINDER_COMPLETE_HINTS = ['完成了', '已完成', '已经完成', '完成啦', '办好了', '办完了', '弄好了', '弄完了', '已经好了', '处理好了', '处理完了', '做完了', '搞定了', '解决了']
 const REMINDER_INCOMPLETE_HINTS = ['还没', '还没有', '没做完', '没完成', '没有完成', '未完成', '还没弄好', '还没办好', '没处理完', '还在弄', '没来得及', '忘了']
 const NO_MORE_CHAT_HINTS = ['没有了', '没了', '没别的', '没其他', '不用了', '先这样', '不聊了', '没什么了', '就这样吧', '不用聊了']
@@ -116,7 +125,8 @@ const END_CALL_INTENT_HINTS = ['先这样吧', '先这样了', '就这样吧', '
 const GREETING_MEMORY_COOLDOWN_MS = 48 * 60 * 60 * 1000
 const MIN_CONNECTING_UI_MS = 2200
 const CONNECTING_FALLBACK_MS = 6500
-const INCOMING_AUTO_END_PLAYBACK_GRACE_MS = 1800
+const INCOMING_AUTO_END_MIN_GRACE_MS = 5000
+const INCOMING_AUTO_END_MARGIN_MS = 3000
 const SPEAKER_FALLBACK_CHAIN = [
   'saturn_zh_female_wenrouwenya_tob',
   'saturn_zh_female_tiexinnvyou_tob',
@@ -129,12 +139,20 @@ const BOUNDARY_VIOLATION_PATTERNS = [
 const BOUNDARY_SAFE_REPLY = '我不能线下陪同或代办，但我可以马上帮您联系对应的人。您这件事我建议先联系家人；如果是紧急不适，我现在就帮您优先联系120。'
 const DEFAULT_VOICE_PRESET = 'expressive'
 const UPLINK_CHUNK_BYTES = FRAME_SIZE || 640
-const SC20_EXPERIMENT_TAG = 'sc20_v1_wenrouwenya_keepalive_vad1300'
+const VAD_EXPERIMENT_WINDOWS_MS = Object.freeze([800, 1000, 1300])
+const ACTIVE_VAD_WINDOW_MS = 1300
+const AUDIO_PLAYBACK_MODE = PLAYBACK_MODE_SINGLE_WAV
+const PLAYBACK_EXPERIMENT_MODES = Object.freeze([
+  PLAYBACK_MODE_SINGLE_WAV,
+  PLAYBACK_MODE_WEB_AUDIO,
+])
+const INNER_AUDIO_USE_WEB_AUDIO_IMPLEMENT = false
+const SC20_EXPERIMENT_TAG = `sc20_v2_${AUDIO_PLAYBACK_MODE}_innerweb${INNER_AUDIO_USE_WEB_AUDIO_IMPLEMENT ? 1 : 0}_vad${ACTIVE_VAD_WINDOW_MS}`
 const DEFAULT_ASR_PROFILE = Object.freeze({
   mode: 'steady',
   enableCustomVad: true,
   // 用户反馈思考停顿容易被提前判停，默认回调到更稳妥窗口
-  endSmoothWindowMs: 1300,
+  endSmoothWindowMs: ACTIVE_VAD_WINDOW_MS,
   enableAsrTwopass: true,
   hotwords: [
     '小林', '提醒', '提醒我', '叫我', '通知我',
@@ -152,8 +170,8 @@ const DEFAULT_ASR_PROFILE = Object.freeze({
   },
 })
 const LATENCY_BASELINE_TARGET = Object.freeze({
-  playP50MaxMs: 2200,
-  playP90MaxMs: 3600,
+  playP50MaxMs: 1800,
+  playP90MaxMs: 2500,
 })
 const CARE_RESPONSE_PLAYBOOK = [
   '关怀策略卡：先接住情绪（复述感受）-> 再追问一个具体细节（时间/地点/人物）-> 再给1-2条电话内可执行建议 -> 最后温和收束并确认是否需要继续帮忙。',
@@ -218,9 +236,16 @@ Page({
   onLoad(options) {
     this.client = new RealtimeAPIClient()
     this.recorder = new AudioRecorder()
-    this.player = new AudioPlayer()
+    this.player = new AudioPlayer({
+      playbackMode: AUDIO_PLAYBACK_MODE,
+      playbackGeneration: 0,
+      useWebAudioImplement: INNER_AUDIO_USE_WEB_AUDIO_IMPLEMENT,
+    })
     this.timer = null
     this.chatBuffer = ''
+    this.currentAssistantReplyId = ''
+    this.ttsSentenceBuffer = ''
+    this.ttsSentenceReplyId = ''
     this.pendingAssistantDraft = ''
     this.messages = []
     this.hasFinalizedCall = false
@@ -235,6 +260,19 @@ Page({
     this.pendingUserDraft = ''
     this.currentLatencyTurn = null
     this.latencySamples = []
+    this.latencyRunId = `latency_${Date.now()}_${Math.floor(Math.random() * 1000)}`
+    this.latencyTurnSeq = 0
+    this.localVadState = {
+      noiseFloor: 180,
+      threshold: 540,
+      speechActive: false,
+      voicedFrames: 0,
+      silenceFrames: 0,
+      candidateVoiceAt: 0,
+      candidateConfidence: 0,
+      lastVoiceAt: 0,
+      confidence: 0,
+    }
     this.lastUplinkBlockReason = ''
     this.isRecoveringDisconnect = false
     this.lastAudioUplinkAt = 0
@@ -242,6 +280,8 @@ Page({
     this.silenceFrame = null
     this.initialEchoGuardActive = true
     this.waitingGreetingPlaybackEnd = false
+    this.assistantTurnInProgress = false
+    this.assistantTurnProgressTimer = null
     this.greetingEchoGuardTimer = null
     this.lastRecorderRestartAt = 0
     this.playbackEchoGuardUntil = 0
@@ -485,7 +525,11 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         return
       }
       // 服务端存在 audio idle timeout，默认允许播放期继续上行，避免会话被判定空闲
-      if (!ALLOW_UPLINK_DURING_PLAYBACK && this.player && this.player.playing) {
+      if (!ALLOW_UPLINK_DURING_PLAYBACK && this.player
+        && (this.assistantTurnInProgress
+          || this.player.playing
+          || this.player.preparingSegment
+          || this.player.webPreparing)) {
         if (this.lastUplinkBlockReason !== 'playing') {
           this.lastUplinkBlockReason = 'playing'
           console.warn(FLOW_LOG_PREFIX, '上行暂时阻断: AI 播放中')
@@ -514,11 +558,21 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         console.log(FLOW_LOG_PREFIX, '上行恢复发送')
         this.lastUplinkBlockReason = ''
       }
+      this._trackLocalVoiceFrame(pcmBuffer, Date.now())
       this._sendAudioIn20msFrames(pcmBuffer)
     }
 
     // ASR：用户说话识别
-    this.client.onASRText = (text, isFinal) => {
+    this.client.onASRStart = (meta) => {
+      const turn = this._ensureLatencyTurn(meta)
+      turn.asrInfoAt = (meta && meta.receivedAt) || Date.now()
+      turn.asrStartSynthetic = Boolean(meta && meta.synthetic)
+      this._recordLatencyEvent('asr_start', meta)
+    }
+
+    this.client.onASRText = (text, isFinal, meta) => {
+      this._ensureLatencyTurn(meta)
+      this._recordLatencyEvent(isFinal ? 'asr_final' : 'asr_interim', meta)
       this._markCallConnectedIfNeeded('asr')
       const visibleText = this._sanitizeForDisplay(text)
       this.pendingUserDraft = visibleText || ''
@@ -539,20 +593,22 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     }
 
     // ASR 结束：用户停止说话
-    this.client.onASREnd = () => {
+    this.client.onASREnd = (meta) => {
       this.setData({ isSpeaking: false, currentUserDraft: '' })
       console.log(FLOW_LOG_PREFIX, 'ASR 结束，等待模型回复')
-      this.currentLatencyTurn = {
-        userEndAt: Date.now(),
-        firstChatAt: 0,
-        firstTTSAt: 0,
-        playStartAt: 0,
-        finalized: false,
-      }
+      const turn = this._ensureLatencyTurn(meta)
+      turn.asrEndAt = (meta && meta.receivedAt) || Date.now()
+      turn.userSpeechEndLocalAt = this.localVadState.lastVoiceAt || 0
+      turn.userSpeechEndConfidence = this.localVadState.confidence || 0
+      this._recordLatencyEvent('asr_end', meta, turn.asrEndAt)
     }
 
     // AI 回复文本（流式）
-    this.client.onChatText = (text) => {
+    this.client.onChatText = (text, meta) => {
+      if (this._isStaleForCurrentLatencyTurn(meta)) return
+      this._ensureLatencyTurn(meta, false)
+      this._recordLatencyEvent('chat_response', meta)
+      this._markAssistantTurnInProgress()
       this._markCallConnectedIfNeeded('chat')
       this.chatBuffer += text
       this.currentTurnBoundaryViolated = this.currentTurnBoundaryViolated || this._isBoundaryViolationText(this.chatBuffer)
@@ -565,31 +621,69 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         this.setData({ isSpeaking: false, currentUserDraft: '' })
       }
       if (this.currentLatencyTurn && !this.currentLatencyTurn.firstChatAt) {
-        this.currentLatencyTurn.firstChatAt = Date.now()
+        this.currentLatencyTurn.firstChatAt = (meta && meta.receivedAt) || Date.now()
         console.log(FLOW_LOG_PREFIX, '收到首个聊天文本分片')
+      }
+    }
+    this.client.onChatEnd = (meta) => {
+      if (this._isStaleForCurrentLatencyTurn(meta)) return
+      const turn = this._ensureLatencyTurn(meta, false)
+      if (turn) {
+        turn.chatEndAt = (meta && meta.receivedAt) || Date.now()
+        this._recordLatencyEvent('chat_end', meta, turn.chatEndAt)
       }
     }
 
     // TTS 音频数据
-    this.client.onAudioData = (audioData) => {
+    this.client.onAudioData = (audioData, meta) => {
+      if (this._isStaleForCurrentLatencyTurn(meta)) return
+      this._ensureLatencyTurn(meta, false)
+      this._recordLatencyEvent('tts_audio', meta)
+      this._markAssistantTurnInProgress()
       this._markCallConnectedIfNeeded('audio')
       this.player.appendChunk(audioData)
       if (this.currentLatencyTurn && !this.currentLatencyTurn.firstTTSAt) {
-        this.currentLatencyTurn.firstTTSAt = Date.now()
+        this.currentLatencyTurn.firstTTSAt = (meta && meta.receivedAt) || Date.now()
         console.log(FLOW_LOG_PREFIX, '收到首个 TTS 音频分片')
       }
     }
 
     // AI 开始说新的一句
-    this.client.onTTSStart = (text) => {
+    this.client.onTTSStart = (text, meta) => {
+      if (this._isStaleForCurrentLatencyTurn(meta)) return
+      const latencyTurn = this._ensureLatencyTurn(meta, false)
+      this._recordLatencyEvent('tts_sentence_start', meta)
+      this._markAssistantTurnInProgress()
       this._markCallConnectedIfNeeded('tts_start')
-      this._flushAssistantDraft(true)
-      const seededAssistantDraft = this._sanitizeForDisplay(text)
+      const replyId = (meta && meta.replyId) || ''
+      const isNewReply = Boolean(replyId && this.currentAssistantReplyId !== replyId)
+      if (isNewReply) this._flushAssistantDraft(true)
+      if (replyId && this.ttsSentenceReplyId !== replyId) {
+        this.ttsSentenceReplyId = replyId
+        this.ttsSentenceBuffer = ''
+      }
+      const sentenceText = this._sanitizeForDisplay(text)
+      if (sentenceText
+        && this.ttsSentenceBuffer !== sentenceText
+        && !this.ttsSentenceBuffer.endsWith(sentenceText)) {
+        this.ttsSentenceBuffer += sentenceText
+      }
+      this.currentTurnBoundaryViolated = this.currentTurnBoundaryViolated
+        || this._isBoundaryViolationText(this.ttsSentenceBuffer)
+      const seededAssistantDraft = sentenceText
         || this.pendingAssistantDraft
         || this.data.currentAssistantDraft
-      this.chatBuffer = ''
-      this.pendingAssistantDraft = seededAssistantDraft || ''
-      this.currentTurnBoundaryViolated = false
+      if (isNewReply) {
+        this.currentAssistantReplyId = replyId
+        if (latencyTurn) latencyTurn.replyId = replyId
+      }
+      if (!this.chatBuffer && this.ttsSentenceBuffer) {
+        this.pendingAssistantDraft = this.currentTurnBoundaryViolated
+          ? BOUNDARY_SAFE_REPLY
+          : this.ttsSentenceBuffer
+      } else if (!this.pendingAssistantDraft) {
+        this.pendingAssistantDraft = seededAssistantDraft || ''
+      }
       this.setData({
         currentUserDraft: '',
         currentAssistantDraft: seededAssistantDraft || '',
@@ -599,26 +693,44 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         isAssistantSpeaking: true,
       })
     }
+    this.client.onTTSSentenceEnd = (meta) => {
+      if (this._isStaleForCurrentLatencyTurn(meta)) return
+      this._recordLatencyEvent('tts_sentence_end', meta)
+    }
 
     // AI 这一轮说完
-    this.client.onTTSEnd = () => {
+    this.client.onTTSEnd = (meta) => {
+      if (this._isStaleForCurrentLatencyTurn(meta)) return
+      this._clearAssistantTurnProgress('tts_end')
+      const latencyTurn = this._ensureLatencyTurn(meta, false)
+      if (latencyTurn) {
+        latencyTurn.ttsEndAt = (meta && meta.receivedAt) || Date.now()
+        this._recordLatencyEvent('tts_end', meta, latencyTurn.ttsEndAt)
+      }
       if (this.currentTurnBoundaryViolated) {
         console.warn(FLOW_LOG_PREFIX, '检测到越界话术，丢弃当前语音并触发安全重说')
         this.player.stop()
         this.chatBuffer = ''
+        this.ttsSentenceBuffer = ''
+        this.ttsSentenceReplyId = ''
         this.pendingAssistantDraft = BOUNDARY_SAFE_REPLY
         this._flushAssistantDraft(true)
         this._appendTranscriptItem('assistant', BOUNDARY_SAFE_REPLY)
         this.setData({ currentAssistantDraft: '', isAssistantSpeaking: false })
         this._triggerBoundarySafeRepair()
-        this._finalizeLatencyTurn()
+        this._finalizeLatencyTurn('boundary_repair')
         return
       }
       this._flushAssistantDraft(true)
+      const chatText = String(this.chatBuffer || '')
+      const ttsSentenceText = String(this.ttsSentenceBuffer || '')
+      const generatedAssistantText = chatText.length >= ttsSentenceText.length
+        ? chatText
+        : ttsSentenceText
       const finalVisibleAssistant = this._sanitizeForDisplay(
-        this.chatBuffer || this.pendingAssistantDraft || this.data.currentAssistantDraft
+        generatedAssistantText || this.pendingAssistantDraft || this.data.currentAssistantDraft
       )
-      const finalRawAssistant = this.chatBuffer || this.pendingAssistantDraft || this.data.currentAssistantDraft
+      const finalRawAssistant = generatedAssistantText || this.pendingAssistantDraft || this.data.currentAssistantDraft
       const hasAssistantTurn = !!finalVisibleAssistant
       const isFirstAssistantTurn = this.assistantTurnCount === 0 && hasAssistantTurn
       this.player.playBuffered()
@@ -633,8 +745,11 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       if (isFirstAssistantTurn) {
         this.waitingGreetingPlaybackEnd = true
       }
-      this._finalizeLatencyTurn()
+      this._tryFinalizeLatencyTurn()
       this.chatBuffer = ''
+      this.currentAssistantReplyId = ''
+      this.ttsSentenceBuffer = ''
+      this.ttsSentenceReplyId = ''
       this.pendingAssistantDraft = ''
       this.setData({ currentAssistantDraft: '' })
       if (this.incomingFollowupState && this.incomingFollowupState.shouldAutoEndAfterAssistant) {
@@ -657,6 +772,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
 
     this.client.onError = (err) => {
       console.error('[Call] API error:', err)
+      this._clearAssistantTurnProgress('api_error')
       if (!err || this.data.status !== 'connected') return
       if (this._isInvalidSpeakerError(err)) {
         console.warn(FLOW_LOG_PREFIX, '检测到 InvalidSpeaker，尝试切换音色并恢复会话')
@@ -674,34 +790,64 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     // WebSocket 意外断开时优先尝试恢复，恢复失败再结束通话
     this.client.onDisconnect = () => {
       console.log('[Call] WebSocket disconnected')
+      this._clearAssistantTurnProgress('disconnect')
       if (this.data.status === 'connected') {
         if (this.isRefreshingSession || this.isRecoveringDisconnect) return
         this._recoverAfterDisconnect()
       }
     }
 
-    this.client.onFirstChatPacket = (ts) => {
+    this.client.onFirstChatPacket = (ts, meta) => {
+      if (this._isStaleForCurrentLatencyTurn(meta)) return
       if (this.currentLatencyTurn && !this.currentLatencyTurn.firstChatAt) {
         this.currentLatencyTurn.firstChatAt = ts || Date.now()
+        this._recordLatencyEvent('first_chat_packet', meta, this.currentLatencyTurn.firstChatAt)
       }
     }
 
-    this.client.onFirstTTSAudioPacket = (ts) => {
+    this.client.onFirstTTSAudioPacket = (ts, meta) => {
+      if (this._isStaleForCurrentLatencyTurn(meta)) return
       if (this.currentLatencyTurn && !this.currentLatencyTurn.firstTTSAt) {
         this.currentLatencyTurn.firstTTSAt = ts || Date.now()
+        this._recordLatencyEvent('first_tts_packet', meta, this.currentLatencyTurn.firstTTSAt)
       }
     }
 
-    this.player.onPlayStart = () => {
+    this.player.onPlayStart = (playMeta) => {
       this.playbackEchoGuardUntil = 0
       this.setData({ isAssistantSpeaking: true })
       if (this.currentLatencyTurn && !this.currentLatencyTurn.playStartAt) {
-        this.currentLatencyTurn.playStartAt = Date.now()
+        this.currentLatencyTurn.playStartAt = (playMeta && playMeta.at) || Date.now()
+        this.currentLatencyTurn.playStartSource = (playMeta && playMeta.source) || 'inner_audio_on_play'
+        this._recordLatencyEvent('play_start', playMeta, this.currentLatencyTurn.playStartAt)
       }
+      this._tryFinalizeLatencyTurn()
+      if (this._hasPendingAutoEndAfterPlayback()) this._startIncomingAutoEndGuard()
       console.log(FLOW_LOG_PREFIX, '播放器开始播放')
     }
+    this.player.onPlaybackScheduled = (playMeta) => {
+      if (this.currentLatencyTurn && !this.currentLatencyTurn.playScheduledAt) {
+        this.currentLatencyTurn.playScheduledAt = (playMeta && playMeta.at) || Date.now()
+        this._recordLatencyEvent('play_scheduled', playMeta, this.currentLatencyTurn.playScheduledAt)
+      }
+    }
+    this.player.onPlaybackEvent = (event) => {
+      if (!event || !event.name) return
+      this._recordLatencyEvent(event.name, event, event.at)
+    }
+    this.player.onPlayError = (errorMeta) => {
+      this._recordLatencyEvent('play_error', errorMeta)
+    }
     this.player.onPlayEnd = () => {
+      this._clearAssistantTurnProgress('play_end')
       this.setData({ isAssistantSpeaking: false })
+      if (this.currentLatencyTurn && this.currentLatencyTurn.ttsEndAt) {
+        if (this.currentLatencyTurn.playStartAt) {
+          this._tryFinalizeLatencyTurn()
+        } else {
+          this._finalizeLatencyTurn('playback_ended_without_real_start')
+        }
+      }
       if (this.waitingGreetingPlaybackEnd) {
         this.waitingGreetingPlaybackEnd = false
         this.initialEchoGuardActive = false
@@ -721,6 +867,33 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       }
       console.log(FLOW_LOG_PREFIX, '播放器播放结束')
     }
+  },
+
+  _markAssistantTurnInProgress() {
+    this.assistantTurnInProgress = true
+    if (this.assistantTurnProgressTimer) {
+      clearTimeout(this.assistantTurnProgressTimer)
+    }
+    this.assistantTurnProgressTimer = setTimeout(() => {
+      this.assistantTurnProgressTimer = null
+      if (!this.assistantTurnInProgress) return
+      this.assistantTurnInProgress = false
+      this._recordLatencyEvent('assistant_progress_watchdog', {
+        timeoutMs: ASSISTANT_TURN_PROGRESS_MAX_MS,
+      })
+      console.warn(FLOW_LOG_PREFIX, 'AI 生成状态超时解锁；实际播放仍由播放器状态阻断上行')
+    }, ASSISTANT_TURN_PROGRESS_MAX_MS)
+  },
+
+  _clearAssistantTurnProgress(reason) {
+    if (this.assistantTurnProgressTimer) {
+      clearTimeout(this.assistantTurnProgressTimer)
+      this.assistantTurnProgressTimer = null
+    }
+    if (this.assistantTurnInProgress) {
+      this._recordLatencyEvent('assistant_progress_cleared', { reason })
+    }
+    this.assistantTurnInProgress = false
   },
 
   _startUplinkKeepalive() {
@@ -745,7 +918,8 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       if (this.isRefreshingSession || this.isRecoveringDisconnect) return
       if (!ALLOW_UPLINK_DURING_PLAYBACK) {
         if (this.initialEchoGuardActive) return
-        if (this.player && this.player.playing) return
+        if (this.assistantTurnInProgress) return
+        if (this.player && (this.player.playing || this.player.preparingSegment || this.player.webPreparing)) return
         if (Date.now() < this.playbackEchoGuardUntil) return
       }
       const now = Date.now()
@@ -813,15 +987,45 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
 
   _startIncomingAutoEndGuard() {
     this._clearIncomingAutoEndGuard()
+    const rawEstimatedRemainingMs = this.player && typeof this.player.getEstimatedRemainingMs === 'function'
+      ? Number(this.player.getEstimatedRemainingMs())
+      : 0
+    const estimatedRemainingMs = Number.isFinite(rawEstimatedRemainingMs)
+      ? Math.max(0, rawEstimatedRemainingMs)
+      : 0
+    const graceMs = Math.max(
+      INCOMING_AUTO_END_MIN_GRACE_MS,
+      estimatedRemainingMs + INCOMING_AUTO_END_MARGIN_MS
+    )
+    this._recordLatencyEvent('auto_end_armed', {
+      estimatedRemainingMs,
+      graceMs,
+    })
     this.incomingAutoEndTimer = setTimeout(() => {
+      this.incomingAutoEndTimer = null
       if (!this._hasPendingAutoEndAfterPlayback()) return
+      const playbackBusy = this.player && (
+        this.player.playing
+        || this.player.preparingSegment
+        || this.player.webPreparing
+      )
+      if (playbackBusy) {
+        this._recordLatencyEvent('auto_end_extended', {
+          estimatedRemainingMs: this.player && typeof this.player.getEstimatedRemainingMs === 'function'
+            ? this.player.getEstimatedRemainingMs()
+            : 0,
+        })
+        this._startIncomingAutoEndGuard()
+        return
+      }
+      this._recordLatencyEvent('auto_end_triggered', { graceMs })
       this._clearPendingAutoEndAfterPlayback()
       this._endCall({
         reason: 'hangup',
         shouldDisconnect: true,
         shouldNavigateBack: true,
       })
-    }, INCOMING_AUTO_END_PLAYBACK_GRACE_MS)
+    }, graceMs)
   },
 
   _clearIncomingAutoEndGuard() {
@@ -852,6 +1056,61 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     // 16kHz, 16bit, mono, 20ms => 640 bytes
     this.silenceFrame = new ArrayBuffer(640)
     return this.silenceFrame
+  },
+
+  _trackLocalVoiceFrame(pcmBuffer, capturedAt) {
+    if (!pcmBuffer || !this.localVadState) return
+    const bytes = new Uint8Array(pcmBuffer)
+    const sampleCount = Math.floor(bytes.byteLength / 2)
+    if (sampleCount <= 0) return
+    const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2)
+    let squareSum = 0
+    for (let i = 0; i < sampleCount; i += 1) {
+      const sample = view.getInt16(i * 2, true)
+      squareSum += sample * sample
+    }
+    const rms = Math.sqrt(squareSum / sampleCount)
+    const state = this.localVadState
+    const adaptiveThreshold = Math.max(360, Math.min(2400, state.noiseFloor * 3))
+    state.threshold = adaptiveThreshold
+    const voiced = rms >= adaptiveThreshold
+    if (voiced) {
+      const frameAt = capturedAt || Date.now()
+      const frameConfidence = Math.min(
+        1,
+        Math.max(0, (rms - adaptiveThreshold) / Math.max(1, adaptiveThreshold))
+      )
+      state.silenceFrames = 0
+      if (state.speechActive) {
+        state.lastVoiceAt = frameAt
+        state.confidence = Math.max(state.confidence, frameConfidence)
+        return
+      }
+      state.voicedFrames += 1
+      if (state.voicedFrames === 1) {
+        state.candidateVoiceAt = frameAt
+        state.candidateConfidence = frameConfidence
+        return
+      }
+      state.speechActive = true
+      state.lastVoiceAt = frameAt
+      state.confidence = Math.max(state.candidateConfidence, frameConfidence)
+      return
+    }
+
+    state.silenceFrames += 1
+    if (!state.speechActive) {
+      state.noiseFloor = Math.max(80, (state.noiseFloor * 0.95) + (rms * 0.05))
+      state.voicedFrames = 0
+      state.candidateVoiceAt = 0
+      state.candidateConfidence = 0
+    }
+    if (state.speechActive && state.silenceFrames >= 5) {
+      state.speechActive = false
+      state.voicedFrames = 0
+      state.candidateVoiceAt = 0
+      state.candidateConfidence = 0
+    }
   },
 
   _sendAudioIn20msFrames(pcmBuffer) {
@@ -893,6 +1152,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     })
     this._appendTranscriptItem('assistant', reason === 'disconnect' ? '网络中断，通话已结束' : '通话已结束')
     this._clearGreetingEchoGuardFailsafe()
+    this._clearAssistantTurnProgress(`call_end:${reason}`)
     if (this.connectingFallbackTimer) {
       clearTimeout(this.connectingFallbackTimer)
       this.connectingFallbackTimer = null
@@ -1079,7 +1339,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
 
     if (this.assistantDraftFlushTimer) return
     const now = Date.now()
-    const elapsed = now - this.assistantDraftLastFlushAt
+    const elapsed = now - Number(this.assistantDraftLastFlushAt || 0)
     const waitMs = elapsed >= SUBTITLE_THROTTLE_MS ? 0 : (SUBTITLE_THROTTLE_MS - elapsed)
     this.assistantDraftFlushTimer = setTimeout(() => {
       this.assistantDraftFlushTimer = null
@@ -1108,7 +1368,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     }
     if (this.userDraftFlushTimer) return
     const now = Date.now()
-    const elapsed = now - this.userDraftLastFlushAt
+    const elapsed = now - Number(this.userDraftLastFlushAt || 0)
     const waitMs = elapsed >= USER_DRAFT_THROTTLE_MS ? 0 : (USER_DRAFT_THROTTLE_MS - elapsed)
     this.userDraftFlushTimer = setTimeout(() => {
       this.userDraftFlushTimer = null
@@ -1145,34 +1405,304 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     return output.replace(/\s+/g, ' ').trim()
   },
 
-  _finalizeLatencyTurn() {
+  _isStaleForCurrentLatencyTurn(meta) {
     const turn = this.currentLatencyTurn
-    if (!turn || turn.finalized || !turn.userEndAt) return
+    if (!turn || turn.finalized || !meta) return false
+    const questionId = String(meta.questionId || '')
+    const replyId = String(meta.replyId || '')
+    if (meta.clientTextQueryTransition && questionId) {
+      if (!turn.originalQuestionId) turn.originalQuestionId = turn.questionId
+      turn.questionId = questionId
+      turn.replyId = ''
+      this._recordLatencyEvent('client_text_query_transition', meta)
+      return false
+    }
+    const questionMismatch = Boolean(questionId && turn.questionId && questionId !== turn.questionId)
+    const replyMismatch = Boolean(replyId && turn.replyId && replyId !== turn.replyId)
+    if (!questionMismatch && !replyMismatch) return false
+    turn.droppedStaleEventCount = Number(turn.droppedStaleEventCount || 0) + 1
+    console.warn('[Call][Latency] 丢弃跨轮迟到事件', {
+      turnId: turn.turnId,
+      eventId: meta.eventId,
+      eventQuestionId: questionId,
+      eventReplyId: replyId,
+      activeQuestionId: turn.questionId,
+      activeReplyId: turn.replyId,
+    })
+    return true
+  },
+
+  _ensureLatencyTurn(meta, allowCreate = true) {
+    const questionId = String((meta && meta.questionId) || '')
+    if (this.currentLatencyTurn && !this.currentLatencyTurn.finalized) {
+      if (!questionId || !this.currentLatencyTurn.questionId || this.currentLatencyTurn.questionId === questionId) {
+        if (questionId && !this.currentLatencyTurn.questionId) this.currentLatencyTurn.questionId = questionId
+        if (meta && meta.replyId && !this.currentLatencyTurn.replyId) {
+          this.currentLatencyTurn.replyId = String(meta.replyId)
+        }
+        return this.currentLatencyTurn
+      }
+      if (!allowCreate) return null
+      this._finalizeLatencyTurn('superseded_by_new_question')
+    }
+    if (!allowCreate) return null
+
+    if (!this.latencyRunId) {
+      this.latencyRunId = `latency_${Date.now()}_${Math.floor(Math.random() * 1000)}`
+    }
+    this.latencyTurnSeq = Number(this.latencyTurnSeq || 0) + 1
+    if (!this.localVadState) {
+      this.localVadState = {
+        noiseFloor: 180,
+        threshold: 540,
+        speechActive: false,
+        voicedFrames: 0,
+        silenceFrames: 0,
+        candidateVoiceAt: 0,
+        candidateConfidence: 0,
+        lastVoiceAt: 0,
+        confidence: 0,
+      }
+    }
+    this.currentTurnBoundaryViolated = false
+    this.currentLatencyTurn = {
+      runId: this.latencyRunId,
+      turnId: `${this.latencyRunId}_turn_${this.latencyTurnSeq}`,
+      turnSeq: this.latencyTurnSeq,
+      questionId,
+      originalQuestionId: '',
+      replyId: String((meta && meta.replyId) || ''),
+      profileTag: this.sessionOptions && this.sessionOptions.profileTag
+        ? this.sessionOptions.profileTag
+        : SC20_EXPERIMENT_TAG,
+      playbackMode: AUDIO_PLAYBACK_MODE,
+      vadWindowMs: ACTIVE_VAD_WINDOW_MS,
+      userSpeechEndLocalAt: 0,
+      userSpeechEndConfidence: 0,
+      asrInfoAt: 0,
+      asrStartSynthetic: false,
+      asrFinalAt: 0,
+      asrEndAt: 0,
+      firstChatAt: 0,
+      chatEndAt: 0,
+      firstTTSAt: 0,
+      ttsEndAt: 0,
+      playScheduledAt: 0,
+      playStartAt: 0,
+      playStartSource: '',
+      wavWriteStartAt: [],
+      wavWriteEndAt: [],
+      playRequestedAt: [],
+      waitingCount: 0,
+      playbackErrorCount: 0,
+      droppedStaleEventCount: 0,
+      associationError: '',
+      finalized: false,
+      valid: false,
+      invalidReason: '',
+      events: [],
+    }
+    return this.currentLatencyTurn
+  },
+
+  _recordLatencyEvent(name, meta, at) {
+    const turn = this.currentLatencyTurn
+    if (!turn || turn.finalized) return
+    if (meta && meta.questionId && turn.questionId
+      && String(meta.questionId) !== turn.questionId) {
+      turn.associationError = 'question_id_mismatch'
+      return
+    }
+    if (meta && meta.replyId && turn.replyId
+      && String(meta.replyId) !== turn.replyId) {
+      turn.associationError = 'reply_id_mismatch'
+      return
+    }
+    if (meta && meta.generation && turn.playbackGeneration
+      && Number(meta.generation) !== turn.playbackGeneration) {
+      turn.associationError = 'playback_generation_mismatch'
+      return
+    }
+    const timestamp = Number(at || (meta && (meta.receivedAt || meta.at)) || Date.now())
+    if (name === 'asr_final' && !turn.asrFinalAt) turn.asrFinalAt = timestamp
+    if (name === 'wav_write_start') turn.wavWriteStartAt.push(timestamp)
+    if (name === 'wav_write_end') turn.wavWriteEndAt.push(timestamp)
+    if (name === 'play_requested') turn.playRequestedAt.push(timestamp)
+    if (name === 'inner_audio_waiting') turn.waitingCount += 1
+    if (name === 'play_error') turn.playbackErrorCount += 1
+    if (meta && meta.generation && !turn.playbackGeneration) {
+      turn.playbackGeneration = Number(meta.generation)
+    }
+    if (meta && meta.questionId && !turn.questionId) turn.questionId = String(meta.questionId)
+    if (meta && meta.replyId && !turn.replyId) turn.replyId = String(meta.replyId)
+    if (turn.events.length < 200) {
+      turn.events.push({
+        name,
+        at: timestamp,
+        eventId: Number((meta && meta.eventId) || 0),
+        eventSeq: Number((meta && meta.eventSeq) || 0),
+        questionId: String((meta && meta.questionId) || turn.questionId || ''),
+        replyId: String((meta && meta.replyId) || turn.replyId || ''),
+        synthetic: Boolean(meta && meta.synthetic),
+        clientTextQueryTransition: Boolean(meta && meta.clientTextQueryTransition),
+        previousQuestionId: String((meta && meta.previousQuestionId) || ''),
+        generation: Number((meta && meta.generation) || 0),
+        success: meta && typeof meta.success === 'boolean' ? meta.success : undefined,
+        requestedAt: Number((meta && meta.requestedAt) || 0),
+        segmentDurationMs: Number((meta && meta.segmentDurationMs) || 0),
+        durationMs: Number((meta && meta.durationMs) || 0),
+        gapMs: Number((meta && meta.gapMs) || 0),
+      })
+    }
+  },
+
+  _tryFinalizeLatencyTurn() {
+    const turn = this.currentLatencyTurn
+    if (!turn || turn.finalized || !turn.ttsEndAt || !turn.playStartAt) return false
+    this._finalizeLatencyTurn()
+    return true
+  },
+
+  _finalizeLatencyTurn(invalidReason) {
+    const turn = this.currentLatencyTurn
+    if (!turn || turn.finalized) return
     turn.finalized = true
-    this.latencySamples.push(Object.assign({}, turn))
+    turn.invalidReason = this._getLatencyInvalidReason(turn, invalidReason)
+    turn.valid = !turn.invalidReason
+    turn.vadWaitMs = turn.userSpeechEndLocalAt && turn.asrEndAt
+      ? turn.asrEndAt - turn.userSpeechEndLocalAt
+      : -1
+    turn.firstChatMs = turn.userSpeechEndLocalAt && turn.firstChatAt
+      ? turn.firstChatAt - turn.userSpeechEndLocalAt
+      : -1
+    turn.firstTTSMs = turn.userSpeechEndLocalAt && turn.firstTTSAt
+      ? turn.firstTTSAt - turn.userSpeechEndLocalAt
+      : -1
+    turn.firstPlayMs = turn.userSpeechEndLocalAt && turn.playStartAt
+      ? turn.playStartAt - turn.userSpeechEndLocalAt
+      : -1
+    const completedSample = Object.assign({}, turn, {
+      events: turn.events.slice(),
+    })
+    this.latencySamples.push(completedSample)
+    this._persistLatencySample(completedSample)
+    console.log('[Call][Latency][Turn]', completedSample)
     this.currentLatencyTurn = null
+    this.localVadState.speechActive = false
+    this.localVadState.voicedFrames = 0
+    this.localVadState.silenceFrames = 0
+    this.localVadState.candidateVoiceAt = 0
+    this.localVadState.candidateConfidence = 0
+    this.localVadState.lastVoiceAt = 0
+    this.localVadState.confidence = 0
     this._reportLatencyStats()
+  },
+
+  _getLatencyInvalidReason(turn, explicitReason) {
+    if (explicitReason) return explicitReason
+    if (turn.associationError) return turn.associationError
+    const required = [
+      ['userSpeechEndLocalAt', 'missing_local_user_end'],
+      ['asrInfoAt', 'missing_asr_info'],
+      ['asrFinalAt', 'missing_asr_final'],
+      ['asrEndAt', 'missing_asr_end'],
+      ['firstChatAt', 'missing_first_chat'],
+      ['firstTTSAt', 'missing_first_tts'],
+      ['ttsEndAt', 'missing_tts_end'],
+      ['playStartAt', 'missing_real_play_start'],
+    ]
+    for (let i = 0; i < required.length; i += 1) {
+      if (!turn[required[i][0]]) return required[i][1]
+    }
+    if (turn.asrStartSynthetic) return 'synthetic_asr_start'
+    if (turn.playStartSource !== 'inner_audio_on_play') return 'non_authoritative_play_start'
+    if (turn.playbackMode === PLAYBACK_MODE_SINGLE_WAV) {
+      if (!turn.wavWriteStartAt.length) return 'missing_wav_write_start'
+      if (!turn.wavWriteEndAt.length) return 'missing_wav_write_end'
+      if (!turn.playRequestedAt.length) return 'missing_play_request'
+    }
+
+    const ordered = [
+      turn.userSpeechEndLocalAt,
+      turn.asrFinalAt,
+      turn.asrEndAt,
+      turn.firstChatAt,
+      turn.firstTTSAt,
+      turn.ttsEndAt,
+      turn.playStartAt,
+    ]
+    for (let i = 1; i < ordered.length; i += 1) {
+      if (ordered[i] < ordered[i - 1]) return 'milestone_order_invalid'
+    }
+    if (turn.playbackMode === PLAYBACK_MODE_SINGLE_WAV) {
+      const writeStartAt = turn.wavWriteStartAt[0]
+      const writeEndAt = turn.wavWriteEndAt[0]
+      const playRequestedAt = turn.playRequestedAt[0]
+      if (writeStartAt < turn.firstTTSAt
+        || writeEndAt < writeStartAt
+        || playRequestedAt < writeEndAt
+        || turn.playStartAt < playRequestedAt) {
+        return 'playback_order_invalid'
+      }
+    }
+    const protocolSeq = turn.events
+      .map(event => Number(event.eventSeq || 0))
+      .filter(seq => seq > 0)
+    for (let i = 1; i < protocolSeq.length; i += 1) {
+      if (protocolSeq[i] < protocolSeq[i - 1]) return 'protocol_event_order_invalid'
+    }
+    return ''
+  },
+
+  _persistLatencySample(sample) {
+    try {
+      const existing = wx.getStorageSync(LATENCY_SAMPLE_STORAGE_KEY)
+      const samples = Array.isArray(existing) ? existing.slice() : []
+      samples.push(sample)
+      wx.setStorageSync(
+        LATENCY_SAMPLE_STORAGE_KEY,
+        samples.slice(-LATENCY_SAMPLE_STORAGE_MAX)
+      )
+    } catch (err) {
+      console.warn('[Call][Latency] 样本持久化失败', err)
+    }
   },
 
   _reportLatencyStats() {
     if (!this.latencySamples || this.latencySamples.length === 0) return
-    const firstPlayLatencies = this.latencySamples
-      .map(item => {
-        if (!item.userEndAt || !item.playStartAt) return 0
-        return item.playStartAt - item.userEndAt
+    const validSamples = this.latencySamples.filter(item => item.valid && item.firstPlayMs > 0)
+    const invalidSamples = this.latencySamples.filter(item => !item.valid)
+    if (validSamples.length === 0) {
+      console.warn('[Call][Latency] 暂无有效真实播放样本', {
+        profile: this.sessionOptions && this.sessionOptions.profileTag,
+        invalidCount: invalidSamples.length,
       })
-      .filter(v => v > 0)
+      return
+    }
 
-    if (firstPlayLatencies.length === 0) return
-
-    const sorted = firstPlayLatencies.slice().sort((a, b) => a - b)
+    const sorted = validSamples.map(item => item.firstPlayMs).sort((a, b) => a - b)
     const p50 = sorted[Math.floor((sorted.length - 1) * 0.5)]
     const p90 = sorted[Math.floor((sorted.length - 1) * 0.9)]
     const latest = this.latencySamples[this.latencySamples.length - 1]
-    const chatDelay = latest.firstChatAt ? (latest.firstChatAt - latest.userEndAt) : -1
-    const ttsDelay = latest.firstTTSAt ? (latest.firstTTSAt - latest.userEndAt) : -1
-    const playDelay = latest.playStartAt ? (latest.playStartAt - latest.userEndAt) : -1
-    console.log('[Call][Latency] profile=', this.sessionOptions && this.sessionOptions.profileTag, 'latest(chat/tts/play)=', chatDelay, ttsDelay, playDelay, 'ms; p50/p90(play)=', p50, p90, 'ms')
+    console.log('[Call][Latency][Summary]', {
+      profile: this.sessionOptions && this.sessionOptions.profileTag,
+      supportedVadWindowsMs: VAD_EXPERIMENT_WINDOWS_MS,
+      supportedPlaybackModes: PLAYBACK_EXPERIMENT_MODES,
+      validCount: validSamples.length,
+      invalidCount: invalidSamples.length,
+      latest: {
+        turnId: latest.turnId,
+        valid: latest.valid,
+        invalidReason: latest.invalidReason,
+        vadWaitMs: latest.vadWaitMs,
+        firstChatMs: latest.firstChatMs,
+        firstTTSMs: latest.firstTTSMs,
+        firstPlayMs: latest.firstPlayMs,
+      },
+      p50,
+      p90,
+      target: LATENCY_BASELINE_TARGET,
+    })
     if (p50 > LATENCY_BASELINE_TARGET.playP50MaxMs || p90 > LATENCY_BASELINE_TARGET.playP90MaxMs) {
       console.warn('[Call][Latency][ABCheck] 超出阈值', {
         profile: this.sessionOptions && this.sessionOptions.profileTag,
