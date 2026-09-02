@@ -45,7 +45,12 @@
   "compileType": "miniprogram",
   "simulatorPluginLibVersion": {},
   "packOptions": {
-    "ignore": [],
+    "ignore": [
+      {
+        "type": "folder",
+        "value": "assets/videos"
+      }
+    ],
     "include": []
   },
   "cloudfunctionTemplateRoot": "cloudfunctionTemplate/"

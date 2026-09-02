@@ -15,4 +15,9 @@ module.exports = {
   },
   // 云开发环境 ID，可留空使用动态环境
   cloudEnvId: '',
+  // 通话页动态形象视频的 CloudBase 文件 ID。留空则只显示本地海报。
+  companionVideos: {
+    idle: '',
+    speaking: '',
+  },
 }

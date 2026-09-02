@@ -128,10 +128,20 @@ function createSocketTaskMock() {
   }
 }
 
+function createVideoContextMock() {
+  return {
+    play: jest.fn(),
+    pause: jest.fn(),
+    stop: jest.fn(),
+    seek: jest.fn(),
+  }
+}
+
 function createWxMock() {
   const storage = {}
   const recorder = createRecorderManagerMock()
   const audioContexts = []
+  const videoContexts = {}
   const webAudioContext = createWebAudioContextMock()
   const socketTask = createSocketTaskMock()
 
@@ -170,6 +180,7 @@ function createWxMock() {
     __recorder: recorder,
     __audioContext: null,
     __audioContexts: audioContexts,
+    __videoContexts: videoContexts,
     __webAudioContext: webAudioContext,
     __socketTask: socketTask,
     __fs: fsMock,
@@ -189,6 +200,11 @@ function createWxMock() {
       return audioContext
     }),
     createWebAudioContext: jest.fn(() => webAudioContext),
+    createVideoContext: jest.fn((id) => {
+      const videoContext = createVideoContextMock()
+      videoContexts[id] = videoContext
+      return videoContext
+    }),
     getFileSystemManager: jest.fn(() => fsMock),
     authorize: jest.fn(({ success }) => {
       if (success) success()

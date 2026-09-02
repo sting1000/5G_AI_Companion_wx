@@ -1,5 +1,58 @@
+<view class="companion-stage">
+  <image class="call-bg companion-poster" src="{{companionPosterSrc}}" mode="aspectFill"></image>
+  <video
+    id="companion-idle"
+    class="call-bg companion-video companion-video-idle {{showIdleVideo ? 'is-visible' : ''}}"
+    src="{{companionIdleSrc}}"
+    object-fit="cover"
+    muted="{{true}}"
+    loop="{{true}}"
+    autoplay="{{false}}"
+    controls="{{false}}"
+    show-center-play-btn="{{false}}"
+    show-play-btn="{{false}}"
+    show-fullscreen-btn="{{false}}"
+    show-mute-btn="{{false}}"
+    show-progress="{{false}}"
+    show-bottom-progress="{{false}}"
+    enable-progress-gesture="{{false}}"
+    enable-play-gesture="{{false}}"
+    vslide-gesture="{{false}}"
+    show-casting-button="{{false}}"
+    show-background-playback-button="{{false}}"
+    picture-in-picture-mode=""
+    bindplay="onCompanionIdlePlay"
+    binderror="onCompanionIdleError"
+    bindloadedmetadata="onCompanionIdleLoaded">
+  </video>
+  <video
+    id="companion-speaking"
+    class="call-bg companion-video companion-video-speaking {{showSpeakingVideo ? 'is-visible' : ''}}"
+    src="{{companionSpeakingSrc}}"
+    object-fit="cover"
+    muted="{{true}}"
+    loop="{{true}}"
+    autoplay="{{false}}"
+    controls="{{false}}"
+    show-center-play-btn="{{false}}"
+    show-play-btn="{{false}}"
+    show-fullscreen-btn="{{false}}"
+    show-mute-btn="{{false}}"
+    show-progress="{{false}}"
+    show-bottom-progress="{{false}}"
+    enable-progress-gesture="{{false}}"
+    enable-play-gesture="{{false}}"
+    vslide-gesture="{{false}}"
+    show-casting-button="{{false}}"
+    show-background-playback-button="{{false}}"
+    picture-in-picture-mode=""
+    bindplay="onCompanionSpeakingPlay"
+    binderror="onCompanionSpeakingError"
+    bindloadedmetadata="onCompanionSpeakingLoaded">
+  </video>
+</view>
+
 <view class="call-page video-call-page" wx:if="{{!showIncoming}}">
-  <image class="call-bg" src="/assets/images/companion-xiaolin-call.jpg" mode="aspectFill"></image>
   <view class="call-shade call-shade-top"></view>
   <view class="call-shade call-shade-bottom"></view>
 
@@ -107,7 +160,6 @@
 </view>
 
 <view class="incoming-page" wx:if="{{showIncoming}}">
-  <image class="call-bg" src="/assets/images/companion-xiaolin-call.jpg" mode="aspectFill"></image>
   <view class="incoming-blur"></view>
   <view class="call-shade call-shade-top"></view>
   <view class="call-shade call-shade-bottom"></view>

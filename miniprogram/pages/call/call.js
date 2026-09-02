@@ -147,6 +147,19 @@ const PLAYBACK_EXPERIMENT_MODES = Object.freeze([
   PLAYBACK_MODE_WEB_AUDIO,
 ])
 const INNER_AUDIO_USE_WEB_AUDIO_IMPLEMENT = false
+const COMPANION_POSTER_SRC = '/assets/images/companion-xiaolin-call-v3.png'
+
+function readCompanionVideoSources() {
+  try {
+    const localConfig = require('../../config.local')
+    const videos = localConfig && localConfig.companionVideos
+    const idle = String((videos && videos.idle) || '').trim()
+    const speaking = String((videos && videos.speaking) || '').trim()
+    return { idle, speaking }
+  } catch (err) {
+    return { idle: '', speaking: '' }
+  }
+}
 const SC20_EXPERIMENT_TAG = `sc20_v2_${AUDIO_PLAYBACK_MODE}_innerweb${INNER_AUDIO_USE_WEB_AUDIO_IMPLEMENT ? 1 : 0}_vad${ACTIVE_VAD_WINDOW_MS}`
 const DEFAULT_ASR_PROFILE = Object.freeze({
   mode: 'steady',
@@ -231,6 +244,12 @@ Page({
     isIncomingAnswering: false,
     incomingHint: '正在响铃...',
     incomingReminderTitle: '',
+    companionPosterSrc: COMPANION_POSTER_SRC,
+    companionIdleSrc: '',
+    companionSpeakingSrc: '',
+    companionVisualState: 'poster',
+    showIdleVideo: false,
+    showSpeakingVideo: false,
   },
 
   onLoad(options) {
@@ -296,6 +315,9 @@ Page({
     }
     this.hasSwitchedToConnected = false
     this.connectingFallbackTimer = null
+    this.connectedUiTimer = null
+    this.failNavigateTimer = null
+    this.endNavigateTimer = null
     this.incomingAutoEndTimer = null
     this.currentTurnBoundaryViolated = false
     this.isBoundaryRepairing = false
@@ -314,6 +336,7 @@ Page({
     this.timeWeatherContext = store.getMockTimeWeatherContext()
     this.pendingMemoryConfirmation = null
     this.lastSmallTalkSteerAt = 0
+    this._initCompanionVisual()
 
     // incoming 模式：先显示来电界面
     if (options.mode === 'incoming') {
@@ -326,6 +349,20 @@ Page({
     } else {
       this._startCall()
     }
+  },
+
+  onShow() {
+    this.companionPageVisible = true
+    if (this.companionDestroyed || this.data.status === 'ended') return
+    if (this.companionAudioSpeaking) this._requestCompanionVisual('speaking')
+    else this._requestCompanionVisual('idle')
+  },
+
+  onHide() {
+    this.companionPageVisible = false
+    this._pauseCompanionVideo('idle')
+    this._pauseCompanionVideo('speaking')
+    this._revealCompanionVisual('poster')
   },
 
   onUnload() {
@@ -348,6 +385,147 @@ Page({
   onDecline() {
     if (this.data.isIncomingAnswering) return
     wx.navigateBack()
+  },
+
+  onCompanionIdlePlay() {
+    if (this.companionDestroyed || !this.companionPageVisible) return
+    if (this.companionExpectedState !== 'idle') {
+      this._pauseCompanionVideo('idle')
+      return
+    }
+    this._revealCompanionVisual('idle')
+  },
+
+  onCompanionIdleError() {
+    this.companionIdleFailed = true
+    if (this.companionExpectedState === 'idle' || this.data.showIdleVideo) {
+      this._pauseCompanionVideo('idle')
+      this._revealCompanionVisual('poster')
+    }
+  },
+
+  onCompanionIdleLoaded() {
+    if (this.companionDestroyed) return
+    if (this.companionExpectedState !== 'idle') this._pauseCompanionVideo('idle')
+  },
+
+  onCompanionSpeakingPlay() {
+    if (this.companionDestroyed || !this.companionPageVisible) return
+    if (this.companionExpectedState !== 'speaking' || !this.companionAudioSpeaking) {
+      this._pauseCompanionVideo('speaking')
+      return
+    }
+    this._revealCompanionVisual('speaking')
+  },
+
+  onCompanionSpeakingError() {
+    this.companionSpeakingFailed = true
+    if (this.companionExpectedState === 'speaking' || this.data.showSpeakingVideo) {
+      this._pauseCompanionVideo('speaking')
+      this._requestCompanionVisual('idle')
+    }
+  },
+
+  onCompanionSpeakingLoaded() {
+    if (this.companionDestroyed) return
+    if (this.companionExpectedState !== 'speaking') this._pauseCompanionVideo('speaking')
+  },
+
+  _initCompanionVisual() {
+    const sources = readCompanionVideoSources()
+    this.companionDestroyed = false
+    this.companionPageVisible = true
+    this.companionAudioSpeaking = false
+    this.companionIdleFailed = false
+    this.companionSpeakingFailed = false
+    this.companionExpectedState = 'idle'
+    this.setData({
+      companionPosterSrc: COMPANION_POSTER_SRC,
+      companionIdleSrc: sources.idle,
+      companionSpeakingSrc: sources.speaking,
+      companionVisualState: 'poster',
+      showIdleVideo: false,
+      showSpeakingVideo: false,
+    })
+    this.idleVideoContext = (sources.idle && typeof wx.createVideoContext === 'function')
+      ? wx.createVideoContext('companion-idle')
+      : null
+    this.speakingVideoContext = (sources.speaking && typeof wx.createVideoContext === 'function')
+      ? wx.createVideoContext('companion-speaking')
+      : null
+    this._requestCompanionVisual('idle')
+    if (this.speakingVideoContext) this._playCompanionVideo('speaking')
+  },
+
+  _requestCompanionVisual(state) {
+    if (this.companionDestroyed) return
+    const wantSpeaking = state === 'speaking'
+    if (wantSpeaking) {
+      if (this.companionSpeakingFailed || !this.data.companionSpeakingSrc) {
+        this._requestCompanionVisual('idle')
+        return
+      }
+      this.companionExpectedState = 'speaking'
+      if (!this.companionPageVisible) return
+      this._playCompanionVideo('speaking')
+      return
+    }
+
+    this.companionExpectedState = 'idle'
+    if (this.companionIdleFailed || !this.data.companionIdleSrc) {
+      this._pauseCompanionVideo('speaking')
+      this._pauseCompanionVideo('idle')
+      this._revealCompanionVisual('poster')
+      return
+    }
+    if (!this.companionPageVisible) {
+      this._pauseCompanionVideo('speaking')
+      this._pauseCompanionVideo('idle')
+      this._revealCompanionVisual('poster')
+      return
+    }
+    this._playCompanionVideo('idle')
+  },
+
+  _revealCompanionVisual(state) {
+    const showIdle = state === 'idle'
+    const showSpeaking = state === 'speaking'
+    if (this.data.companionVisualState === state
+      && this.data.showIdleVideo === showIdle
+      && this.data.showSpeakingVideo === showSpeaking) {
+      return
+    }
+    this.setData({
+      companionVisualState: state,
+      showIdleVideo: showIdle,
+      showSpeakingVideo: showSpeaking,
+    })
+    if (state === 'speaking') this._pauseCompanionVideo('idle')
+    else this._pauseCompanionVideo('speaking')
+    if (state === 'poster') this._pauseCompanionVideo('idle')
+  },
+
+  _playCompanionVideo(kind) {
+    const ctx = kind === 'speaking' ? this.speakingVideoContext : this.idleVideoContext
+    if (!ctx || typeof ctx.play !== 'function') return
+    try { ctx.play() } catch (e) {}
+  },
+
+  _pauseCompanionVideo(kind) {
+    const ctx = kind === 'speaking' ? this.speakingVideoContext : this.idleVideoContext
+    if (!ctx || typeof ctx.pause !== 'function') return
+    try { ctx.pause() } catch (e) {}
+  },
+
+  _stopCompanionVideos() {
+    ;['idle', 'speaking'].forEach((kind) => {
+      const ctx = kind === 'speaking' ? this.speakingVideoContext : this.idleVideoContext
+      if (!ctx) return
+      try { if (typeof ctx.pause === 'function') ctx.pause() } catch (e) {}
+      try { if (typeof ctx.stop === 'function') ctx.stop() } catch (e) {}
+    })
+    this.idleVideoContext = null
+    this.speakingVideoContext = null
   },
 
   onTranscriptScroll(e) {
@@ -505,7 +683,14 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         isIncomingAnswering: false,
         incomingHint: '接听失败，请重试',
       })
-      setTimeout(() => wx.navigateBack(), 2000)
+      if (this.failNavigateTimer) {
+        clearTimeout(this.failNavigateTimer)
+        this.failNavigateTimer = null
+      }
+      this.failNavigateTimer = setTimeout(() => {
+        this.failNavigateTimer = null
+        if (typeof wx !== 'undefined' && wx.navigateBack) wx.navigateBack()
+      }, 2000)
     }
   },
 
@@ -690,7 +875,6 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         transcriptAnchorId: seededAssistantDraft ? 'draft-assistant' : this.data.transcriptAnchorId,
         transcriptScrollTop: this.data.transcriptScrollTop + 9999,
         isSpeaking: false,
-        isAssistantSpeaking: true,
       })
     }
     this.client.onTTSSentenceEnd = (meta) => {
@@ -815,7 +999,9 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
 
     this.player.onPlayStart = (playMeta) => {
       this.playbackEchoGuardUntil = 0
+      this.companionAudioSpeaking = true
       this.setData({ isAssistantSpeaking: true })
+      this._requestCompanionVisual('speaking')
       if (this.currentLatencyTurn && !this.currentLatencyTurn.playStartAt) {
         this.currentLatencyTurn.playStartAt = (playMeta && playMeta.at) || Date.now()
         this.currentLatencyTurn.playStartSource = (playMeta && playMeta.source) || 'inner_audio_on_play'
@@ -837,10 +1023,15 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     }
     this.player.onPlayError = (errorMeta) => {
       this._recordLatencyEvent('play_error', errorMeta)
+      this.companionAudioSpeaking = false
+      this.setData({ isAssistantSpeaking: false })
+      this._requestCompanionVisual('idle')
     }
     this.player.onPlayEnd = () => {
       this._clearAssistantTurnProgress('play_end')
+      this.companionAudioSpeaking = false
       this.setData({ isAssistantSpeaking: false })
+      this._requestCompanionVisual('idle')
       if (this.currentLatencyTurn && this.currentLatencyTurn.ttsEndAt) {
         if (this.currentLatencyTurn.playStartAt) {
           this._tryFinalizeLatencyTurn()
@@ -956,7 +1147,12 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     }
     const elapsed = Date.now() - (this.callStartAt || Date.now())
     const waitMs = Math.max(0, MIN_CONNECTING_UI_MS - elapsed)
-    setTimeout(() => {
+    if (this.connectedUiTimer) {
+      clearTimeout(this.connectedUiTimer)
+      this.connectedUiTimer = null
+    }
+    this.connectedUiTimer = setTimeout(() => {
+      this.connectedUiTimer = null
       if (this.data.status === 'ended') return
       this.setData({
         status: 'connected',
@@ -1150,6 +1346,8 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       currentAssistantDraft: '',
       isAssistantSpeaking: false,
     })
+    this.companionAudioSpeaking = false
+    this._requestCompanionVisual('idle')
     this._appendTranscriptItem('assistant', reason === 'disconnect' ? '网络中断，通话已结束' : '通话已结束')
     this._clearGreetingEchoGuardFailsafe()
     this._clearAssistantTurnProgress(`call_end:${reason}`)
@@ -1185,7 +1383,14 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     }
 
     if (shouldNavigateBack) {
-      setTimeout(() => wx.navigateBack(), reason === 'disconnect' ? 300 : 0)
+      if (this.endNavigateTimer) {
+        clearTimeout(this.endNavigateTimer)
+        this.endNavigateTimer = null
+      }
+      this.endNavigateTimer = setTimeout(() => {
+        this.endNavigateTimer = null
+        if (typeof wx !== 'undefined' && wx.navigateBack) wx.navigateBack()
+      }, reason === 'disconnect' ? 300 : 0)
     }
   },
 
@@ -2894,6 +3099,9 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
   },
 
   _cleanup() {
+    this.companionDestroyed = true
+    this.companionPageVisible = false
+    this.companionAudioSpeaking = false
     if (this.userDraftFlushTimer) {
       clearTimeout(this.userDraftFlushTimer)
       this.userDraftFlushTimer = null
@@ -2902,14 +3110,28 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       clearTimeout(this.assistantDraftFlushTimer)
       this.assistantDraftFlushTimer = null
     }
+    if (this.connectedUiTimer) {
+      clearTimeout(this.connectedUiTimer)
+      this.connectedUiTimer = null
+    }
+    if (this.failNavigateTimer) {
+      clearTimeout(this.failNavigateTimer)
+      this.failNavigateTimer = null
+    }
+    if (this.endNavigateTimer) {
+      clearTimeout(this.endNavigateTimer)
+      this.endNavigateTimer = null
+    }
     this._clearGreetingEchoGuardFailsafe()
     this._clearIncomingAutoEndGuard()
+    this._clearAssistantTurnProgress('cleanup')
     if (this.connectingFallbackTimer) {
       clearTimeout(this.connectingFallbackTimer)
       this.connectingFallbackTimer = null
     }
     this._stopTimer()
     this._stopUplinkKeepalive()
+    this._stopCompanionVideos()
     this.recorder.stop()
     this.player.stop()
     this.player.destroy()

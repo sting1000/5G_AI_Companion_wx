@@ -113,6 +113,7 @@ class AudioPlayer {
     this.preparingSegment = false
     this.turnSealRequested = false
     this.playWatchdogTimer = null
+    this.playRetryTimer = null
     this.playbackGeneration = 1
     this.pendingPlayStart = null
     this.activeFilePath = ''
@@ -474,6 +475,13 @@ class AudioPlayer {
     }
   }
 
+  _clearPlayRetryTimer() {
+    if (this.playRetryTimer) {
+      clearTimeout(this.playRetryTimer)
+      this.playRetryTimer = null
+    }
+  }
+
   _armWebAudioWatchdog(generation) {
     this._clearWebAudioWatchdog()
     const timeoutMs = Math.max(
@@ -514,6 +522,7 @@ class AudioPlayer {
   stop() {
     this.playbackGeneration += 1
     this._clearPlayWatchdog()
+    this._clearPlayRetryTimer()
     this._clearWebAudioWatchdog()
     const previousAudioCtx = this.audioCtx
     this.audioCtx = null
@@ -643,7 +652,9 @@ class AudioPlayer {
       this.playing = false
       this._clearPlayWatchdog()
       if (shouldDelayedRetry) {
-        setTimeout(() => {
+        this._clearPlayRetryTimer()
+        this.playRetryTimer = setTimeout(() => {
+          this.playRetryTimer = null
           if (generation !== this.playbackGeneration) return
           this.playing = true
           this._armPlayWatchdog(this.currentSegmentDurationMs, generation)
