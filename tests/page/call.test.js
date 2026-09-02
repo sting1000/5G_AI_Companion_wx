@@ -1234,6 +1234,128 @@ describe('call 页面离线关键分支', () => {
     expect(wxml.indexOf('companion-stage')).toBeLessThan(wxml.indexOf('incoming-page'))
   })
 
+  test('会把 CloudBase 文件经临时 HTTPS 下到本地，并且初始化时只播 idle', () => {
+    const page = loadPage()
+    page.onLoad({ mode: 'incoming' })
+    expect(page.data.companionPosterSrc).toBe('/assets/images/companion-xiaolin-call-v3.jpg')
+    expect(page.data.companionIdleSrc).toBe('/tmp/companion-xiaolin-idle.mp4')
+    expect(page.data.companionSpeakingSrc).toBe('/tmp/companion-xiaolin-speaking.mp4')
+    expect(wx.cloud.getTempFileURL).toHaveBeenCalled()
+    expect(wx.downloadFile).toHaveBeenCalled()
+    expect(wx.cloud.downloadFile).not.toHaveBeenCalled()
+    expect(wx.__videoContexts['companion-idle'].play).toHaveBeenCalled()
+    expect(wx.__videoContexts['companion-speaking']).toBeTruthy()
+    expect(wx.__videoContexts['companion-speaking'].play).not.toHaveBeenCalled()
+    const downloadUrls = wx.downloadFile.mock.calls.map((args) => String(args[0].url || ''))
+    const speakingIdx = downloadUrls.findIndex((url) => url.includes('speaking'))
+    const idleIdx = downloadUrls.findIndex((url) => url.includes('idle'))
+    expect(speakingIdx).toBeGreaterThanOrEqual(0)
+    expect(idleIdx).toBeGreaterThan(speakingIdx)
+    page.onUnload()
+  })
+
+  test('speaking 没下完之前不会开始下 idle', () => {
+    const pending = []
+    wx.downloadFile.mockImplementation(({ url, filePath, success }) => {
+      const name = String(url || '').split('?')[0].split('/').pop()
+      const done = () => success({
+        tempFilePath: filePath || `/tmp/${name || 'video.mp4'}`,
+        statusCode: 200,
+      })
+      if (String(url).includes('speaking')) {
+        pending.push(done)
+        return
+      }
+      done()
+    })
+    const page = loadPage()
+    page.onLoad({ mode: 'incoming' })
+    expect(pending).toHaveLength(1)
+    expect(wx.downloadFile.mock.calls).toHaveLength(1)
+    expect(String(wx.downloadFile.mock.calls[0][0].url)).toContain('speaking')
+    expect(page.data.companionSpeakingSrc).toBe('')
+    expect(page.data.companionIdleSrc).toBe('')
+    pending[0]()
+    expect(page.data.companionSpeakingSrc).toBe('/tmp/companion-xiaolin-speaking.mp4')
+    expect(page.data.companionIdleSrc).toBe('/tmp/companion-xiaolin-idle.mp4')
+    expect(wx.downloadFile.mock.calls).toHaveLength(2)
+    expect(String(wx.downloadFile.mock.calls[1][0].url)).toContain('idle')
+    page.onUnload()
+  })
+
+  test('本地已缓存时进通话页不再下载', () => {
+    wx.__fs.__savedFiles.add('/tmp/companion-xiaolin-idle.mp4')
+    wx.__fs.__savedFiles.add('/tmp/companion-xiaolin-speaking.mp4')
+    const page = loadPage()
+    page.onLoad({ mode: 'incoming' })
+    expect(wx.downloadFile).not.toHaveBeenCalled()
+    expect(page.data.companionIdleSrc).toBe('/tmp/companion-xiaolin-idle.mp4')
+    expect(page.data.companionSpeakingSrc).toBe('/tmp/companion-xiaolin-speaking.mp4')
+    page.onUnload()
+  })
+
+  test('临时地址为空时回落到 CloudBase CDN，不再把 cloud:// 交给 video', () => {
+    wx.cloud.getTempFileURL.mockImplementation(({ fileList, success }) => {
+      success({
+        fileList: (fileList || []).map((fileID) => ({
+          fileID,
+          tempFileURL: '',
+          status: -403003,
+          errMsg: 'empty download url',
+        })),
+      })
+    })
+    wx.downloadFile.mockImplementation(({ fail }) => {
+      if (typeof fail === 'function') fail({ errMsg: 'downloadFile:fail url not in domain list' })
+    })
+    const page = loadPage()
+    page.onLoad({ mode: 'incoming' })
+    expect(page.data.companionIdleSrc).toBe('https://636c-test-bucket.tcb.qcloud.la/companion-xiaolin-idle.mp4')
+    expect(page.data.companionSpeakingSrc).toBe('https://636c-test-bucket.tcb.qcloud.la/companion-xiaolin-speaking.mp4')
+    expect(page.data.companionIdleSrc.startsWith('cloud://')).toBe(false)
+    page.onUnload()
+  })
+
+  test('idle 视频在 loadedmetadata 后就会显示，不依赖 play 事件', () => {
+    const page = loadPage()
+    page.onLoad({ mode: 'incoming' })
+    expect(page.data.showIdleVideo).toBe(false)
+    page.onCompanionIdleLoaded()
+    expect(page.data.showIdleVideo).toBe(true)
+    expect(page.data.companionVisualState).toBe('idle')
+    page.onUnload()
+  })
+
+  test('接通后问候出声前保持海报，不先播 idle', () => {
+    const page = loadPage()
+    page.onLoad({ mode: 'incoming' })
+    page.onCompanionIdleLoaded()
+    expect(page.data.showIdleVideo).toBe(true)
+
+    page.companionDeferIdle = true
+    page._requestCompanionVisual('idle')
+    expect(page.data.showIdleVideo).toBe(false)
+    expect(page.data.companionVisualState).toBe('poster')
+    page.onCompanionIdlePlay()
+    expect(page.data.showIdleVideo).toBe(false)
+
+    page._setupCallbacks()
+    page.player.onPlayStart({
+      at: Date.now(),
+      source: 'inner_audio_on_play',
+      authoritative: true,
+    })
+    page.onCompanionSpeakingPlay()
+    expect(page.data.showSpeakingVideo).toBe(true)
+    expect(page.data.companionVisualState).toBe('speaking')
+
+    page.waitingGreetingPlaybackEnd = true
+    page.player.onPlayEnd()
+    expect(page.companionDeferIdle).toBe(false)
+    expect(page.companionExpectedState).toBe('idle')
+    page.onUnload()
+  })
+
   test('TTS 开始或收到音频不会进入 speaking，真实 onPlayStart 后才切换', () => {
     const page = loadPage()
     page.onLoad({ mode: 'incoming' })

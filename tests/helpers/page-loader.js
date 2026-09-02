@@ -1,5 +1,5 @@
 function applySetData(target) {
-  target.setData = function setData(patch) {
+  target.setData = function setData(patch, callback) {
     Object.keys(patch || {}).forEach((path) => {
       if (!path.includes('.') && !path.includes('[')) {
         this.data[path] = patch[path]
@@ -17,6 +17,7 @@ function applySetData(target) {
       }
       cursor[keys[keys.length - 1]] = patch[path]
     })
+    if (typeof callback === 'function') callback.call(this)
   }
 }
 

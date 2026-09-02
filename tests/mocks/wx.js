@@ -147,7 +147,19 @@ function createWxMock() {
 
   let autoCompleteWrites = true
   const pendingWrites = []
+  const savedFiles = new Set()
   const fsMock = {
+    __savedFiles: savedFiles,
+    accessSync: jest.fn((filePath) => {
+      if (savedFiles.has(filePath)) return
+      const err = new Error('no such file or directory')
+      err.errMsg = 'accessSync:fail no such file or directory'
+      throw err
+    }),
+    copyFile: jest.fn(({ destPath, success }) => {
+      if (destPath) savedFiles.add(destPath)
+      if (success) success()
+    }),
     writeFile: jest.fn((options) => {
       if (autoCompleteWrites) {
         if (options.success) options.success()
@@ -155,7 +167,8 @@ function createWxMock() {
       }
       pendingWrites.push(options)
     }),
-    unlink: jest.fn(({ success }) => {
+    unlink: jest.fn(({ filePath, success }) => {
+      if (filePath) savedFiles.delete(filePath)
       if (success) success()
     }),
     __setAutoComplete(value) {
@@ -205,6 +218,33 @@ function createWxMock() {
       videoContexts[id] = videoContext
       return videoContext
     }),
+    downloadFile: jest.fn(({ url, filePath, success }) => {
+      if (typeof success !== 'function') return
+      const name = String(url || '').split('?')[0].split('/').pop()
+      const tempFilePath = filePath || `/tmp/${name || 'video.mp4'}`
+      if (filePath) savedFiles.add(filePath)
+      success({
+        tempFilePath,
+        statusCode: 200,
+      })
+    }),
+    cloud: {
+      getTempFileURL: jest.fn(({ fileList, success }) => {
+        if (typeof success !== 'function') return
+        success({
+          fileList: (fileList || []).map((fileID) => ({
+            fileID,
+            tempFileURL: `https://cdn.example.test/${String(fileID).split('/').pop()}`,
+            status: 0,
+          })),
+        })
+      }),
+      downloadFile: jest.fn(({ fail }) => {
+        if (typeof fail === 'function') {
+          fail({ errCode: -403003, errMsg: 'empty download url' })
+        }
+      }),
+    },
     getFileSystemManager: jest.fn(() => fsMock),
     authorize: jest.fn(({ success }) => {
       if (success) success()

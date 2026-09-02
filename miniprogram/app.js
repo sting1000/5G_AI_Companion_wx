@@ -5,6 +5,7 @@ try {
   localConfig = {}
 }
 const store = require('./utils/store')
+const companionVideos = require('./utils/companion-videos')
 
 App({
   globalData: {
@@ -24,6 +25,11 @@ App({
         traceUser: true,
       })
     }
+
+    // 进通话页之前把陪伴形象视频落到本地，避免首句 TTS 还在播时才开始下载
+    try {
+      companionVideos.prefetchCompanionVideos()
+    } catch (err) {}
 
     // 从本地存储恢复数据
     const elderConfig = wx.getStorageSync('elderConfig')

@@ -7,6 +7,12 @@ const {
   PLAYBACK_MODE_WEB_AUDIO,
 } = require('../../utils/audio')
 const store = require('../../utils/store')
+const {
+  readCompanionVideoSources,
+  videoSrcHost,
+  peekCachedCompanionVideoSrc,
+  resolveCompanionVideoSrc,
+} = require('../../utils/companion-videos')
 const { generateSummary, applyLocalSummary } = require('../../utils/call-finalizer')
 const reminderExtractor = require('../../utils/reminder-extractor')
 const cloudFunctions = require('../../utils/cloud-functions')
@@ -147,19 +153,7 @@ const PLAYBACK_EXPERIMENT_MODES = Object.freeze([
   PLAYBACK_MODE_WEB_AUDIO,
 ])
 const INNER_AUDIO_USE_WEB_AUDIO_IMPLEMENT = false
-const COMPANION_POSTER_SRC = '/assets/images/companion-xiaolin-call-v3.png'
-
-function readCompanionVideoSources() {
-  try {
-    const localConfig = require('../../config.local')
-    const videos = localConfig && localConfig.companionVideos
-    const idle = String((videos && videos.idle) || '').trim()
-    const speaking = String((videos && videos.speaking) || '').trim()
-    return { idle, speaking }
-  } catch (err) {
-    return { idle: '', speaking: '' }
-  }
-}
+const COMPANION_POSTER_SRC = '/assets/images/companion-xiaolin-call-v3.jpg'
 const SC20_EXPERIMENT_TAG = `sc20_v2_${AUDIO_PLAYBACK_MODE}_innerweb${INNER_AUDIO_USE_WEB_AUDIO_IMPLEMENT ? 1 : 0}_vad${ACTIVE_VAD_WINDOW_MS}`
 const DEFAULT_ASR_PROFILE = Object.freeze({
   mode: 'steady',
@@ -299,6 +293,7 @@ Page({
     this.silenceFrame = null
     this.initialEchoGuardActive = true
     this.waitingGreetingPlaybackEnd = false
+    this.companionDeferIdle = true
     this.assistantTurnInProgress = false
     this.assistantTurnProgressTimer = null
     this.greetingEchoGuardTimer = null
@@ -336,6 +331,8 @@ Page({
     this.timeWeatherContext = store.getMockTimeWeatherContext()
     this.pendingMemoryConfirmation = null
     this.lastSmallTalkSteerAt = 0
+    // 来电等待可播 idle；一旦接通，问候出声前不要先露聆听画面
+    this.companionDeferIdle = options.mode !== 'incoming'
     this._initCompanionVisual()
 
     // incoming 模式：先显示来电界面
@@ -396,7 +393,8 @@ Page({
     this._revealCompanionVisual('idle')
   },
 
-  onCompanionIdleError() {
+  onCompanionIdleError(e) {
+    console.warn(FLOW_LOG_PREFIX, 'idle 视频失败', e && e.detail ? e.detail : e)
     this.companionIdleFailed = true
     if (this.companionExpectedState === 'idle' || this.data.showIdleVideo) {
       this._pauseCompanionVideo('idle')
@@ -405,8 +403,13 @@ Page({
   },
 
   onCompanionIdleLoaded() {
-    if (this.companionDestroyed) return
-    if (this.companionExpectedState !== 'idle') this._pauseCompanionVideo('idle')
+    if (this.companionDestroyed || !this.companionPageVisible) return
+    if (this.companionExpectedState !== 'idle') {
+      this._pauseCompanionVideo('idle')
+      return
+    }
+    this._revealCompanionVisual('idle')
+    this._playCompanionVideo('idle')
   },
 
   onCompanionSpeakingPlay() {
@@ -418,7 +421,8 @@ Page({
     this._revealCompanionVisual('speaking')
   },
 
-  onCompanionSpeakingError() {
+  onCompanionSpeakingError(e) {
+    console.warn(FLOW_LOG_PREFIX, 'speaking 视频失败', e && e.detail ? e.detail : e)
     this.companionSpeakingFailed = true
     if (this.companionExpectedState === 'speaking' || this.data.showSpeakingVideo) {
       this._pauseCompanionVideo('speaking')
@@ -427,8 +431,12 @@ Page({
   },
 
   onCompanionSpeakingLoaded() {
-    if (this.companionDestroyed) return
-    if (this.companionExpectedState !== 'speaking') this._pauseCompanionVideo('speaking')
+    if (this.companionDestroyed || !this.companionPageVisible) return
+    if (this.companionExpectedState !== 'speaking' || !this.companionAudioSpeaking) {
+      this._pauseCompanionVideo('speaking')
+      return
+    }
+    this._revealCompanionVisual('speaking')
   },
 
   _initCompanionVisual() {
@@ -439,22 +447,79 @@ Page({
     this.companionIdleFailed = false
     this.companionSpeakingFailed = false
     this.companionExpectedState = 'idle'
+    this.idleVideoContext = null
+    this.speakingVideoContext = null
+    const idleCached = peekCachedCompanionVideoSrc(sources.idle)
+    const speakingCached = peekCachedCompanionVideoSrc(sources.speaking)
     this.setData({
       companionPosterSrc: COMPANION_POSTER_SRC,
-      companionIdleSrc: sources.idle,
-      companionSpeakingSrc: sources.speaking,
+      companionIdleSrc: idleCached,
+      companionSpeakingSrc: speakingCached,
       companionVisualState: 'poster',
       showIdleVideo: false,
       showSpeakingVideo: false,
     })
-    this.idleVideoContext = (sources.idle && typeof wx.createVideoContext === 'function')
+    if (idleCached || speakingCached) {
+      this._bindCompanionVideoContexts()
+      this._requestCompanionVisual('idle')
+    }
+    this._bindCompanionVideoSources(sources)
+  },
+
+  _bindCompanionVideoSources(sources) {
+    const idle = sources && sources.idle ? sources.idle : ''
+    const speaking = sources && sources.speaking ? sources.speaking : ''
+    if (!idle && !speaking) return
+    const bindIdle = () => {
+      if (!idle) return
+      resolveCompanionVideoSrc(idle, (src, cached) => {
+        this._applyCompanionVideoSrc('idle', src, cached)
+      })
+    }
+    if (!speaking) {
+      bindIdle()
+      return
+    }
+    resolveCompanionVideoSrc(speaking, (src, cached) => {
+      this._applyCompanionVideoSrc('speaking', src, cached)
+      bindIdle()
+    })
+  },
+
+  _applyCompanionVideoSrc(role, src, cached) {
+    if (this.companionDestroyed || !src) return
+    const field = role === 'speaking' ? 'companionSpeakingSrc' : 'companionIdleSrc'
+    if (this.data[field] === src) {
+      this._bindCompanionVideoContexts()
+      if (role === 'idle' && !this.companionAudioSpeaking) {
+        this._requestCompanionVisual('idle')
+      }
+      return
+    }
+    console.log(FLOW_LOG_PREFIX, role === 'speaking' ? 'speaking 视频已就绪' : 'idle 视频已就绪', {
+      cached: Boolean(cached),
+      host: videoSrcHost(src),
+    })
+    const patch = {}
+    patch[field] = src
+    this.setData(patch, () => {
+      if (this.companionDestroyed) return
+      this._bindCompanionVideoContexts()
+      if (role === 'speaking') {
+        if (this.companionAudioSpeaking) this._requestCompanionVisual('speaking')
+        return
+      }
+      if (!this.companionAudioSpeaking) this._requestCompanionVisual('idle')
+    })
+  },
+
+  _bindCompanionVideoContexts() {
+    this.idleVideoContext = (this.data.companionIdleSrc && typeof wx.createVideoContext === 'function')
       ? wx.createVideoContext('companion-idle')
       : null
-    this.speakingVideoContext = (sources.speaking && typeof wx.createVideoContext === 'function')
+    this.speakingVideoContext = (this.data.companionSpeakingSrc && typeof wx.createVideoContext === 'function')
       ? wx.createVideoContext('companion-speaking')
       : null
-    this._requestCompanionVisual('idle')
-    if (this.speakingVideoContext) this._playCompanionVideo('speaking')
   },
 
   _requestCompanionVisual(state) {
@@ -472,6 +537,12 @@ Page({
     }
 
     this.companionExpectedState = 'idle'
+    if (this.companionDeferIdle && !this.companionAudioSpeaking) {
+      this.companionExpectedState = 'poster'
+      this._pauseCompanionVideo('idle')
+      this._revealCompanionVisual('poster')
+      return
+    }
     if (this.companionIdleFailed || !this.data.companionIdleSrc) {
       this._pauseCompanionVideo('speaking')
       this._pauseCompanionVideo('idle')
@@ -542,9 +613,11 @@ Page({
 
   // ===== 通话核心逻辑 =====
   async _startCall() {
+    this.companionDeferIdle = true
     this._setupCallbacks()
     this._setConnectionPhase('dialing')
     console.log(FLOW_LOG_PREFIX, '开始通话初始化')
+    this._requestCompanionVisual('idle')
 
     try {
       const elderConfig = store.getElderConfig()
@@ -1025,12 +1098,20 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       this._recordLatencyEvent('play_error', errorMeta)
       this.companionAudioSpeaking = false
       this.setData({ isAssistantSpeaking: false })
+      this.companionDeferIdle = false
       this._requestCompanionVisual('idle')
     }
     this.player.onPlayEnd = () => {
       this._clearAssistantTurnProgress('play_end')
       this.companionAudioSpeaking = false
       this.setData({ isAssistantSpeaking: false })
+      if (this.waitingGreetingPlaybackEnd) {
+        this.waitingGreetingPlaybackEnd = false
+        this.initialEchoGuardActive = false
+        this.companionDeferIdle = false
+        this._clearGreetingEchoGuardFailsafe()
+        console.log(FLOW_LOG_PREFIX, '首句欢迎语播放结束，解除回声保护')
+      }
       this._requestCompanionVisual('idle')
       if (this.currentLatencyTurn && this.currentLatencyTurn.ttsEndAt) {
         if (this.currentLatencyTurn.playStartAt) {
@@ -1038,12 +1119,6 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         } else {
           this._finalizeLatencyTurn('playback_ended_without_real_start')
         }
-      }
-      if (this.waitingGreetingPlaybackEnd) {
-        this.waitingGreetingPlaybackEnd = false
-        this.initialEchoGuardActive = false
-        this._clearGreetingEchoGuardFailsafe()
-        console.log(FLOW_LOG_PREFIX, '首句欢迎语播放结束，解除回声保护')
       }
       this.playbackEchoGuardUntil = Date.now() + PLAYBACK_ECHO_TAIL_GUARD_MS
       if (this._hasPendingAutoEndAfterPlayback()) {
@@ -1170,6 +1245,8 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       if (!this.initialEchoGuardActive) return
       this.initialEchoGuardActive = false
       this.waitingGreetingPlaybackEnd = false
+      this.companionDeferIdle = false
+      this._requestCompanionVisual(this.companionAudioSpeaking ? 'speaking' : 'idle')
       console.warn(FLOW_LOG_PREFIX, '回声保护超时自动解除，避免首轮卡死')
     }, GREETING_ECHO_GUARD_MAX_MS)
   },
@@ -1347,6 +1424,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       isAssistantSpeaking: false,
     })
     this.companionAudioSpeaking = false
+    this.companionDeferIdle = false
     this._requestCompanionVisual('idle')
     this._appendTranscriptItem('assistant', reason === 'disconnect' ? '网络中断，通话已结束' : '通话已结束')
     this._clearGreetingEchoGuardFailsafe()
