@@ -64,6 +64,36 @@ function resolveAppKey() {
 }
 const APP_KEY = resolveAppKey()
 const DEBUG_LOG = false
+const RAG_TEXT_MAX_CHARS = 4000
+
+function buildExternalRagString(items) {
+  const source = Array.isArray(items) ? items : []
+  const normalized = []
+  source.forEach((item) => {
+    if (!item) return
+    const title = String(item.title || '长期记忆').trim() || '长期记忆'
+    const content = String(item.content || '').trim()
+    if (!content) return
+    normalized.push({ title, content })
+  })
+  if (normalized.length === 0) return ''
+
+  let ragStr = JSON.stringify(normalized)
+  if (ragStr.length <= RAG_TEXT_MAX_CHARS) return ragStr
+
+  const shrunk = normalized.map(item => ({ title: item.title, content: item.content }))
+  while (shrunk.length > 0 && JSON.stringify(shrunk).length > RAG_TEXT_MAX_CHARS) {
+    const last = shrunk[shrunk.length - 1]
+    if (last.content.length > 8) {
+      last.content = last.content.slice(0, Math.max(1, last.content.length - 24))
+    } else {
+      shrunk.pop()
+    }
+  }
+  if (shrunk.length === 0) return ''
+  ragStr = JSON.stringify(shrunk)
+  return ragStr.length <= RAG_TEXT_MAX_CHARS ? ragStr : ''
+}
 
 function getSocketErrorText(err) {
   if (!err) return ''
@@ -116,6 +146,7 @@ const EVENT = {
   SAY_HELLO: 300,
   END_ASR: 400,
   CHAT_TEXT_QUERY: 501,
+  CHAT_RAG_TEXT: 502,
 }
 
 // 服务端事件 ID
@@ -568,7 +599,13 @@ class RealtimeAPIClient {
         },
       }
 
-      logDebug('[RealtimeAPI] startSession payload:', JSON.stringify(payload))
+      logDebug('[RealtimeAPI] startSession', {
+        model: dialogExtra.model,
+        speaker: payload.tts.speaker,
+        hasCharacterManifest: Boolean(options.characterManifest),
+        hasSystemRole: Boolean(options.systemRole),
+        dialogIdLength: String(options.dialogId || '').length,
+      })
 
       const frame = buildFrame(
         MSG_TYPE.FULL_CLIENT,
@@ -643,6 +680,44 @@ class RealtimeAPIClient {
     )
     this._pendingTextQueryCount += 1
     this.socket.send({ data: frame })
+  }
+
+  /**
+   * 向当前用户 query 注入外部 RAG 知识（ChatRAGText 502）
+   * 不新开一轮，也不计入文本 query 转换。
+   */
+  sendRAGText(items) {
+    if (!this.sessionActive) {
+      logger.warn('sendRAGText: session not active, skipping')
+      return Promise.resolve(false)
+    }
+    if (!this.socket) {
+      logger.warn('sendRAGText: socket is null, skipping')
+      return Promise.resolve(false)
+    }
+    const ragStr = buildExternalRagString(items)
+    if (!ragStr) return Promise.resolve(false)
+    const itemCount = Array.isArray(items) ? items.length : 0
+    return new Promise((resolve) => {
+      let settled = false
+      const settle = (ok) => { if (!settled) { settled = true; resolve(ok) } }
+      try {
+        const frame = buildFrame(
+          MSG_TYPE.FULL_CLIENT,
+          EVENT.CHAT_RAG_TEXT,
+          this.sessionId,
+          { external_rag: ragStr }
+        )
+        this.socket.send({
+          data: frame,
+          success: () => { logger.info('sendRAGText ok', { itemCount, charCount: ragStr.length }); settle(true) },
+          fail: () => { logger.warn('sendRAGText fail'); settle(false) },
+        })
+      } catch (err) {
+        logger.warn('sendRAGText send throw')
+        settle(false)
+      }
+    })
   }
 
   /**

@@ -315,6 +315,64 @@ function _computeMemoryScore(item, nowTs) {
   return Number(score.toFixed(4))
 }
 
+function _isTrustedDialogueMemory(item) {
+  if (!item || !item.text) return false
+  if (item.status !== MEMORY_STATUS.CONFIRMED) return false
+  if (item.needsConfirmation === true) return false
+  const visibility = String(item.visibility || '').trim()
+  if (visibility === MEMORY_VISIBILITY.PRIVATE) return false
+  if (visibility
+    && visibility !== MEMORY_VISIBILITY.ASSISTANT
+    && visibility !== MEMORY_VISIBILITY.GUARDIAN_REVIEW) {
+    return false
+  }
+  return true
+}
+
+function _normalizeMemoryPurpose(purpose) {
+  const raw = String(purpose || '').trim()
+  if (raw === 'rag' || raw === 'greeting' || raw === 'constraint' || raw === 'steer') return raw
+  return 'dialogue'
+}
+
+function _extractRecallTokens(text) {
+  const normalized = _normalizeMemoryText(text)
+  if (!normalized) return []
+  const tokens = []
+  if (normalized.length <= 4) tokens.push(normalized)
+  for (let i = 0; i < normalized.length - 1; i++) {
+    tokens.push(normalized.slice(i, i + 2))
+  }
+  for (let i = 0; i < normalized.length - 2; i++) {
+    tokens.push(normalized.slice(i, i + 3))
+  }
+  return tokens
+}
+
+function _computeLexicalRelevance(queryText, item) {
+  const query = _normalizeMemoryText(queryText)
+  const target = _normalizeMemoryText(`${(item && item.text) || ''} ${(item && item.evidence) || ''}`)
+  if (!query || !target) return 0
+  if (query.includes(target) || target.includes(query)) return 1
+  const queryTokens = new Set(_extractRecallTokens(query))
+  const targetTokens = _extractRecallTokens(target)
+  if (queryTokens.size === 0 || targetTokens.length === 0) return 0
+  const seen = new Set()
+  let hit = 0
+  targetTokens.forEach(token => {
+    if (seen.has(token)) return
+    seen.add(token)
+    if (queryTokens.has(token)) hit += 1
+  })
+  return hit / Math.max(seen.size, 1)
+}
+
+function _shouldRequireTopicMatch(intent, currentUserText, purpose) {
+  if (purpose === 'constraint' || purpose === 'greeting') return false
+  if (!currentUserText) return false
+  return intent === 'general'
+}
+
 function _isMemoryCurrentlyValid(item, nowTs) {
   const validFromTs = Date.parse(item && item.validFrom || '')
   if (validFromTs && validFromTs > nowTs) return false
@@ -410,27 +468,55 @@ function _resolveMemoryContextBudget(intent, typeBudget) {
       healthNote: 3,
       tabooTopic: 3,
     })
+  } else if (intentName === 'opening' || intentName === 'outgoingNeed' || intentName === 'greeting') {
+    Object.assign(base, {
+      followUp: 1,
+      recentEvent: 1,
+      routineNote: 0,
+      interest: 1,
+      healthNote: 0,
+      tabooTopic: 0,
+    })
   }
   return Object.assign(base, typeBudget || {})
 }
 
 function _selectMemoryItemsForContext(bundle, options) {
   const opts = options || {}
+  const purpose = _normalizeMemoryPurpose(opts.purpose)
   const excludeSet = new Set((opts.excludeTexts || []).map(_normalizeMemoryText).filter(Boolean))
-  const maxItems = typeof opts.maxItems === 'number' ? opts.maxItems : 3
+  const maxItems = typeof opts.maxItems === 'number' ? opts.maxItems : 2
   const minConfidence = typeof opts.minConfidence === 'number' ? opts.minConfidence : 0.6
   const cooldownMs = typeof opts.cooldownMs === 'number' ? opts.cooldownMs : 12 * 60 * 60 * 1000
   const intent = _inferMemoryContextIntent(opts)
-  const typeBudget = _resolveMemoryContextBudget(intent, opts.typeBudget)
+  const currentUserText = opts.currentUserText || ''
+  let typeBudget = _resolveMemoryContextBudget(intent, opts.typeBudget)
+  if (purpose === 'constraint') {
+    typeBudget = Object.assign({
+      followUp: 0,
+      recentEvent: 0,
+      routineNote: 0,
+      interest: 0,
+      healthNote: 0,
+      tabooTopic: 2,
+    }, opts.typeBudget || {})
+  } else if (purpose === 'rag' || purpose === 'steer' || purpose === 'greeting') {
+    typeBudget = Object.assign({}, typeBudget, { tabooTopic: 0 }, opts.typeBudget || {})
+  }
+  if (purpose === 'greeting') {
+    typeBudget = Object.assign({}, typeBudget, { healthNote: 0, tabooTopic: 0 }, opts.typeBudget || {})
+  }
+  const requireTopicMatch = typeof opts.requireTopicMatch === 'boolean'
+    ? opts.requireTopicMatch
+    : _shouldRequireTopicMatch(intent, currentUserText, purpose)
   const nowTs = Date.now()
   const pickedTypes = {}
+  const typeRank = { tabooTopic: 6, followUp: 5, recentEvent: 4, routineNote: 3, interest: 2, healthNote: 1 }
 
   return (bundle.memoryItems || [])
-    .filter(item => item && item.text)
-    .filter(item => item.status !== MEMORY_STATUS.PENDING && item.status !== MEMORY_STATUS.REJECTED)
-    .filter(item => !item.needsConfirmation)
+    .filter(_isTrustedDialogueMemory)
     .filter(item => item.type === 'interest' || item.type === 'tabooTopic' || !_isLowInfoMemoryText(item.text))
-    .filter(item => item.confidence >= minConfidence)
+    .filter(item => Number(item.confidence || 0) >= minConfidence)
     .filter(item => !excludeSet.has(_normalizeMemoryText(item.text)))
     .filter(item => _isMemoryCurrentlyValid(item, nowTs))
     .filter(item => {
@@ -443,14 +529,24 @@ function _selectMemoryItemsForContext(bundle, options) {
       if (item.type === 'interest' || item.type === 'healthNote' || item.type === 'tabooTopic' || item.type === 'routineNote') return true
       return _isRecent(item.createdAt, 45)
     })
+    .map(item => {
+      const lexical = _computeLexicalRelevance(currentUserText, item)
+      const memoryScore = Number(item.score || _computeMemoryScore(item, nowTs))
+      const typeBoost = (typeRank[item.type] || 0) / 6
+      return Object.assign({}, item, {
+        lexical,
+        hybridScore: Number((0.45 * memoryScore + 0.4 * lexical + 0.15 * typeBoost).toFixed(4)),
+      })
+    })
+    .filter(item => !requireTopicMatch || item.lexical >= 0.12)
     .sort((a, b) => {
-      const typeRank = { tabooTopic: 6, followUp: 5, recentEvent: 4, routineNote: 3, interest: 2, healthNote: 1 }
+      if (requireTopicMatch || currentUserText) {
+        if (b.hybridScore !== a.hybridScore) return b.hybridScore - a.hybridScore
+      }
       const ar = typeRank[a.type] || 0
       const br = typeRank[b.type] || 0
       if (br !== ar) return br - ar
-      const as = Number(a.score || _computeMemoryScore(a, nowTs))
-      const bs = Number(b.score || _computeMemoryScore(b, nowTs))
-      if (bs !== as) return bs - as
+      if (b.hybridScore !== a.hybridScore) return b.hybridScore - a.hybridScore
       if (b.confidence !== a.confidence) return b.confidence - a.confidence
       return Date.parse(b.createdAt || '') - Date.parse(a.createdAt || '')
     })
@@ -1325,75 +1421,48 @@ function mergeMemoryBundle(elderKey, delta, callId) {
 }
 
 function buildMemoryPrompt(elderKey, options) {
-  const bundle = getMemoryBundle(elderKey)
-  const opts = options || {}
-  const parts = []
-  const elderMemory = bundle.elderMemory || {}
-  const xiaolinMemory = bundle.xiaolinMemory || {}
-  const typeBudget = Object.assign({
-    followUp: 1,
-    recentEvent: 1,
-    interest: 1,
-  }, opts.typeBudget || {})
-
-  const memoryItems = _selectMemoryItemsForContext(bundle, Object.assign({}, opts, {
-    intent: opts.intent || 'general',
-    typeBudget,
+  const context = buildMemoryContext(elderKey, Object.assign({
+    intent: 'general',
+  }, options || {}, {
+    includePreferredAddress: false,
   }))
-
-  if (memoryItems.length > 0) {
-    memoryItems.forEach(item => {
-      const line = _formatMemoryItemForPrompt(item)
-      if (line) parts.push(line)
-    })
-  }
-
-  if (parts.length > 0) {
-    return parts.join('\n')
-  }
-
-  if (elderMemory.recentEvents && elderMemory.recentEvents.length > 0) {
-    const recentEvents = (elderMemory.recentEvents || []).filter(text => !_isLowInfoMemoryText(text))
-    if (recentEvents.length > 0) {
-      parts.push(`老人近期事件：${recentEvents.slice(0, 3).join('；')}`)
-    }
-  }
-  if (elderMemory.interestTags && elderMemory.interestTags.length > 0) {
-    const interestTags = (elderMemory.interestTags || []).filter(text => !_isLowInfoMemoryText(text))
-    if (interestTags.length > 0) {
-      parts.push(`老人兴趣：${interestTags.slice(0, 5).join('、')}`)
-    }
-  }
-  if (xiaolinMemory.preferredAddress) {
-    parts.push(`偏好称呼：${xiaolinMemory.preferredAddress}`)
-  }
-  if (xiaolinMemory.followUps && xiaolinMemory.followUps.length > 0) {
-    const followUps = (xiaolinMemory.followUps || []).filter(text => !_isLowInfoMemoryText(text))
-    if (followUps.length > 0) {
-      parts.push(`上次承诺跟进：${followUps.slice(0, 3).join('；')}`)
-    }
-  }
-
-  return parts.join('\n')
+  return context.prompt || ''
 }
 
 function buildMemoryContext(elderKey, options) {
   const bundle = getMemoryBundle(elderKey)
   const opts = options || {}
+  const purpose = _normalizeMemoryPurpose(opts.purpose)
   const intent = _inferMemoryContextIntent(opts)
   const selected = _selectMemoryItemsForContext(bundle, opts)
-  const lines = selected.map(_formatMemoryItemForPrompt).filter(Boolean)
+  const factItems = selected.filter(item => item.type !== 'tabooTopic')
+  const tabooItems = selected.filter(item => item.type === 'tabooTopic')
+  const outputItems = purpose === 'constraint' ? tabooItems : factItems
+  const lines = outputItems.map(_formatMemoryItemForPrompt).filter(Boolean)
+  if (purpose !== 'rag' && purpose !== 'steer' && purpose !== 'greeting' && purpose !== 'constraint' && tabooItems.length > 0) {
+    lines.push(`慎提话题（只作行为约束，不要主动提起或复述）：${tabooItems.map(item => item.text).join('、')}`)
+  }
   const xiaolinMemory = bundle.xiaolinMemory || {}
-  if (xiaolinMemory.preferredAddress && opts.includePreferredAddress) {
+  if (purpose !== 'constraint' && purpose !== 'rag' && xiaolinMemory.preferredAddress && opts.includePreferredAddress) {
     lines.push(`偏好称呼：${xiaolinMemory.preferredAddress}`)
   }
   return {
     intent,
-    prompt: lines.join('\n'),
-    items: selected,
-    usedTexts: selected.map(item => item.text),
-    hasSensitive: selected.some(item => item.sensitivity === 'sensitive' || item.type === 'healthNote'),
+    prompt: purpose === 'constraint' && tabooItems.length > 0
+      ? `慎提话题（只作行为约束，不要主动提起或复述）：${tabooItems.map(item => item.text).join('、')}`
+      : lines.join('\n'),
+    items: outputItems,
+    usedTexts: outputItems.map(item => item.text),
+    hasSensitive: outputItems.some(item => item.sensitivity === 'sensitive' || item.type === 'healthNote'),
   }
+}
+
+function getPreferredAddress(elderKey) {
+  const bundle = getMemoryBundle(elderKey)
+  const preferred = bundle && bundle.xiaolinMemory
+    ? String(bundle.xiaolinMemory.preferredAddress || '').trim()
+    : ''
+  return preferred || getElderTitle()
 }
 
 function getPendingMemoryConfirmations(elderKey, options) {
@@ -1612,6 +1681,7 @@ module.exports = {
   saveElderConfig,
   getElderKey,
   getElderTitle,
+  getPreferredAddress,
   getDialogId,
   saveDialogId,
   clearDialogId,

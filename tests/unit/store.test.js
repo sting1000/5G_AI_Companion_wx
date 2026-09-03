@@ -505,4 +505,133 @@ describe('store 离线规则', () => {
     expect(store.getMemoryBundle(elderKey).memoryItems.find(row => row.id === item.id)).toBeFalsy()
     expect(store.getMemoryBundle(elderKey).elderMemory.interestTags).not.toContain('太极拳')
   })
+
+  test('buildMemoryContext 会过滤 pending/rejected/过期/低置信和 private 记忆', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:trusted-filter'
+    store.mergeMemoryBundle(elderKey, {
+      memoryItems: [
+        { type: 'interest', text: '已确认太极拳', status: 'confirmed', needsConfirmation: false, confidence: 0.9 },
+        { type: 'interest', text: '待确认书法', status: 'pending', needsConfirmation: true, confidence: 0.9 },
+        { type: 'interest', text: '已拒绝合唱', status: 'rejected', needsConfirmation: false, confidence: 0.9 },
+        { type: 'interest', text: '过期兴趣', status: 'confirmed', needsConfirmation: false, confidence: 0.9, expiresAt: '2026-01-01' },
+        { type: 'interest', text: '低置信钓鱼', status: 'confirmed', needsConfirmation: false, confidence: 0.4 },
+        { type: 'interest', text: '私密记忆', status: 'confirmed', needsConfirmation: false, confidence: 0.9, visibility: 'private' },
+      ],
+    }, 'call_filter_001')
+
+    const context = store.buildMemoryContext(elderKey, {
+      intent: 'smallTalk',
+      purpose: 'rag',
+      maxItems: 2,
+      minConfidence: 0.6,
+    })
+    expect(context.items.map(item => item.text)).toEqual(['已确认太极拳'])
+    expect(context.prompt).not.toContain('待确认书法')
+    expect(context.prompt).not.toContain('已拒绝合唱')
+    expect(context.prompt).not.toContain('过期兴趣')
+    expect(context.prompt).not.toContain('低置信钓鱼')
+    expect(context.prompt).not.toContain('私密记忆')
+  })
+
+  test('buildMemoryContext 相关闲聊可召回兴趣，无关话题和无关闲聊不召回健康', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:hybrid-recall'
+    store.mergeMemoryBundle(elderKey, {
+      memoryItems: [
+        { type: 'interest', text: '太极拳', status: 'confirmed', needsConfirmation: false, confidence: 0.9 },
+        { type: 'healthNote', text: '最近血压有点波动', status: 'confirmed', needsConfirmation: false, confidence: 0.92 },
+        { type: 'recentEvent', text: '昨天去公园散步', status: 'confirmed', needsConfirmation: false, confidence: 0.88 },
+      ],
+    }, 'call_recall_001')
+
+    const relatedChat = store.buildMemoryContext(elderKey, {
+      currentUserText: '最近太极拳还在打吗',
+      purpose: 'rag',
+      maxItems: 2,
+      minConfidence: 0.6,
+    })
+    expect(relatedChat.items.some(item => item.text === '太极拳')).toBe(true)
+    expect(relatedChat.items.some(item => item.type === 'healthNote')).toBe(false)
+
+    const smallTalk = store.buildMemoryContext(elderKey, {
+      currentUserText: '没啥事，想聊聊天',
+      purpose: 'rag',
+      maxItems: 2,
+      minConfidence: 0.6,
+    })
+    expect(smallTalk.intent).toBe('smallTalk')
+    expect(smallTalk.items.some(item => item.text === '太极拳' || item.text === '昨天去公园散步')).toBe(true)
+    expect(smallTalk.items.some(item => item.type === 'healthNote')).toBe(false)
+
+    const unrelated = store.buildMemoryContext(elderKey, {
+      currentUserText: '今天天气怎么样',
+      purpose: 'rag',
+      maxItems: 2,
+      minConfidence: 0.6,
+    })
+    expect(unrelated.items).toHaveLength(0)
+
+    const healthChat = store.buildMemoryContext(elderKey, {
+      currentUserText: '我有点胸闷不舒服',
+      purpose: 'rag',
+      maxItems: 2,
+      minConfidence: 0.6,
+    })
+    expect(healthChat.intent).toBe('healthConcern')
+    expect(healthChat.items.some(item => item.text === '最近血压有点波动')).toBe(true)
+  })
+
+  test('buildMemoryContext 最多返回 2 条，excludeTexts 和冷却会排除已用记忆', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:recall-limit'
+    store.mergeMemoryBundle(elderKey, {
+      memoryItems: [
+        { type: 'interest', text: '太极拳', status: 'confirmed', needsConfirmation: false, confidence: 0.95 },
+        { type: 'interest', text: '书法', status: 'confirmed', needsConfirmation: false, confidence: 0.9 },
+        { type: 'followUp', text: '下次问问公园散步', status: 'confirmed', needsConfirmation: false, confidence: 0.88 },
+      ],
+    }, 'call_limit_001')
+
+    const first = store.buildMemoryContext(elderKey, {
+      intent: 'smallTalk',
+      purpose: 'rag',
+      maxItems: 2,
+      minConfidence: 0.6,
+    })
+    expect(first.items.length).toBeLessThanOrEqual(2)
+    store.markMemoryItemsUsed(elderKey, first.usedTexts)
+
+    const afterCooldown = store.buildMemoryContext(elderKey, {
+      intent: 'smallTalk',
+      purpose: 'rag',
+      maxItems: 2,
+      minConfidence: 0.6,
+    })
+    first.usedTexts.forEach(text => {
+      expect(afterCooldown.usedTexts).not.toContain(text)
+    })
+
+    const excluded = store.buildMemoryContext(elderKey, {
+      intent: 'smallTalk',
+      purpose: 'rag',
+      maxItems: 2,
+      minConfidence: 0.6,
+      excludeTexts: ['太极拳', '书法', '下次问问公园散步'],
+    })
+    expect(excluded.items).toHaveLength(0)
+  })
+
+  test('getPreferredAddress 优先返回已保存称呼', () => {
+    const store = loadStore()
+    const elderKey = 'elder:test:preferred-address'
+    store.saveElderConfig({ parentName: '王秀兰', titleSuffix: '阿姨' })
+    store.mergeMemoryBundle(elderKey, {
+      xiaolinMemory: { preferredAddress: '老李' },
+    }, 'call_addr_001')
+    expect(store.getPreferredAddress(elderKey)).toBe('老李')
+  })
 })

@@ -125,8 +125,6 @@ const ASSISTANT_TURN_PROGRESS_MAX_MS = 45000
 const REMINDER_COMPLETE_HINTS = ['完成了', '已完成', '已经完成', '完成啦', '办好了', '办完了', '弄好了', '弄完了', '已经好了', '处理好了', '处理完了', '做完了', '搞定了', '解决了']
 const REMINDER_INCOMPLETE_HINTS = ['还没', '还没有', '没做完', '没完成', '没有完成', '未完成', '还没弄好', '还没办好', '没处理完', '还在弄', '没来得及', '忘了']
 const NO_MORE_CHAT_HINTS = ['没有了', '没了', '没别的', '没其他', '不用了', '先这样', '不聊了', '没什么了', '就这样吧', '不用聊了']
-const SMALL_TALK_INTENT_HINTS = ['聊聊天', '聊聊', '随便聊', '没啥事', '没什么事', '就是想聊', '想说说话', '陪我聊', '说说话']
-const CONCRETE_NEED_HINTS = ['提醒', '记得', '复查', '复诊', '吃药', '测血压', '血糖', '不舒服', '难受', '胸闷', '胸痛', '头晕', '帮我', '联系', '预约', '挂号', '怎么做', '怎么办']
 const END_CALL_INTENT_HINTS = ['先这样吧', '先这样了', '就这样吧', '我挂了', '挂了啊', '不聊了', '不用聊了', '回头再说', '下次再聊', '改天再聊', '今天先到这', '今天就到这', '先聊到这', '再见', '拜拜']
 const GREETING_MEMORY_COOLDOWN_MS = 48 * 60 * 60 * 1000
 const MIN_CONNECTING_UI_MS = 2200
@@ -147,6 +145,7 @@ const DEFAULT_VOICE_PRESET = 'expressive'
 const UPLINK_CHUNK_BYTES = FRAME_SIZE || 640
 const VAD_EXPERIMENT_WINDOWS_MS = Object.freeze([800, 1000, 1300])
 const ACTIVE_VAD_WINDOW_MS = 1300
+const RAG_FINAL_TEXT_DEDUPE_MS = 1800
 const AUDIO_PLAYBACK_MODE = PLAYBACK_MODE_SINGLE_WAV
 const PLAYBACK_EXPERIMENT_MODES = Object.freeze([
   PLAYBACK_MODE_SINGLE_WAV,
@@ -330,7 +329,10 @@ Page({
     }
     this.timeWeatherContext = store.getMockTimeWeatherContext()
     this.pendingMemoryConfirmation = null
-    this.lastSmallTalkSteerAt = 0
+    this.sentRagQuestionIds = new Set()
+    this.ragInFlightKeys = new Set()
+    this.lastRagFinalText = ''
+    this.lastRagFinalTextAt = 0
     // 来电等待可播 idle；一旦接通，问候出声前不要先露聆听画面
     this.companionDeferIdle = options.mode !== 'incoming'
     this._initCompanionVisual()
@@ -621,8 +623,12 @@ Page({
 
     try {
       const elderConfig = store.getElderConfig()
-      const title = store.getElderTitle()
       this.currentElderKey = store.getElderKey(elderConfig)
+      this.sentRagQuestionIds = new Set()
+      this.ragInFlightKeys = new Set()
+      this.lastRagFinalText = ''
+      this.lastRagFinalTextAt = 0
+      const title = this._resolveCallAddress(store.getElderTitle(), store.getMemoryBundle(this.currentElderKey))
       const dialogId = store.getDialogId(this.currentElderKey)
       const memoryBundle = store.getMemoryBundle(this.currentElderKey)
       const pendingConfirm = this._pickPendingMemoryConfirmation()
@@ -631,58 +637,17 @@ Page({
       const greetingPayload = this._buildMemoryAwareGreeting(title, memoryBundle, this.incomingReminder, pendingConfirm, {
         isFirstVoiceCall,
       })
-      const memoryContext = store.buildMemoryContext
-        ? store.buildMemoryContext(this.currentElderKey, {
-          intent: this.data.callMode === 'incoming' ? 'opening' : 'outgoingNeed',
-          callMode: this.data.callMode,
-          maxItems: 1,
-          minConfidence: 0.6,
-          includePreferredAddress: true,
-        })
-        : { prompt: store.buildMemoryPrompt(this.currentElderKey, { maxItems: 1, minConfidence: 0.6 }) }
-      const memoryPrompt = greetingPayload.usedMemoryText
-        ? ''
-        : (memoryContext && memoryContext.prompt ? memoryContext.prompt : '')
-      const contextPrompt = this.timeWeatherContext && this.timeWeatherContext.prompt
-        ? `\n当前场景：${this.timeWeatherContext.prompt}`
-        : ''
-
       const voicePreset = VOICE_PRESET_CONFIG[DEFAULT_VOICE_PRESET] || VOICE_PRESET_CONFIG.safe
       const layeredPersonaManifest = this._buildCharacterManifest({
         title,
         voicePreset,
         memoryBundle,
+        callMode: this.data.callMode,
+        isFirstVoiceCall,
+        usedReminderId: greetingPayload.usedReminderId,
+        pendingConfirm,
       })
-      const reminderGuidance = greetingPayload.usedReminderId
-        ? `\n当前通话是“提醒事项回访”。对话顺序必须遵守：
-1) 首句只提醒事项并确认现在是否方便看一下，不直接问“完成了吗”；
-2) 若用户说方便或正在处理，再确认提醒事项进展；
-3) 若用户说已完成：先肯定，再只追问一次“您还有别的事想和我说吗？”；
-4) 若用户说没有其他想聊：说一句短收尾，不继续追问；
-5) 若用户说未完成：先问阻碍并给1-2条可执行建议，再简短确认是否需要继续帮忙。
-不要再用“能聊聊吗/方便聊两句吗”作为开场。`
-        : ''
-      const pendingMemoryGuidance = pendingConfirm
-        ? `\n当前有待确认记忆：${pendingConfirm.text}。请在本轮自然确认，不要诱导；若用户明确否认则放弃该记忆，若明确认可再继续使用。`
-        : ''
-      const outgoingGuidance = this.data.callMode === 'outgoing'
-        ? (isFirstVoiceCall
-          ? '\n当前是用户和小林第一次语音通话：语气比普通来电更温暖，先建立关系，不用“喂”开头，不急着追问需求，也不要引用历史记忆。'
-          : '\n当前是“立即通话”场景：第一句只做需求确认（如“您找我有什么事”），不要在第一句带入历史记忆。若用户表示“想聊聊/没啥事就聊聊”，第二轮再自然带出1条历史话题并追问近况。')
-        : ''
-      const systemRole = `你是小林，一个温柔亲切的大学女生陪伴助手，正在和${title}通电话。请全程用“您”称呼对方，句子短而自然，避免长句说教。
-如果对方说“叫我XXX”，请立即切换称呼并记住。
-如果有历史记忆，优先在需求已明确后自然带出1条，不重复盘问。
-你可以做的事：聊天陪伴、情绪安抚、记录并设置小程序内提醒、给出现实可执行建议（如联系家属/医生/社区服务），并在用户提出诉求时主动协助其联系对应人员。
-你绝对不能做的事：承诺或描述你会线下执行任何动作（上门照料、陪同就医、代买代办、寄送物品、按摩护理等）。
-禁止句式示例（绝对不要说）：我陪您去医院、我马上过去、我去帮您买药、我替您办好。
-遇到用户请求线下陪同/代办时，固定回复策略：先共情，再明确“我不能线下行动”，然后明确“我可以帮您联系对应的人”，并给电话内可执行方案（联系家属/120/社区服务/网约车）。
-遇到健康不适或生活困难时，先共情，再给电话内可执行建议，并提醒联系家属或专业机构。
-表达风格：口语化、真诚、有节奏停顿，不要模板化复读，不要夸张表演腔。
-${PHONE_CONVERSATION_GUIDE}
-${REMINDER_RESPONSE_GUIDE}
-${CARE_RESPONSE_PLAYBOOK}
-${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${reminderGuidance}${pendingMemoryGuidance}${outgoingGuidance}`
+      const systemRole = layeredPersonaManifest
 
       // 1-2. 并行处理：请求麦克风权限 + 连接 WebSocket，减少冷启动串行耗时
       this._setConnectionPhase('authorizing')
@@ -843,9 +808,9 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
         this._tryResolvePendingMemoryConfirmation(text)
         this._handleIncomingReminderFollowup(text)
         this._handleExplicitEndCallIntent(text)
-        this._maybeInjectOutgoingSmallTalkSteer(text)
         // P0：当用户在本轮明确说出“提醒/记得 + 具体时间/日期”时，立刻写入提醒，避免等待通话摘要
         this._tryUpsertReminderCandidatesFromASRFinal(text)
+        this._maybeInjectTurnMemoryRAG(visibleText, meta)
         this.setData({ currentUserDraft: '' })
       }
     }
@@ -1996,26 +1961,71 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     }
   },
 
-  _buildCharacterManifest({ title, voicePreset, memoryBundle }) {
-    const elderMemory = memoryBundle && memoryBundle.elderMemory ? memoryBundle.elderMemory : {}
-    const xiaolinMemory = memoryBundle && memoryBundle.xiaolinMemory ? memoryBundle.xiaolinMemory : {}
-    const stableInterests = (elderMemory.interestTags || []).slice(0, 3).join('、')
-    const stableHealth = (elderMemory.healthNotes || []).slice(0, 2).join('；')
-    const tabooTopics = (xiaolinMemory.tabooTopics || []).slice(0, 2).join('、')
-    const careStrategies = (voicePreset.careStrategies || []).slice(0, 4).join('；')
+  _resolveCallAddress(title, memoryBundle) {
+    const preferred = memoryBundle && memoryBundle.xiaolinMemory
+      ? String(memoryBundle.xiaolinMemory.preferredAddress || '').trim()
+      : ''
+    if (preferred) return preferred
+    return String(title || '').trim()
+  },
+
+  _buildCharacterManifest({ title, voicePreset, memoryBundle, callMode, isFirstVoiceCall, usedReminderId, pendingConfirm }) {
+    const address = this._resolveCallAddress(title, memoryBundle)
+    const preset = voicePreset || {}
+    const style = preset.characterManifest || '温柔亲切，短句清晰，避免说教。'
+    const careStrategies = (preset.careStrategies || []).slice(0, 4).join('；')
+    const constraintContext = store.buildMemoryContext
+      ? store.buildMemoryContext(this.currentElderKey, {
+        purpose: 'constraint',
+        maxItems: 2,
+        minConfidence: 0.6,
+      })
+      : { items: [], prompt: '' }
+    const tabooLine = constraintContext && constraintContext.prompt ? constraintContext.prompt : ''
+    const scenePrompt = this.timeWeatherContext && this.timeWeatherContext.prompt
+      ? `当前场景：${this.timeWeatherContext.prompt}`
+      : ''
+    let modeGuide = '当前通话模式：普通陪伴通话。先听清来意，再按电话短句回应；相关记忆由本轮动态注入，不要主动翻旧账。'
+    if (usedReminderId) {
+      modeGuide = '当前通话模式：提醒事项回访。首句只提醒事项并确认现在是否方便，不要在第一句追问完成情况；用户说方便后再确认进展。'
+    } else if ((callMode || this.data.callMode) === 'outgoing' && isFirstVoiceCall) {
+      modeGuide = '当前通话模式：第一次语音通话。语气更温暖，先建立关系，不用“喂”开头，不急着追问需求，也不要引用历史记忆。'
+    } else if ((callMode || this.data.callMode) === 'outgoing') {
+      modeGuide = '当前通话模式：立即通话。第一句只确认来意，不要在第一句带入历史记忆。'
+    } else if ((callMode || this.data.callMode) === 'incoming') {
+      modeGuide = '当前通话模式：主动呼入陪伴。第一句要短，像熟人打电话；一次只问一个问题。'
+    }
+    const pendingGuide = pendingConfirm
+      ? '当前处于记忆确认流程：你可能记错了，需要先确认；确认前不要把未确认内容当作事实。'
+      : ''
+    const reminderPlaybook = usedReminderId
+      ? `提醒回访五步规则：
+1) 首句只提醒事项并确认现在是否方便看一下，不直接问"完成了吗"；
+2) 若用户说方便或正在处理，再确认提醒事项进展；
+3) 若用户说已完成：先肯定，再只追问一次"您还有别的事想和我说吗？"；
+4) 若用户说没有其他想聊：说一句短收尾，不继续追问；
+5) 若用户说未完成：先问阻碍并给1-2条可执行建议，再简短确认是否需要继续帮忙。
+不要再用"能聊聊吗/方便聊两句吗"作为开场。`
+      : ''
     return [
-      `你是“小林”，服务对象是${title}，核心目标是提供温柔、可靠、电话内可执行的陪伴。`,
-      '人物背景：你是刚工作的晚辈女生，习惯先关心再建议，语气亲切但不撒娇，不把老人当小孩。',
-      '关系连续性：优先记住上次约定、近期生活变化和称呼偏好；若信息不确定，先确认再引用。',
-      '优先级规则：安全约束 > 角色稳定规则 > 动态记忆事实；低优先级不得覆盖高优先级。',
-      '角色底线：不能承诺线下行动（上门、陪同、代买代办、寄送等），只能提供电话内协助与转介。',
-      '提醒能力：可以记录并设置小程序内提醒；用户要求提醒且时间事项明确时，确认已记上，不转去指导手机闹钟。',
-      `表达风格：${voicePreset.characterManifest || '温柔亲切，短句清晰，避免说教。'}`,
-      '沟通习惯：像电话里熟悉的晚辈，每次回复只推进一个重点，先共情再追问，避免连续抛出多个问题。',
+      `你是“小林”，刚工作的晚辈女生陪伴助手，正在和${address || '对方'}通电话。核心目标是提供温柔、可靠、电话内可执行的陪伴。`,
+      `称呼原则：全程用“您”；当前称呼为“${address || '您'}”。如果对方说“叫我XXX”，立即切换并记住。`,
+      '电话式短句：像熟人打电话，每轮1-2句，一次只问一个问题，不报功能菜单，不连续抛多个问题。',
+      '线下行动安全边界：不能承诺或描述线下执行任何动作（上门照料、陪同就医、代买代办、寄送物品、按摩护理）。遇到线下请求时，先共情，明确“我不能线下行动”，再帮对方联系家属/120/社区服务。',
+      '禁止句式：我陪您去医院、我马上过去、我去帮您买药、我替您办好。',
+      '提醒能力边界：可以记录并设置小程序内提醒；时间和事项明确时确认已记上；不要说无法设置，不转去指导手机闹钟。',
+      '健康不适边界：遇到健康不适时，先共情（复述感受）、评估风险（追问时间/程度/伴随症状）、给电话内可执行建议，并提醒联系家属或医生；紧急不适（胸痛、呼吸困难、意识不清等）优先帮忙联系120。',
+      modeGuide,
+      `表达风格：${style}口语化、真诚、有节奏停顿，不要模板化复读，不要夸张表演腔。`,
       careStrategies ? `陪伴策略：${careStrategies}` : '',
-      stableInterests ? `动态记忆（兴趣，谨慎提及）：${stableInterests}` : '',
-      stableHealth ? `动态记忆（健康背景，仅在相关场景提及）：${stableHealth}` : '',
-      tabooTopics ? `动态记忆（慎提话题）：${tabooTopics}` : '',
+      PHONE_CONVERSATION_GUIDE,
+      REMINDER_RESPONSE_GUIDE,
+      CARE_RESPONSE_PLAYBOOK,
+      reminderPlaybook,
+      '优先级：安全约束 > 角色稳定规则 > 动态记忆事实。不确定的信息先确认再引用。长期记忆只在本轮相关时使用，不要把记忆库整段复述。',
+      pendingGuide,
+      tabooLine,
+      scenePrompt,
     ].filter(Boolean).join('\n')
   },
 
@@ -2313,11 +2323,7 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
   },
 
   _buildMemoryAwareGreeting(title, memoryBundle, incomingReminder, pendingMemoryConfirmation, options) {
-    const elderMemory = memoryBundle && memoryBundle.elderMemory ? memoryBundle.elderMemory : {}
-    const xiaolinMemory = memoryBundle && memoryBundle.xiaolinMemory ? memoryBundle.xiaolinMemory : {}
-    const followUp = this._pickFirstNotCooling(xiaolinMemory.followUps || [])
-    const recentEvent = this._pickFirstNotCooling(elderMemory.recentEvents || [])
-    const interest = this._pickFirstNotCooling(elderMemory.interestTags || [])
+    const address = this._resolveCallAddress(title, memoryBundle)
     const pendingConfirmText = pendingMemoryConfirmation && pendingMemoryConfirmation.text
       ? this._normalizeMemorySentence(pendingMemoryConfirmation.text)
       : ''
@@ -2326,62 +2332,83 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
       if (incomingReminder && incomingReminder.title) {
         const reminderTitle = this._normalizeMemorySentence(incomingReminder.title) || '这件事'
         return {
-          text: `喂，${title}，我是小林。到时间啦，我提醒您${reminderTitle}，${this._buildIncomingReminderQuestion(reminderTitle)}`,
+          text: `喂，${address}，我是小林。到时间啦，我提醒您${reminderTitle}，${this._buildIncomingReminderQuestion(reminderTitle)}`,
           usedMemoryText: '',
           usedReminderId: incomingReminder.id || '',
         }
       }
       if (pendingConfirmText) {
         return {
-          text: `喂，${title}，我是小林。上次我记了“${pendingConfirmText}”，怕记错了，想跟您确认一下。`,
+          text: `喂，${address}，我是小林。上次我记了“${pendingConfirmText}”，可能记错了，想跟您确认一下。`,
           usedMemoryText: '',
           usedReminderId: '',
         }
       }
-      if (followUp) {
-        const naturalFollowUp = this._humanizeGreetingMemoryText(followUp)
+      const greetingMemory = this._selectTrustedGreetingMemory()
+      if (greetingMemory && greetingMemory.type === 'followUp') {
+        const naturalFollowUp = this._humanizeGreetingMemoryText(greetingMemory.text)
         return {
-          text: `喂，${title}，我是小林。上次您说${naturalFollowUp}，我有点惦记，这两天怎么样？`,
-          usedMemoryText: followUp,
+          text: `喂，${address}，我是小林。上次您说${naturalFollowUp}，我有点惦记，这两天怎么样？`,
+          usedMemoryText: greetingMemory.text,
           usedReminderId: '',
         }
       }
-      if (recentEvent) {
-        const naturalRecentEvent = this._humanizeGreetingMemoryText(recentEvent)
+      if (greetingMemory && greetingMemory.type === 'recentEvent') {
+        const naturalRecentEvent = this._humanizeGreetingMemoryText(greetingMemory.text)
         return {
-          text: `喂，${title}，我是小林。上次您说${naturalRecentEvent}，这两天还顺利吗？`,
-          usedMemoryText: recentEvent,
+          text: `喂，${address}，我是小林。上次您说${naturalRecentEvent}，这两天还顺利吗？`,
+          usedMemoryText: greetingMemory.text,
           usedReminderId: '',
         }
       }
-      if (interest) {
+      if (greetingMemory && greetingMemory.type === 'interest') {
         return {
-          text: `喂，${title}，我是小林。您之前提到喜欢${interest}，最近还有继续吗？`,
-          usedMemoryText: interest,
+          text: `喂，${address}，我是小林。您之前提到喜欢${greetingMemory.text}，最近还有继续吗？`,
+          usedMemoryText: greetingMemory.text,
           usedReminderId: '',
         }
       }
       return {
-        text: `喂，${title}，我是小林。今天想听听您这两天怎么样。`,
+        text: `喂，${address}，我是小林。今天想听听您这两天怎么样。`,
         usedMemoryText: '',
         usedReminderId: '',
       }
     }
 
     if (options && options.isFirstVoiceCall) {
-      const address = title ? `${title}您好` : '您好'
+      const hello = address ? `${address}您好` : '您好'
       return {
-        text: `${address}，我是小林。第一次和您通话，我先陪您慢慢聊。您今天想先跟我说说什么？`,
+        text: `${hello}，我是小林。第一次和您通话，我先陪您慢慢聊。您今天想先跟我说说什么？`,
         usedMemoryText: '',
         usedReminderId: '',
       }
     }
 
     return {
-      text: `喂，${title}，我是小林。您找我呀？`,
+      text: `喂，${address}，我是小林。您找我呀？`,
       usedMemoryText: '',
       usedReminderId: '',
     }
+  },
+
+  _selectTrustedGreetingMemory() {
+    if (!store.buildMemoryContext) return null
+    const context = store.buildMemoryContext(this.currentElderKey, {
+      intent: 'opening',
+      purpose: 'greeting',
+      maxItems: 3,
+      minConfidence: 0.6,
+    })
+    const items = (context && context.items) || []
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      if (!item || !item.text) continue
+      if (item.type === 'healthNote' || item.type === 'tabooTopic') continue
+      if (this._isReminderCommandLike(item.text) || this._isLowInfoSentence(item.text)) continue
+      if (store.isGreetingMemoryCooling(this.currentElderKey, item.text, GREETING_MEMORY_COOLDOWN_MS)) continue
+      return item
+    }
+    return null
   },
 
   _buildIncomingReminderQuestion(reminderTitle) {
@@ -2567,54 +2594,57 @@ ${memoryPrompt ? `\n已知记忆：\n${memoryPrompt}` : ''}${contextPrompt}${rem
     store.upsertExtractedReminderCandidates([candidate], this.currentElderKey, { autoThreshold: 0.78 })
   },
 
-  _maybeInjectOutgoingSmallTalkSteer(userText) {
-    if (this.data.callMode !== 'outgoing') return
-    if (!this.client || !this.client.sessionActive || typeof this.client.sendTextQuery !== 'function') return
-    if (this.assistantTurnCount < 1) return
-    if (this._hasExplicitEndCallIntent(userText)) return
-    const normalized = this._normalizeMemorySentence(userText)
-    if (!normalized) return
-    if (!this._hasSmallTalkIntent(normalized)) return
-    if (this._hasConcreteNeedIntent(normalized)) return
-    const now = Date.now()
-    if (now - this.lastSmallTalkSteerAt < 8000) return
-    const steerPrompt = this._buildSmallTalkSteerPrompt()
-    if (!steerPrompt) return
-    this.lastSmallTalkSteerAt = now
-    this.client.sendTextQuery(steerPrompt)
-  },
-
-  _hasSmallTalkIntent(text) {
-    const normalized = this._normalizeMemorySentence(text)
-    if (!normalized) return false
-    return SMALL_TALK_INTENT_HINTS.some(keyword => normalized.includes(keyword))
-  },
-
-  _hasConcreteNeedIntent(text) {
-    const normalized = this._normalizeMemorySentence(text)
-    if (!normalized) return false
-    return CONCRETE_NEED_HINTS.some(keyword => normalized.includes(keyword))
-  },
-
-  _buildSmallTalkSteerPrompt() {
-    const memoryBundle = store.getMemoryBundle(this.currentElderKey)
-    const elderMemory = memoryBundle && memoryBundle.elderMemory ? memoryBundle.elderMemory : {}
-    const interests = (elderMemory.interestTags || []).filter(Boolean)
-    const health = (elderMemory.healthNotes || []).filter(Boolean)
-    const interest = this._pickFirstNotCooling(interests)
-    const healthSignal = this._pickFirstNotCooling(health)
-    if (!interest && !healthSignal) return ''
-
-    if (interest && healthSignal) {
-      return `用户明确表示“想聊聊”，且当前没有提出新的具体诉求。请优先按以下顺序继续：
-1) 先从兴趣话题自然开启：${interest}
-2) 若用户反馈健康相关，再温和承接健康信号：${healthSignal}
-要求：只问一个具体近况问题，口语化短句，不要一次抛多个问题。`
+  async _maybeInjectTurnMemoryRAG(userText, meta) {
+    try {
+      if (!this.client || typeof this.client.sendRAGText !== 'function') return
+      if (!this.client.sessionActive) return
+      if (this._hasExplicitEndCallIntent(userText)) return
+      const normalized = this._normalizeMemorySentence(userText)
+      if (!normalized) return
+      const questionId = meta && meta.questionId ? String(meta.questionId) : ''
+      if (questionId) {
+        if (this.sentRagQuestionIds.has(questionId)) return
+        if (this.ragInFlightKeys.has(questionId)) return
+      } else {
+        const now = Date.now()
+        if (this.lastRagFinalText === normalized
+          && now - (this.lastRagFinalTextAt || 0) < RAG_FINAL_TEXT_DEDUPE_MS) return
+        const textKey = `text:${normalized}`
+        if (this.ragInFlightKeys.has(textKey)) return
+      }
+      if (this.currentLatencyTurn && this.currentLatencyTurn.firstChatAt) return
+      if (!store.buildMemoryContext) return
+      const context = store.buildMemoryContext(this.currentElderKey, {
+        currentUserText: userText,
+        purpose: 'rag',
+        maxItems: 2,
+        minConfidence: 0.6,
+      })
+      const factItems = ((context && context.items) || []).filter(item => item && item.type !== 'tabooTopic')
+      if (factItems.length === 0) return
+      const ragItems = factItems.map(item => ({
+        title: '长期记忆',
+        content: String(item.text || '').trim(),
+      })).filter(item => item.content)
+      if (ragItems.length === 0) return
+      const inFlightKey = questionId || `text:${normalized}`
+      this.ragInFlightKeys.add(inFlightKey)
+      let sent = false
+      try {
+        sent = await this.client.sendRAGText(ragItems)
+      } finally {
+        this.ragInFlightKeys.delete(inFlightKey)
+      }
+      if (!sent) return
+      if (questionId) this.sentRagQuestionIds.add(questionId)
+      this.lastRagFinalText = normalized
+      this.lastRagFinalTextAt = Date.now()
+      if (store.markMemoryItemsUsed) {
+        store.markMemoryItemsUsed(this.currentElderKey, context.usedTexts || factItems.map(item => item.text))
+      }
+    } catch (err) {
+      logger.warn('turn RAG inject skipped')
     }
-    if (interest) {
-      return `用户明确表示“想聊聊”，且当前没有提出新的具体诉求。请直接从这个兴趣话题继续：${interest}。要求：自然追问一个具体近况，口语化短句，不要说教。`
-    }
-    return `用户明确表示“想聊聊”，且当前没有提出新的具体诉求。请温和承接这个健康信号并继续聊天：${healthSignal}。要求：先共情，再追问一个近况细节，不要制造焦虑。`
   },
 
   _normalizeMemoryDelta(rawData, record, source) {

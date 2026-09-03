@@ -552,6 +552,93 @@ describe('call 页面离线关键分支', () => {
     expect(manifest).toContain('不转去指导手机闹钟')
   })
 
+  test('2.2.0.0 character_manifest 包含核心角色、安全及表达规则', () => {
+    const page = loadPage()
+    page.setData({ callMode: 'outgoing' })
+    const manifest = page._buildCharacterManifest({
+      title: '王阿姨',
+      voicePreset: { characterManifest: '更有情感层次，但不过度夸张。', careStrategies: ['先共情再建议'] },
+      memoryBundle: { elderMemory: {}, xiaolinMemory: {} },
+      callMode: 'outgoing',
+      isFirstVoiceCall: false,
+    })
+
+    expect(manifest).toContain('小林')
+    expect(manifest).toContain('称呼原则')
+    expect(manifest).toContain('一次只问一个问题')
+    expect(manifest).toContain('不能承诺或描述线下执行任何动作')
+    expect(manifest).toContain('设置小程序内提醒')
+    expect(manifest).toContain('当前通话模式：立即通话')
+    expect(manifest).toContain('更有情感层次，但不过度夸张')
+    expect(manifest).not.toContain('动态记忆（健康背景')
+  })
+
+  test('核心规则写在 character_manifest，而不是只存在于 system_role', () => {
+    const page = loadPage()
+    const manifest = page._buildCharacterManifest({
+      title: '王阿姨',
+      voicePreset: { characterManifest: '温柔亲切', careStrategies: [] },
+      memoryBundle: { elderMemory: {}, xiaolinMemory: {} },
+      callMode: 'incoming',
+    })
+    expect(manifest).toContain('线下行动安全边界')
+    expect(manifest).toContain('提醒能力边界')
+    expect(manifest).toContain('电话式短句')
+    expect(manifest).toContain('表达风格')
+  })
+
+  test('pending 健康记忆不会进入 character_manifest 或普通问候', () => {
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = 'elder:test:pending-manifest'
+    page.currentElderKey = elderKey
+    page.setData({ callMode: 'incoming' })
+    store.mergeMemoryBundle(elderKey, {
+      elderMemory: {
+        healthNotes: ['最近血压有点波动'],
+      },
+      memoryItems: [
+        { type: 'healthNote', text: '最近血压有点波动', status: 'pending', needsConfirmation: true, confidence: 0.9 },
+        { type: 'interest', text: '未确认书法', status: 'pending', needsConfirmation: true, confidence: 0.5 },
+      ],
+    }, 'call_pending_1')
+    const bundle = store.getMemoryBundle(elderKey)
+    const manifest = page._buildCharacterManifest({
+      title: '王阿姨',
+      voicePreset: { characterManifest: '温柔亲切', careStrategies: [] },
+      memoryBundle: bundle,
+    })
+    expect(manifest).not.toContain('最近血压有点波动')
+    expect(manifest).not.toContain('未确认书法')
+
+    const greeting = page._buildMemoryAwareGreeting('王阿姨', bundle, null, null)
+    expect(greeting.text).not.toContain('最近血压有点波动')
+    expect(greeting.text).not.toContain('未确认书法')
+    expect(greeting.usedMemoryText).toBe('')
+  })
+
+  test('preferredAddress 用于下次通话第一句和 character_manifest', () => {
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = 'elder:test:preferred-greeting'
+    page.currentElderKey = elderKey
+    page.setData({ callMode: 'incoming' })
+    store.mergeMemoryBundle(elderKey, {
+      xiaolinMemory: { preferredAddress: '老李' },
+    }, 'call_pref_1')
+    const bundle = store.getMemoryBundle(elderKey)
+    const greeting = page._buildMemoryAwareGreeting('王阿姨', bundle, null, null)
+    expect(greeting.text).toContain('老李')
+    expect(greeting.text).not.toContain('王阿姨')
+
+    const manifest = page._buildCharacterManifest({
+      title: '王阿姨',
+      voicePreset: { characterManifest: '温柔亲切', careStrategies: [] },
+      memoryBundle: bundle,
+    })
+    expect(manifest).toContain('老李')
+  })
+
   test('_isReminderCommandLike 能识别“提醒某人起床”这类提醒句', () => {
     const page = loadPage()
     expect(page._isReminderCommandLike('小林提醒龚阿姨起床')).toBe(true)
@@ -982,48 +1069,263 @@ describe('call 页面离线关键分支', () => {
     expect(page.callEndingState.shouldAutoEndAfterAssistant).toBe(true)
     expect(page.callEndingState.source).toBe('user_end_intent')
   })
-
-  test('_maybeInjectOutgoingSmallTalkSteer 在“想聊聊”且无明确诉求时会注入兜底引导', () => {
-    const page = loadPage()
-    page.setData({ callMode: 'outgoing' })
-    page.assistantTurnCount = 1
-    page.currentElderKey = 'elder:test:small-talk'
+  function setupRagCallPage(page, elderKey) {
+    page.currentElderKey = elderKey
+    page._markCallConnectedIfNeeded = jest.fn()
+    page._tryResolvePendingMemoryConfirmation = jest.fn()
+    page.pendingMemoryConfirmation = null
+    page.sentRagQuestionIds = new Set()
+    page.ragInFlightKeys = new Set()
+    page.lastRagFinalText = ''
+    page.lastRagFinalTextAt = 0
+    page.messages = []
+    page.latencySamples = []
+    page.currentLatencyTurn = null
+    page.latencyRunId = 'rag-test'
+    page.latencyTurnSeq = 0
+    page.recorder = {}
+    page.player = { appendChunk: jest.fn(), playBuffered: jest.fn(), stop: jest.fn(), playing: false }
     page.client = {
       sessionActive: true,
+      sendRAGText: jest.fn(() => Promise.resolve(true)),
       sendTextQuery: jest.fn(),
     }
-    page._buildSmallTalkSteerPrompt = jest.fn(() => '用户想聊聊，请从兴趣继续')
+    page._setupCallbacks()
+    return page.client
+  }
 
-    page._maybeInjectOutgoingSmallTalkSteer('没啥事，就想和你聊聊天')
-    expect(page.client.sendTextQuery).toHaveBeenCalledTimes(1)
-    expect(page.client.sendTextQuery.mock.calls[0][0]).toContain('想聊聊')
+  test('pending 记忆不会进入 RAG，没有相关记忆时不发送 502', () => {
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = 'elder:test:rag-pending'
+    store.mergeMemoryBundle(elderKey, {
+      elderMemory: { healthNotes: ['最近血压有点波动'] },
+      memoryItems: [
+        { type: 'healthNote', text: '最近血压有点波动', status: 'pending', needsConfirmation: true, confidence: 0.92 },
+      ],
+    }, 'call_rag_pending')
+    const client = setupRagCallPage(page, elderKey)
+    client.onASRText('我最近血压怎么样', true, { questionId: 'q-pending-health' })
+    expect(client.sendRAGText).not.toHaveBeenCalled()
+    expect(client.sendTextQuery).not.toHaveBeenCalled()
   })
 
-  test('_maybeInjectOutgoingSmallTalkSteer 在有明确诉求时不会注入兜底引导', () => {
+  test('confirmed 兴趣可在相关闲聊中召回，且 RAG 不调用 sendTextQuery', async () => {
     const page = loadPage()
-    page.setData({ callMode: 'outgoing' })
-    page.assistantTurnCount = 1
-    page.client = {
-      sessionActive: true,
-      sendTextQuery: jest.fn(),
-    }
-
-    page._maybeInjectOutgoingSmallTalkSteer('我胸闷不舒服，想问问怎么办')
-    expect(page.client.sendTextQuery).not.toHaveBeenCalled()
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = 'elder:test:rag-interest'
+    store.mergeMemoryBundle(elderKey, {
+      memoryItems: [
+        { type: 'interest', text: '太极拳', status: 'confirmed', needsConfirmation: false, confidence: 0.9 },
+      ],
+    }, 'call_rag_interest')
+    const client = setupRagCallPage(page, elderKey)
+    client.onASRText('最近太极拳还在打吗', true, { questionId: 'q-taiji' })
+    await new Promise(r => setTimeout(r, 0))
+    expect(client.sendRAGText).toHaveBeenCalledTimes(1)
+    expect(client.sendTextQuery).not.toHaveBeenCalled()
+    const ragItems = client.sendRAGText.mock.calls[0][0]
+    expect(ragItems[0].title).toBe('长期记忆')
+    expect(ragItems[0].content).toContain('太极拳')
+    const used = store.getMemoryBundle(elderKey).memoryItems.find(item => item.text === '太极拳')
+    expect(used.lastUsedAt).toBeTruthy()
   })
 
-  test('_maybeInjectOutgoingSmallTalkSteer 在明确要结束时不会注入兜底引导', () => {
+  test('健康记忆不会在无关闲聊中召回，同一 questionId 不重复发送 RAG', async () => {
     const page = loadPage()
-    page.setData({ callMode: 'outgoing' })
-    page.assistantTurnCount = 1
-    page.client = {
-      sessionActive: true,
-      sendTextQuery: jest.fn(),
-    }
-    page._buildSmallTalkSteerPrompt = jest.fn(() => '用户想聊聊，请从兴趣继续')
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = 'elder:test:rag-health-idle'
+    store.mergeMemoryBundle(elderKey, {
+      memoryItems: [
+        { type: 'healthNote', text: '最近血压有点波动', status: 'confirmed', needsConfirmation: false, confidence: 0.92 },
+        { type: 'interest', text: '太极拳', status: 'confirmed', needsConfirmation: false, confidence: 0.9 },
+      ],
+    }, 'call_rag_health')
+    const client = setupRagCallPage(page, elderKey)
+    client.onASRText('今天天气怎么样', true, { questionId: 'q-weather' })
+    await new Promise(r => setTimeout(r, 0))
+    expect(client.sendRAGText).not.toHaveBeenCalled()
 
-    page._maybeInjectOutgoingSmallTalkSteer('没啥事了，今天先这样吧')
-    expect(page.client.sendTextQuery).not.toHaveBeenCalled()
+    client.onASRText('最近太极拳还在打吗', true, { questionId: 'q-taiji-dup' })
+    client.onASRText('最近太极拳还在打吗', true, { questionId: 'q-taiji-dup' })
+    await new Promise(r => setTimeout(r, 0))
+    expect(client.sendRAGText).toHaveBeenCalledTimes(1)
+    const ragItems = client.sendRAGText.mock.calls[0][0]
+    expect(ragItems.some(item => String(item.content).includes('血压'))).toBe(false)
+  })
+
+  test('RAG 发送失败不得中断通话，且不更新冷却', async () => {
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = 'elder:test:rag-fail'
+    store.mergeMemoryBundle(elderKey, {
+      memoryItems: [
+        { type: 'interest', text: '太极拳', status: 'confirmed', needsConfirmation: false, confidence: 0.9 },
+      ],
+    }, 'call_rag_fail')
+    const client = setupRagCallPage(page, elderKey)
+    client.sendRAGText.mockImplementation(() => Promise.resolve(false))
+    expect(() => {
+      client.onASRText('最近太极拳还在打吗', true, { questionId: 'q-fail' })
+    }).not.toThrow()
+    await new Promise(r => setTimeout(r, 0))
+    const item = store.getMemoryBundle(elderKey).memoryItems.find(row => row.text === '太极拳')
+    expect(item.lastUsedAt || '').toBe('')
+    expect(client.sendTextQuery).not.toHaveBeenCalled()
+  })
+
+  test('q1 成功 → q2 成功 → 再次 q1 不重发 502', async () => {
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = 'elder:test:rag-q1-q2-q1'
+    store.mergeMemoryBundle(elderKey, {
+      memoryItems: [
+        { type: 'interest', text: '太极拳', status: 'confirmed', needsConfirmation: false, confidence: 0.9 },
+      ],
+    }, 'call_rag_q1_q2')
+    const client = setupRagCallPage(page, elderKey)
+    const ragText = '最近太极拳还在打吗'
+    client.onASRText(ragText, true, { questionId: 'q1' })
+    await new Promise(r => setTimeout(r, 0))
+    const taijiItem = store.getMemoryBundle(elderKey).memoryItems.find(i => i.text === '太极拳')
+    if (taijiItem) taijiItem.lastUsedAt = ''
+    client.onASRText(ragText, true, { questionId: 'q2' })
+    await new Promise(r => setTimeout(r, 0))
+    client.onASRText(ragText, true, { questionId: 'q1' })
+    await new Promise(r => setTimeout(r, 0))
+    expect(client.sendRAGText).toHaveBeenCalledTimes(2)
+    expect(page.sentRagQuestionIds.has('q1')).toBe(true)
+    expect(page.sentRagQuestionIds.has('q2')).toBe(true)
+  })
+
+  test('q1 未完成 → q2 未完成 → 再次 q1 不重发 502', async () => {
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = 'elder:test:rag-inflight'
+    store.mergeMemoryBundle(elderKey, {
+      memoryItems: [
+        { type: 'interest', text: '太极拳', status: 'confirmed', needsConfirmation: false, confidence: 0.9 },
+      ],
+    }, 'call_rag_inflight')
+    const client = setupRagCallPage(page, elderKey)
+    const resolvers = []
+    client.sendRAGText.mockImplementation(() => new Promise(resolve => {
+      resolvers.push(resolve)
+    }))
+    const ragText = '最近太极拳还在打吗'
+    client.onASRText(ragText, true, { questionId: 'q1' })
+    client.onASRText(ragText, true, { questionId: 'q2' })
+    await new Promise(r => setTimeout(r, 0))
+    expect(client.sendRAGText).toHaveBeenCalledTimes(2)
+    expect(page.ragInFlightKeys.has('q1')).toBe(true)
+    expect(page.ragInFlightKeys.has('q2')).toBe(true)
+
+    client.onASRText(ragText, true, { questionId: 'q1' })
+    await new Promise(r => setTimeout(r, 0))
+    expect(client.sendRAGText).toHaveBeenCalledTimes(2)
+
+    resolvers.forEach(resolve => resolve(true))
+    await new Promise(r => setTimeout(r, 0))
+  })
+
+  test('q1 发送失败后可重试相同 questionId', async () => {
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = 'elder:test:rag-retry-q1'
+    store.mergeMemoryBundle(elderKey, {
+      memoryItems: [
+        { type: 'interest', text: '太极拳', status: 'confirmed', needsConfirmation: false, confidence: 0.9 },
+      ],
+    }, 'call_rag_retry_q1')
+    const client = setupRagCallPage(page, elderKey)
+    client.sendRAGText
+      .mockImplementationOnce(() => Promise.resolve(false))
+      .mockImplementation(() => Promise.resolve(true))
+
+    client.onASRText('最近太极拳还在打吗', true, { questionId: 'q1' })
+    await new Promise(r => setTimeout(r, 0))
+    expect(client.sendRAGText).toHaveBeenCalledTimes(1)
+    expect(page.sentRagQuestionIds.has('q1')).toBe(false)
+
+    client.onASRText('最近太极拳还在打吗', true, { questionId: 'q1' })
+    await new Promise(r => setTimeout(r, 0))
+    expect(client.sendRAGText).toHaveBeenCalledTimes(2)
+    expect(page.sentRagQuestionIds.has('q1')).toBe(true)
+  })
+
+  test('无 questionId 时 1.8s 内同句去重，超窗后可再发', async () => {
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = 'elder:test:rag-text-dedupe'
+    store.mergeMemoryBundle(elderKey, {
+      memoryItems: [
+        { type: 'interest', text: '太极拳', status: 'confirmed', needsConfirmation: false, confidence: 0.9 },
+      ],
+    }, 'call_rag_dedupe')
+    const client = setupRagCallPage(page, elderKey)
+    let nowVal = 10000
+    jest.spyOn(Date, 'now').mockImplementation(() => nowVal)
+    client.onASRText('最近太极拳还在打吗', true, {})
+    await new Promise(r => setTimeout(r, 0))
+    expect(client.sendRAGText).toHaveBeenCalledTimes(1)
+
+    nowVal += 500
+    client.onASRText('最近太极拳还在打吗', true, {})
+    await new Promise(r => setTimeout(r, 0))
+    expect(client.sendRAGText).toHaveBeenCalledTimes(1)
+
+    nowVal += 2000
+    // 清除记忆使用冷却，避免 store 12h 冷却阻断第三次发送
+    const taijiItem = store.getMemoryBundle(elderKey).memoryItems.find(i => i.text === '太极拳')
+    if (taijiItem) { taijiItem.lastUsedAt = '' }
+    client.onASRText('最近太极拳还在打吗', true, {})
+    await new Promise(r => setTimeout(r, 0))
+    expect(client.sendRAGText).toHaveBeenCalledTimes(2)
+    Date.now.mockRestore()
+  })
+
+  test('character_manifest 包含 PHONE_CONVERSATION_GUIDE 收尾规则', () => {
+    const page = loadPage()
+    const manifest = page._buildCharacterManifest({
+      title: '王阿姨',
+      voicePreset: { characterManifest: '温柔亲切', careStrategies: [] },
+      memoryBundle: { elderMemory: {}, xiaolinMemory: {} },
+      callMode: 'outgoing',
+    })
+    expect(manifest).toContain('收尾规则')
+    expect(manifest).toContain('不继续抛新问题')
+  })
+
+  test('character_manifest 包含健康不适边界和120', () => {
+    const page = loadPage()
+    const manifest = page._buildCharacterManifest({
+      title: '王阿姨',
+      voicePreset: { characterManifest: '温柔亲切', careStrategies: [] },
+      memoryBundle: { elderMemory: {}, xiaolinMemory: {} },
+    })
+    expect(manifest).toContain('健康不适边界')
+    expect(manifest).toContain('联系120')
+    expect(manifest).toContain('先共情')
+  })
+
+  test('character_manifest 只在提醒回访时包含五步规则', () => {
+    const page = loadPage()
+    const withReminder = page._buildCharacterManifest({
+      title: '王阿姨',
+      voicePreset: { characterManifest: '温柔亲切', careStrategies: [] },
+      memoryBundle: { elderMemory: {}, xiaolinMemory: {} },
+      usedReminderId: 'reminder-123',
+    })
+    expect(withReminder).toContain('提醒回访五步规则')
+    expect(withReminder).toContain('首句只提醒事项')
+    expect(withReminder).toContain('说一句短收尾')
+
+    const withoutReminder = page._buildCharacterManifest({
+      title: '王阿姨',
+      voicePreset: { characterManifest: '温柔亲切', careStrategies: [] },
+      memoryBundle: { elderMemory: {}, xiaolinMemory: {} },
+    })
+    expect(withoutReminder).not.toContain('提醒回访五步规则')
   })
 
   test('普通通话明确结束意图会等待小林最后一句播放完成后再结束', () => {

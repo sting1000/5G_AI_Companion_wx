@@ -129,6 +129,8 @@ describe('realtime-api 离线协议与生命周期', () => {
     expect(payload.tts.voice_type).toBe('voice_a')
     expect(payload.dialog.extra.model).toBe('2.2.0.0')
     expect(payload.dialog.extra.input_mod).toBe('keep_alive')
+    expect(payload.dialog.system_role).toBe('test-role')
+    expect(payload.dialog.character_manifest).toBe('')
 
     wx.__socketTask.__emitMessage(buildServerFrame({
       msgType: 0b1001,
@@ -464,5 +466,145 @@ describe('realtime-api 离线协议与生命周期', () => {
         previousQuestionId: 'q-audio',
       })
     )
+  })
+
+  test('CHAT_RAG_TEXT 事件常量是 502', () => {
+    expect(EVENT.CHAT_RAG_TEXT).toBe(502)
+  })
+
+  test('sendRAGText 在 sessionActive 时发送合法 JSON 数组字符串', async () => {
+    const client = loadClient()
+    const connectPromise = client.connect()
+    wx.__socketTask.__emitOpen()
+    wx.__socketTask.__emitMessage(buildServerFrame({
+      msgType: 0b1001,
+      eventId: SERVER_EVENT.CONNECTION_STARTED,
+      payload: {},
+    }))
+    await connectPromise
+
+    const startPromise = client.startSession({
+      characterManifest: 'manifest-core',
+      systemRole: 'compat-role',
+    })
+    const sessionFrame = wx.__socketTask.send.mock.calls[1][0].data
+    const sessionPayload = getClientFramePayload(sessionFrame)
+    expect(sessionPayload.dialog.extra.model).toBe('2.2.0.0')
+    expect(sessionPayload.dialog.character_manifest).toBe('manifest-core')
+    expect(sessionPayload.dialog.system_role).toBe('compat-role')
+
+    wx.__socketTask.__emitMessage(buildServerFrame({
+      msgType: 0b1001,
+      eventId: SERVER_EVENT.SESSION_STARTED,
+      sessionId: client.sessionId,
+      payload: { dialog_id: 'dialog-rag' },
+    }))
+    await startPromise
+
+    wx.__socketTask.send.mockImplementation((opts) => { if (opts && opts.success) opts.success({}) })
+    const pendingBefore = client._pendingTextQueryCount
+    const sent = await client.sendRAGText([
+      { title: '长期记忆', content: '喜欢太极拳' },
+    ])
+    expect(sent).toBe(true)
+    expect(client._pendingTextQueryCount).toBe(pendingBefore)
+
+    const ragFrame = wx.__socketTask.send.mock.calls[2][0].data
+    expect(getFrameEventId(ragFrame)).toBe(EVENT.CHAT_RAG_TEXT)
+    const payload = getClientFramePayload(ragFrame)
+    expect(typeof payload.external_rag).toBe('string')
+    const parsed = JSON.parse(payload.external_rag)
+    expect(Array.isArray(parsed)).toBe(true)
+    expect(parsed).toEqual([{ title: '长期记忆', content: '喜欢太极拳' }])
+    expect(payload.external_rag.length).toBeLessThanOrEqual(4000)
+  })
+
+  test('sendRAGText 空结果或会话未激活时不发送', async () => {
+    const client = loadClient()
+    const connectPromise = client.connect()
+    wx.__socketTask.__emitOpen()
+    wx.__socketTask.__emitMessage(buildServerFrame({
+      msgType: 0b1001,
+      eventId: SERVER_EVENT.CONNECTION_STARTED,
+      payload: {},
+    }))
+    await connectPromise
+    wx.__socketTask.send.mockClear()
+
+    expect(await client.sendRAGText([{ title: '长期记忆', content: '喜欢太极拳' }])).toBe(false)
+    expect(wx.__socketTask.send).not.toHaveBeenCalled()
+
+    client.sessionActive = true
+    expect(await client.sendRAGText([])).toBe(false)
+    expect(await client.sendRAGText([{ title: '长期记忆', content: '   ' }])).toBe(false)
+    expect(wx.__socketTask.send).not.toHaveBeenCalled()
+
+    client.socket = null
+    expect(await client.sendRAGText([{ title: '长期记忆', content: '喜欢太极拳' }])).toBe(false)
+  })
+
+  test('sendRAGText 超长内容会截断到 4000 字符以内', async () => {
+    const client = loadClient()
+    client.sessionActive = true
+    client.sessionId = 'sid-rag'
+    client.socket = { send: jest.fn((opts) => { if (opts && opts.success) opts.success({}) }) }
+    const sent = await client.sendRAGText([{
+      title: '长期记忆',
+      content: '血压'.repeat(2500),
+    }])
+    expect(sent).toBe(true)
+    const payload = getClientFramePayload(client.socket.send.mock.calls[0][0].data)
+    expect(typeof payload.external_rag).toBe('string')
+    expect(payload.external_rag.length).toBeLessThanOrEqual(4000)
+    expect(() => JSON.parse(payload.external_rag)).not.toThrow()
+    expect(Array.isArray(JSON.parse(payload.external_rag))).toBe(true)
+  })
+
+  test('sendRAGText 日志不打印记忆正文', async () => {
+    const client = loadClient()
+    client.sessionActive = true
+    client.sessionId = 'sid-rag'
+    client.socket = { send: jest.fn((opts) => { if (opts && opts.success) opts.success({}) }) }
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {})
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const secret = '高血压秘密记忆正文'
+    await client.sendRAGText([{ title: '长期记忆', content: secret }])
+    const dump = `${JSON.stringify(logSpy.mock.calls)}${JSON.stringify(warnSpy.mock.calls)}`
+    expect(dump).not.toContain(secret)
+    logSpy.mockRestore()
+    warnSpy.mockRestore()
+  })
+
+  test('sendRAGText success 异步回调后才 resolve(true)', async () => {
+    const client = loadClient()
+    client.sessionActive = true
+    client.sessionId = 'sid-rag'
+    let successCb = null
+    client.socket = { send: jest.fn((opts) => { successCb = opts.success }) }
+    const promise = client.sendRAGText([{ title: '长期记忆', content: '喜欢太极拳' }])
+    expect(successCb).toBeTruthy()
+    successCb({})
+    const result = await promise
+    expect(result).toBe(true)
+  })
+
+  test('sendRAGText fail 回调 resolve(false)', async () => {
+    const client = loadClient()
+    client.sessionActive = true
+    client.sessionId = 'sid-rag'
+    client.socket = { send: jest.fn((opts) => { if (opts && opts.fail) opts.fail({}) }) }
+    const result = await client.sendRAGText([{ title: '长期记忆', content: '喜欢太极拳' }])
+    expect(result).toBe(false)
+  })
+
+  test('sendRAGText socket.send 同步抛异常 resolve(false)', async () => {
+    const client = loadClient()
+    client.sessionActive = true
+    client.sessionId = 'sid-rag'
+    client.socket = { send: jest.fn(() => { throw new Error('send exploded') }) }
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const result = await client.sendRAGText([{ title: '长期记忆', content: '喜欢太极拳' }])
+    expect(result).toBe(false)
+    warnSpy.mockRestore()
   })
 })
