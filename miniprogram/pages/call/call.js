@@ -329,6 +329,7 @@ Page({
     }
     this.timeWeatherContext = store.getMockTimeWeatherContext()
     this.pendingMemoryConfirmation = null
+    this.assistantReplyRoute = null
     this.sentRagQuestionIds = new Set()
     this.ragInFlightKeys = new Set()
     this.lastRagFinalText = ''
@@ -628,6 +629,7 @@ Page({
       this.ragInFlightKeys = new Set()
       this.lastRagFinalText = ''
       this.lastRagFinalTextAt = 0
+      this.assistantReplyRoute = null
       const title = this._resolveCallAddress(store.getElderTitle(), store.getMemoryBundle(this.currentElderKey))
       const dialogId = store.getDialogId(this.currentElderKey)
       const memoryBundle = store.getMemoryBundle(this.currentElderKey)
@@ -787,6 +789,7 @@ Page({
 
     // ASR：用户说话识别
     this.client.onASRStart = (meta) => {
+      this._resetAssistantReplyRoute(meta && meta.questionId)
       const turn = this._ensureLatencyTurn(meta)
       turn.asrInfoAt = (meta && meta.receivedAt) || Date.now()
       turn.asrStartSynthetic = Boolean(meta && meta.synthetic)
@@ -828,7 +831,7 @@ Page({
 
     // AI 回复文本（流式）
     this.client.onChatText = (text, meta) => {
-      if (this._isStaleForCurrentLatencyTurn(meta)) return
+      if (this._shouldDropAssistantEvent(meta)) return
       this._ensureLatencyTurn(meta, false)
       this._recordLatencyEvent('chat_response', meta)
       this._markAssistantTurnInProgress()
@@ -849,7 +852,7 @@ Page({
       }
     }
     this.client.onChatEnd = (meta) => {
-      if (this._isStaleForCurrentLatencyTurn(meta)) return
+      if (this._shouldDropAssistantEvent(meta)) return
       const turn = this._ensureLatencyTurn(meta, false)
       if (turn) {
         turn.chatEndAt = (meta && meta.receivedAt) || Date.now()
@@ -859,7 +862,7 @@ Page({
 
     // TTS 音频数据
     this.client.onAudioData = (audioData, meta) => {
-      if (this._isStaleForCurrentLatencyTurn(meta)) return
+      if (this._shouldDropAssistantEvent(meta)) return
       this._ensureLatencyTurn(meta, false)
       this._recordLatencyEvent('tts_audio', meta)
       this._markAssistantTurnInProgress()
@@ -873,7 +876,7 @@ Page({
 
     // AI 开始说新的一句
     this.client.onTTSStart = (text, meta) => {
-      if (this._isStaleForCurrentLatencyTurn(meta)) return
+      if (this._shouldDropAssistantEvent(meta)) return
       const latencyTurn = this._ensureLatencyTurn(meta, false)
       this._recordLatencyEvent('tts_sentence_start', meta)
       this._markAssistantTurnInProgress()
@@ -916,13 +919,13 @@ Page({
       })
     }
     this.client.onTTSSentenceEnd = (meta) => {
-      if (this._isStaleForCurrentLatencyTurn(meta)) return
+      if (this._shouldDropAssistantEvent(meta)) return
       this._recordLatencyEvent('tts_sentence_end', meta)
     }
 
     // AI 这一轮说完
     this.client.onTTSEnd = (meta) => {
-      if (this._isStaleForCurrentLatencyTurn(meta)) return
+      if (this._shouldDropAssistantEvent(meta)) return
       this._clearAssistantTurnProgress('tts_end')
       const latencyTurn = this._ensureLatencyTurn(meta, false)
       if (latencyTurn) {
@@ -957,9 +960,17 @@ Page({
       const isFirstAssistantTurn = this.assistantTurnCount === 0 && hasAssistantTurn
       this.player.playBuffered()
       if (hasAssistantTurn) {
+        const messageIndex = this.messages.length
         this.messages.push({ role: 'assistant', content: finalRawAssistant })
-        this._appendTranscriptItem('assistant', finalVisibleAssistant)
+        const transcriptId = this._appendTranscriptItem('assistant', finalVisibleAssistant)
         this.assistantTurnCount += 1
+        const route = this.assistantReplyRoute
+        const replyId = String((meta && meta.replyId) || '')
+        if (route && replyId && route.activeReplyId === replyId) {
+          route.committedReplyId = replyId
+          route.committedMessageIndex = messageIndex
+          route.committedTranscriptId = transcriptId
+        }
         if (this.isBoundaryRepairing) {
           this.isBoundaryRepairing = false
         }
@@ -1020,7 +1031,7 @@ Page({
     }
 
     this.client.onFirstChatPacket = (ts, meta) => {
-      if (this._isStaleForCurrentLatencyTurn(meta)) return
+      if (this._shouldDropAssistantEvent(meta)) return
       if (this.currentLatencyTurn && !this.currentLatencyTurn.firstChatAt) {
         this.currentLatencyTurn.firstChatAt = ts || Date.now()
         this._recordLatencyEvent('first_chat_packet', meta, this.currentLatencyTurn.firstChatAt)
@@ -1028,7 +1039,7 @@ Page({
     }
 
     this.client.onFirstTTSAudioPacket = (ts, meta) => {
-      if (this._isStaleForCurrentLatencyTurn(meta)) return
+      if (this._shouldDropAssistantEvent(meta)) return
       if (this.currentLatencyTurn && !this.currentLatencyTurn.firstTTSAt) {
         this.currentLatencyTurn.firstTTSAt = ts || Date.now()
         this._recordLatencyEvent('first_tts_packet', meta, this.currentLatencyTurn.firstTTSAt)
@@ -1631,7 +1642,7 @@ Page({
 
   _appendTranscriptItem(role, content) {
     const text = this._sanitizeForDisplay(content)
-    if (!text) return
+    if (!text) return ''
     const id = `${role}_${Date.now()}_${Math.floor(Math.random() * 1000)}`
     const next = (this.data.transcriptItems || []).concat([{ id, role, content: text }])
     const clipped = next.slice(-TRANSCRIPT_MAX_ITEMS)
@@ -1640,6 +1651,7 @@ Page({
       transcriptAnchorId: id,
       transcriptScrollTop: this.data.transcriptScrollTop + 9999,
     })
+    return id
   },
 
   _sanitizeForDisplay(text) {
@@ -1653,31 +1665,145 @@ Page({
     return output.replace(/\s+/g, ' ').trim()
   },
 
-  _isStaleForCurrentLatencyTurn(meta) {
+  _resetAssistantReplyRoute(questionId) {
+    this.assistantReplyRoute = {
+      questionId: String(questionId || ''),
+      activeReplyId: '',
+      supersededReplyIds: [],
+      committedReplyId: '',
+      committedMessageIndex: -1,
+      committedTranscriptId: '',
+    }
+    return this.assistantReplyRoute
+  },
+
+  _getAssistantReplyRoute() {
+    if (this.assistantReplyRoute) return this.assistantReplyRoute
     const turn = this.currentLatencyTurn
-    if (!turn || turn.finalized || !meta) return false
+    const route = this._resetAssistantReplyRoute(turn && turn.questionId)
+    if (turn && turn.replyId) route.activeReplyId = String(turn.replyId)
+    return route
+  },
+
+  _shouldDropAssistantEvent(meta) {
+    if (!meta) return false
+    const turn = this.currentLatencyTurn
+    const route = this._getAssistantReplyRoute()
     const questionId = String(meta.questionId || '')
     const replyId = String(meta.replyId || '')
     if (meta.clientTextQueryTransition && questionId) {
-      if (!turn.originalQuestionId) turn.originalQuestionId = turn.questionId
-      turn.questionId = questionId
-      turn.replyId = ''
-      this._recordLatencyEvent('client_text_query_transition', meta)
+      route.questionId = questionId
+      route.activeReplyId = ''
+      route.supersededReplyIds = []
+      if (turn && !turn.finalized) {
+        if (!turn.originalQuestionId) turn.originalQuestionId = turn.questionId
+        turn.questionId = questionId
+        turn.replyId = ''
+        this._recordLatencyEvent('client_text_query_transition', meta)
+      }
       return false
     }
-    const questionMismatch = Boolean(questionId && turn.questionId && questionId !== turn.questionId)
-    const replyMismatch = Boolean(replyId && turn.replyId && replyId !== turn.replyId)
-    if (!questionMismatch && !replyMismatch) return false
-    turn.droppedStaleEventCount = Number(turn.droppedStaleEventCount || 0) + 1
+    if (questionId && !route.questionId) route.questionId = questionId
+    const questionMismatch = Boolean(questionId && route.questionId && questionId !== route.questionId)
+    const supersededReply = Boolean(replyId && route.supersededReplyIds.includes(replyId))
+    if (!questionMismatch && !supersededReply && replyId && !route.activeReplyId) {
+      route.activeReplyId = replyId
+      if (turn && !turn.finalized && !turn.replyId) turn.replyId = replyId
+      return false
+    }
+    const replyMismatch = Boolean(replyId && route.activeReplyId && replyId !== route.activeReplyId)
+    const isExternalRagTakeover = !questionMismatch
+      && !supersededReply
+      && replyMismatch
+      && meta.ttsType === 'external_rag'
+    if (isExternalRagTakeover) {
+      this._adoptExternalRagReply(meta, route)
+      return false
+    }
+    if (!questionMismatch && !supersededReply && !replyMismatch) {
+      return false
+    }
+    if (turn && !turn.finalized) {
+      turn.droppedStaleEventCount = Number(turn.droppedStaleEventCount || 0) + 1
+    }
     console.warn('[Call][Latency] 丢弃跨轮迟到事件', {
-      turnId: turn.turnId,
+      turnId: turn && turn.turnId,
       eventId: meta.eventId,
       eventQuestionId: questionId,
       eventReplyId: replyId,
-      activeQuestionId: turn.questionId,
-      activeReplyId: turn.replyId,
+      activeQuestionId: route.questionId,
+      activeReplyId: route.activeReplyId,
     })
     return true
+  },
+
+  _adoptExternalRagReply(meta, route) {
+    const previousReplyId = String(route.activeReplyId || '')
+    const nextReplyId = String(meta.replyId || '')
+    if (previousReplyId && !route.supersededReplyIds.includes(previousReplyId)) {
+      route.supersededReplyIds.push(previousReplyId)
+    }
+    this._removeCommittedAssistantReply(route, previousReplyId)
+    route.activeReplyId = nextReplyId
+    console.log(FLOW_LOG_PREFIX, '外部 RAG 回复接管默认回复', {
+      questionId: route.questionId,
+      previousReplyId,
+      nextReplyId,
+    })
+
+    if (this.player && typeof this.player.stop === 'function') this.player.stop()
+    this.chatBuffer = ''
+    this.currentAssistantReplyId = ''
+    this.ttsSentenceBuffer = ''
+    this.ttsSentenceReplyId = ''
+    this.pendingAssistantDraft = ''
+    this.currentTurnBoundaryViolated = false
+    this.companionAudioSpeaking = false
+    this.setData({ currentAssistantDraft: '', isAssistantSpeaking: false })
+    this._requestCompanionVisual('idle')
+
+    const turn = this.currentLatencyTurn
+    if (turn && !turn.finalized && (!meta.questionId || String(meta.questionId) === turn.questionId)) {
+      turn.replyId = nextReplyId
+      turn.firstChatAt = 0
+      turn.chatEndAt = 0
+      turn.firstTTSAt = 0
+      turn.ttsEndAt = 0
+      turn.playScheduledAt = 0
+      turn.playStartAt = 0
+      turn.playStartSource = ''
+      turn.wavWriteStartAt = []
+      turn.wavWriteEndAt = []
+      turn.playRequestedAt = []
+      turn.waitingCount = 0
+      turn.playbackErrorCount = 0
+      turn.associationError = ''
+      this._recordLatencyEvent('external_rag_reply_transition', meta)
+    }
+  },
+
+  _removeCommittedAssistantReply(route, replyId) {
+    if (!route || !replyId || route.committedReplyId !== replyId) return
+    const messageIndex = Number(route.committedMessageIndex)
+    if (messageIndex >= 0
+      && messageIndex < this.messages.length
+      && this.messages[messageIndex]
+      && this.messages[messageIndex].role === 'assistant') {
+      this.messages.splice(messageIndex, 1)
+      this.assistantTurnCount = Math.max(0, Number(this.assistantTurnCount || 0) - 1)
+    }
+    if (route.committedTranscriptId) {
+      const transcriptItems = (this.data.transcriptItems || [])
+        .filter(item => item && item.id !== route.committedTranscriptId)
+      const lastItem = transcriptItems[transcriptItems.length - 1]
+      this.setData({
+        transcriptItems,
+        transcriptAnchorId: lastItem ? lastItem.id : 'transcript-anchor',
+      })
+    }
+    route.committedReplyId = ''
+    route.committedMessageIndex = -1
+    route.committedTranscriptId = ''
   },
 
   _ensureLatencyTurn(meta, allowCreate = true) {

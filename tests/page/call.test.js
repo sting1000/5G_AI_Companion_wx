@@ -9,6 +9,31 @@ describe('call 页面离线关键分支', () => {
     return loadPageModule(pagePath)
   }
 
+  function setupAssistantReplyPage(page) {
+    page._markCallConnectedIfNeeded = jest.fn()
+    page._requestCompanionVisual = jest.fn()
+    page.client = {}
+    page.recorder = {}
+    page.player = {
+      appendChunk: jest.fn(),
+      playBuffered: jest.fn(),
+      stop: jest.fn(),
+      playing: false,
+    }
+    page.messages = []
+    page.chatBuffer = ''
+    page.pendingAssistantDraft = ''
+    page.currentAssistantReplyId = ''
+    page.ttsSentenceBuffer = ''
+    page.ttsSentenceReplyId = ''
+    page.currentTurnBoundaryViolated = false
+    page.assistantTurnCount = 1
+    page.isBoundaryRepairing = false
+    page.latencySamples = []
+    page.setData({ transcriptItems: [], currentAssistantDraft: '' })
+    page._setupCallbacks()
+  }
+
   test('onAccept 首次点击会设置接听态并触发 _startCall', () => {
     const page = loadPage()
     page._startCall = jest.fn()
@@ -343,6 +368,182 @@ describe('call 页面离线关键分支', () => {
     expect(turn.droppedStaleEventCount).toBe(3)
   })
 
+  test('同一 question 的 external_rag 回复会接管默认回复并播放 RAG 音频', () => {
+    const page = loadPage()
+    setupAssistantReplyPage(page)
+    page.client.onASRStart({ questionId: 'q-square-dance', receivedAt: 1000, eventSeq: 1 })
+    page.client.onChatText('您跳得这么好，真不错。', {
+      eventId: 550,
+      questionId: 'q-square-dance',
+      replyId: 'r-default',
+      receivedAt: 1100,
+      eventSeq: 2,
+    })
+    page.client.onTTSStart('您跳得这么好，真不错。', {
+      eventId: 350,
+      questionId: 'q-square-dance',
+      replyId: 'r-default',
+      ttsType: 'default',
+      receivedAt: 1200,
+      eventSeq: 3,
+    })
+    const defaultAudio = new Uint8Array([1, 2]).buffer
+    page.client.onAudioData(defaultAudio, {
+      eventId: 352,
+      questionId: 'q-square-dance',
+      replyId: 'r-default',
+      receivedAt: 1300,
+      eventSeq: 4,
+    })
+
+    page.client.onTTSStart('您今天状态真好，广场舞一定跳得特别带劲。', {
+      eventId: 350,
+      questionId: 'q-square-dance',
+      replyId: 'r-rag',
+      ttsType: 'external_rag',
+      receivedAt: 1400,
+      eventSeq: 5,
+    })
+    page.client.onChatText('您今天状态真好，广场舞一定跳得特别带劲。', {
+      eventId: 550,
+      questionId: 'q-square-dance',
+      replyId: 'r-rag',
+      receivedAt: 1500,
+      eventSeq: 6,
+    })
+    const ragAudio = new Uint8Array([3, 4]).buffer
+    page.client.onAudioData(ragAudio, {
+      eventId: 352,
+      questionId: 'q-square-dance',
+      replyId: 'r-rag',
+      receivedAt: 1600,
+      eventSeq: 7,
+    })
+    page.client.onTTSEnd({
+      eventId: 359,
+      questionId: 'q-square-dance',
+      replyId: 'r-rag',
+      receivedAt: 1700,
+      eventSeq: 8,
+    })
+
+    expect(page.player.stop).toHaveBeenCalledTimes(1)
+    expect(page.player.appendChunk).toHaveBeenLastCalledWith(ragAudio)
+    expect(page.player.playBuffered).toHaveBeenCalledTimes(1)
+    expect(page.messages).toEqual([
+      { role: 'assistant', content: '您今天状态真好，广场舞一定跳得特别带劲。' },
+    ])
+    expect(page.data.transcriptItems.map(item => item.content)).toEqual([
+      '您今天状态真好，广场舞一定跳得特别带劲。',
+    ])
+
+    const appendCount = page.player.appendChunk.mock.calls.length
+    page.client.onChatText('默认回复迟到文本。', {
+      eventId: 550,
+      questionId: 'q-square-dance',
+      replyId: 'r-default',
+      receivedAt: 1800,
+      eventSeq: 9,
+    })
+    page.client.onAudioData(new Uint8Array([5, 6]).buffer, {
+      eventId: 352,
+      questionId: 'q-square-dance',
+      replyId: 'r-default',
+      receivedAt: 1900,
+      eventSeq: 10,
+    })
+    page.client.onTTSEnd({
+      eventId: 359,
+      questionId: 'q-square-dance',
+      replyId: 'r-default',
+      receivedAt: 2000,
+      eventSeq: 11,
+    })
+    expect(page.player.appendChunk).toHaveBeenCalledTimes(appendCount)
+    expect(page.messages).toEqual([
+      { role: 'assistant', content: '您今天状态真好，广场舞一定跳得特别带劲。' },
+    ])
+  })
+
+  test('默认回复已经开始播放后 external_rag 仍会立即接管并撤回默认内容', () => {
+    const page = loadPage()
+    setupAssistantReplyPage(page)
+    page.client.onASRStart({ questionId: 'q-playing-rag', receivedAt: 1000, eventSeq: 1 })
+    page.client.onChatText('默认回复。', {
+      eventId: 550,
+      questionId: 'q-playing-rag',
+      replyId: 'r-default-playing',
+      receivedAt: 1100,
+      eventSeq: 2,
+    })
+    page.client.onTTSStart('默认回复。', {
+      eventId: 350,
+      questionId: 'q-playing-rag',
+      replyId: 'r-default-playing',
+      ttsType: 'default',
+      receivedAt: 1200,
+      eventSeq: 3,
+    })
+    page.client.onAudioData(new Uint8Array([1, 2]).buffer, {
+      eventId: 352,
+      questionId: 'q-playing-rag',
+      replyId: 'r-default-playing',
+      receivedAt: 1300,
+      eventSeq: 4,
+    })
+    page.client.onTTSEnd({
+      eventId: 359,
+      questionId: 'q-playing-rag',
+      replyId: 'r-default-playing',
+      receivedAt: 1400,
+      eventSeq: 5,
+    })
+    page.player.playing = true
+    page.player.onPlayStart({ at: 1450, source: 'inner_audio_on_play', authoritative: true, generation: 2 })
+
+    expect(page.messages.map(item => item.content)).toEqual(['默认回复。'])
+    expect(page.data.transcriptItems.map(item => item.content)).toEqual(['默认回复。'])
+
+    page.client.onTTSStart('结合广场舞记忆后的回复。', {
+      eventId: 350,
+      questionId: 'q-playing-rag',
+      replyId: 'r-rag-playing',
+      ttsType: 'external_rag',
+      receivedAt: 1500,
+      eventSeq: 6,
+    })
+    page.client.onChatText('结合广场舞记忆后的回复。', {
+      eventId: 550,
+      questionId: 'q-playing-rag',
+      replyId: 'r-rag-playing',
+      receivedAt: 1600,
+      eventSeq: 7,
+    })
+    page.client.onAudioData(new Uint8Array([3, 4]).buffer, {
+      eventId: 352,
+      questionId: 'q-playing-rag',
+      replyId: 'r-rag-playing',
+      receivedAt: 1700,
+      eventSeq: 8,
+    })
+    page.client.onTTSEnd({
+      eventId: 359,
+      questionId: 'q-playing-rag',
+      replyId: 'r-rag-playing',
+      receivedAt: 1800,
+      eventSeq: 9,
+    })
+
+    expect(page.player.stop).toHaveBeenCalledTimes(1)
+    expect(page.messages).toEqual([
+      { role: 'assistant', content: '结合广场舞记忆后的回复。' },
+    ])
+    expect(page.data.transcriptItems.map(item => item.content)).toEqual([
+      '结合广场舞记忆后的回复。',
+    ])
+    expect(page.assistantTurnCount).toBe(2)
+  })
+
   test('客户端文本查询的新 question 会转换当前逻辑轮而不是被丢弃', () => {
     const page = loadPage()
     page._markCallConnectedIfNeeded = jest.fn()
@@ -377,6 +578,41 @@ describe('call 页面离线关键分支', () => {
     expect(turn.replyId).toBe('r-text')
     expect(page.chatBuffer).toBe('安全重说内容')
     page._clearAssistantTurnProgress('test_cleanup')
+  })
+
+  test('同一 question 的非 external_rag 新 reply 仍会被拒绝', () => {
+    const page = loadPage()
+    page._markCallConnectedIfNeeded = jest.fn()
+    page.client = {}
+    page.recorder = {}
+    page.player = {
+      appendChunk: jest.fn(),
+      playBuffered: jest.fn(),
+      stop: jest.fn(),
+      playing: false,
+    }
+    page.chatBuffer = ''
+    page.pendingAssistantDraft = ''
+    page.latencySamples = []
+    page._ensureLatencyTurn({ questionId: 'q-same', replyId: 'r-current', receivedAt: 1000 })
+
+    page._setupCallbacks()
+    page.client.onTTSStart('异常的新默认回复', {
+      eventId: 350,
+      questionId: 'q-same',
+      replyId: 'r-unexpected',
+      ttsType: 'default',
+      receivedAt: 1100,
+    })
+    page.client.onAudioData(new Uint8Array([1, 2]).buffer, {
+      eventId: 352,
+      questionId: 'q-same',
+      replyId: 'r-unexpected',
+      receivedAt: 1200,
+    })
+
+    expect(page.player.stop).not.toHaveBeenCalled()
+    expect(page.player.appendChunk).not.toHaveBeenCalled()
   })
 
   test('本地能量 VAD 不会把单帧突发噪声当成用户语音结束', () => {
@@ -1129,6 +1365,28 @@ describe('call 页面离线关键分支', () => {
     expect(ragItems[0].content).toContain('太极拳')
     const used = store.getMemoryBundle(elderKey).memoryItems.find(item => item.text === '太极拳')
     expect(used.lastUsedAt).toBeTruthy()
+  })
+
+  test('广场舞建档原话只召回相关兴趣，不带入无关高血压记忆', async () => {
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = 'elder:test:rag-square-dance'
+    store.initMemoryBundle(elderKey, {
+      hobbies: ['广场舞'],
+      health: '高血压',
+      preferredAddress: '张叔叔',
+    })
+    const client = setupRagCallPage(page, elderKey)
+
+    client.onASRText('我今天感觉自己跳广场舞跳得特别好', true, {
+      questionId: 'q-square-dance-profile',
+    })
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(client.sendRAGText).toHaveBeenCalledTimes(1)
+    expect(client.sendRAGText).toHaveBeenCalledWith([
+      { title: '长期记忆', content: '广场舞' },
+    ])
   })
 
   test('健康记忆不会在无关闲聊中召回，同一 questionId 不重复发送 RAG', async () => {

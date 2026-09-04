@@ -305,6 +305,58 @@ describe('realtime-api 离线协议与生命周期', () => {
     expect(observed[8][1].statusCode).toBe('0')
   })
 
+  test('external_rag 的 TTS start 会让后续 352 音频关联到 RAG reply', () => {
+    const client = loadClient()
+    const starts = []
+    const audioPackets = []
+    client.onTTSStart = (text, meta) => starts.push({ text, meta })
+    client.onAudioData = (audio, meta) => audioPackets.push({ size: audio.byteLength, meta })
+    client.connect()
+
+    const emitText = (eventId, payload) => {
+      wx.__socketTask.__emitMessage(buildServerFrame({
+        msgType: 0b1001,
+        eventId,
+        sessionId: 'sid-rag-reply',
+        payload,
+      }))
+    }
+    emitText(SERVER_EVENT.ASR_INFO, { question_id: 'q-rag-reply' })
+    emitText(SERVER_EVENT.TTS_SENTENCE_START, {
+      text: '默认回复',
+      question_id: 'q-rag-reply',
+      reply_id: 'r-default',
+      tts_type: 'default',
+    })
+    emitText(SERVER_EVENT.TTS_SENTENCE_START, {
+      text: '记忆回复',
+      question_id: 'q-rag-reply',
+      reply_id: 'r-rag',
+      tts_type: 'external_rag',
+    })
+    wx.__socketTask.__emitMessage(buildServerFrame({
+      msgType: 0b1011,
+      eventId: SERVER_EVENT.TTS_RESPONSE,
+      sessionId: 'sid-rag-reply',
+      audioData: new Uint8Array(640).buffer,
+    }))
+
+    expect(starts[1].meta).toEqual(expect.objectContaining({
+      questionId: 'q-rag-reply',
+      replyId: 'r-rag',
+      ttsType: 'external_rag',
+    }))
+    expect(audioPackets).toEqual([
+      expect.objectContaining({
+        size: 640,
+        meta: expect.objectContaining({
+          questionId: 'q-rag-reply',
+          replyId: 'r-rag',
+        }),
+      }),
+    ])
+  })
+
   test('首 Chat/TTS 包标记会按 ASR 轮次重置而不是按 session 重置', () => {
     const client = loadClient()
     const firstChat = jest.fn()
