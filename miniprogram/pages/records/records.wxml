@@ -1,78 +1,51 @@
-<view class="container">
-  <!-- 自定义导航栏 -->
-  <view class="custom-nav">
+<view class="records-page">
+  <view class="page-nav" style="padding-top: {{statusBarHeight}}px; height: {{navigationBarHeight}}px;">
+    <button class="nav-back" bindtap="goBack" aria-label="返回">
+      <image src="/assets/icons/elder-back.svg" />
+    </button>
+    <text class="nav-title">通话记录</text>
+    <view class="nav-spacer"></view>
   </view>
 
-  <view class="page-title">通话记录</view>
-
-  <!-- Segmented Control -->
-  <view class="segment-control">
-    <view
-      class="segment-item {{currentTab === 'all' ? 'active' : ''}}"
-      bindtap="switchTab"
-      data-tab="all"
-    >
-      全部记录
+  <scroll-view class="records-scroll" scroll-y>
+    <view class="page-heading">
+      <text class="heading-title">和小林聊过的电话</text>
+      <text class="heading-desc">点开一条，可以查看当时保存的通话内容</text>
     </view>
-    <view
-      class="segment-item {{currentTab === 'content' ? 'active' : ''}}"
-      bindtap="switchTab"
-      data-tab="content"
-    >
-      内容推荐记录
-    </view>
-  </view>
 
-  <!-- Tab 1: 全部记录 -->
-  <block wx:if="{{currentTab === 'all'}}">
-    <view class="card stats-card" wx:if="{{hasRecords}}">
-      <view class="stat-item">
-        <text class="stat-label">通话次数</text>
-        <text class="stat-value">{{allRecords.length}} 次</text>
+    <view wx:if="{{hasLoadError}}" class="state-card">
+      <text class="state-title">通话记录暂时没有加载出来</text>
+      <text class="state-desc">您可以回到今天，稍后再试一次。</text>
+      <button class="state-action" bindtap="goToday">回到今天</button>
+    </view>
+
+    <view wx:elif="{{!hasRecords}}" class="state-card">
+      <view class="empty-mark">
+        <image src="/assets/icons/elder-phone.svg" />
       </view>
+      <text class="state-title">还没有通话记录</text>
+      <text class="state-desc">和小林聊过一次后，通话内容会保存在这里。</text>
+      <button class="state-action" bindtap="goToday">回到今天</button>
     </view>
 
-    <!-- 空状态 -->
-    <view class="card" wx:if="{{!hasRecords}}" style="text-align:center;padding:60rpx;">
-      <text style="font-size:48rpx;">📭</text>
-      <text style="display:block;color:#999;font-size:28rpx;margin-top:16rpx;">还没有通话记录</text>
-      <text style="display:block;color:#999;font-size:24rpx;margin-top:8rpx;">去首页开始第一次通话吧</text>
+    <view wx:else class="record-list">
+      <button
+        wx:for="{{records}}"
+        wx:key="id"
+        class="record-row"
+        bindtap="goSummary"
+        data-id="{{item.id}}"
+      >
+        <view class="record-date-block">
+          <text class="record-date">{{item.dateText}}</text>
+          <text class="record-time">{{item.timeText}}</text>
+        </view>
+        <view class="record-copy">
+          <text class="record-duration">{{item.missed ? '提醒电话' : '通话 ' + item.durationText}}</text>
+          <text class="record-status status-{{item.summaryState}}">{{item.summaryStatusText}}</text>
+        </view>
+        <image class="row-chevron" src="/assets/icons/chevron-right.svg" />
+      </button>
     </view>
-
-    <text class="section-title">全部记录</text>
-    <view class="record-list">
-      <!-- 循环历史记录 -->
-      <view class="card record-item" wx:for="{{allRecords}}" wx:key="id" bindtap="goSummary" data-id="{{item.id}}">
-        <view class="record-stamp {{item.moodStampClass}}">
-          <text class="record-stamp-text" wx:if="{{item.moodStampText}}">{{item.moodStampText}}</text>
-          <text class="record-stamp-text" wx:else>平</text>
-        </view>
-        <view class="record-info">
-          <text class="record-date">{{item.date}}</text>
-          <text class="record-desc" wx:if="{{item.missed}}">AI陪伴通话</text>
-          <text class="record-desc" wx:else>{{item.duration}} • {{item.moodLabel}}</text>
-        </view>
-        <view class="record-action">
-          <view wx:if="{{item.missed}}" class="status-tag status-missed">未接听</view>
-          <view wx:else class="status-tag {{item.summaryStatusClass}}">{{item.summaryStatusText}}</view>
-        </view>
-      </view>
-    </view>
-  </block>
-
-  <!-- Tab 2: 内容推荐记录 -->
-  <block wx:else>
-    <view class="content-list">
-      <view class="card content-item" wx:for="{{contentRecords}}" wx:key="id">
-        <view class="content-header">
-          <text class="content-date">{{item.date}}</text>
-          <view class="status-tag {{item.statusClass}}">{{item.statusText}}</view>
-        </view>
-        <view class="content-tags">
-          <text class="topic-tag" wx:for="{{item.tags}}" wx:for-item="tag" wx:key="*this">{{tag}}</text>
-        </view>
-        <text class="content-title">{{item.title}}</text>
-      </view>
-    </view>
-  </block>
+  </scroll-view>
 </view>

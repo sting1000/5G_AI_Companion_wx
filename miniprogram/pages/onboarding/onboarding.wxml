@@ -1,76 +1,150 @@
-<view class="container">
-  <view class="header">
-    <text class="page-title">为父母配置AI陪伴</text>
-    <text class="page-subtitle">填写父母的基本信息，帮助AI更好地陪伴他们</text>
+<view class="onboarding-page">
+  <view class="custom-nav" style="padding-top: {{statusBarHeight}}px;">
+    <view class="custom-nav__inner" style="height: {{navigationBarHeight}}px;">
+      <button wx:if="{{isEditMode}}" class="nav-back" bindtap="goBack" aria-label="返回设置">
+        <image src="/assets/icons/elder-back.svg" mode="aspectFit"></image>
+      </button>
+      <text class="brand-name">{{isEditMode ? '修改称呼' : '叮嘱'}}</text>
+    </view>
   </view>
 
-  <view class="form-content">
-    <view class="card form-card">
-      <view class="form-item">
-        <view class="label-row">
-          <text class="label">父母姓名</text>
-          <text class="field-required">必填</text>
-        </view>
-        <view class="name-row">
-          <input class="input name-input"
-            placeholder="请输入姓名"
-            value="{{parentName}}"
-            bindinput="onNameInput" />
-          <picker mode="selector"
-            range="{{titleOptions}}"
-            value="{{titleIndex}}"
-            bindchange="onTitleChange">
-            <view class="picker-value">{{titleOptions[titleIndex]}} ▾</view>
-          </picker>
-        </view>
-        <text class="field-error" wx:if="{{errors.parentName}}">{{errors.parentName}}</text>
-      </view>
+  <view class="step-progress" aria-label="第 {{step}} 步，共 2 步">
+    <view class="step-progress__bar step-progress__bar--active"></view>
+    <view class="step-progress__bar {{step === 2 ? 'step-progress__bar--active' : ''}}"></view>
+  </view>
 
-      <view class="form-item">
-        <view class="label-row">
-          <text class="label">手机号码</text>
-          <text class="field-optional">选填</text>
-        </view>
-        <input class="input"
-          type="number"
-          placeholder="请输入11位手机号"
-          value="{{phone}}"
-          bindinput="onPhoneInput" />
-        <text class="field-error" wx:if="{{errors.phone}}">{{errors.phone}}</text>
-      </view>
+  <view class="content" wx:if="{{step === 1}}">
+    <view class="intro">
+      <text class="eyebrow">先认识一下</text>
+      <text class="page-title">小林怎么称呼您？</text>
+      <text class="page-subtitle">这样每次打电话，小林都能亲切地叫您。</text>
     </view>
 
-    <view class="card form-card">
-      <view class="form-item">
-        <view class="label-row">
-          <text class="label">兴趣爱好</text>
-          <text class="field-optional">选填</text>
-        </view>
-        <view class="tags-container">
-          <text wx:for="{{interestTags}}"
-            wx:key="name"
-            class="interest-tag {{item.selected ? 'active' : ''}}"
-            data-idx="{{index}}"
-            catchtap="toggleInterest">{{item.name}}</text>
-        </view>
+    <view class="field-group">
+      <view class="address-field {{validationError ? 'address-field--error' : ''}}">
+        <input
+          class="address-input"
+          value="{{address}}"
+          maxlength="10"
+          placeholder="例如：王阿姨"
+          placeholder-class="address-placeholder"
+          bindinput="onAddressInput"
+          disabled="{{isSaving}}"
+          aria-label="小林对您的称呼"
+        />
+        <button
+          class="voice-button {{speechState === 'listening' ? 'voice-button--active' : ''}}"
+          bindtap="onVoiceTap"
+          disabled="{{isSaving || speechState === 'connecting' || speechState === 'recognizing'}}"
+          aria-label="{{speechState === 'listening' ? '停止语音输入' : '开始语音输入'}}"
+        >
+          <view wx:if="{{speechState === 'connecting'}}" class="button-spinner button-spinner--brand"></view>
+          <image wx:else class="voice-icon" src="/assets/icons/microphone.svg" mode="aspectFit"></image>
+        </button>
       </view>
+      <text class="field-error" wx:if="{{validationError}}">{{validationError}}</text>
+      <text class="speech-hint {{speechState === 'failed' ? 'speech-hint--error' : ''}}" wx:if="{{speechHint}}">
+        {{speechHint}}
+      </text>
     </view>
 
-    <view class="card form-card">
-      <view class="form-item">
-        <view class="label-row">
-          <text class="label">健康情况备注</text>
-          <text class="field-optional">选填</text>
-        </view>
-        <textarea class="textarea"
-          placeholder="例如：膝盖不好，高血压"
-          value="{{health}}"
-          bindinput="onHealthInput" />
+    <view class="suggestion-group">
+      <text class="suggestion-label">也可以直接选择</text>
+      <view class="suggestion-list">
+        <button
+          class="suggestion"
+          wx:for="{{suggestions}}"
+          wx:key="*this"
+          data-value="{{item}}"
+          bindtap="onSuggestionTap"
+          disabled="{{isSaving}}"
+        >{{item}}</button>
       </view>
     </view>
   </view>
 
-  <view class="bottom-bar">
-    <button class="btn btn-primary full-width" bindtap="nextStep">完成配置</button>
+  <view class="content permission-content" wx:else>
+    <view class="intro">
+      <text class="eyebrow">最后一步</text>
+      <text class="page-title">让叮嘱更好地陪着您</text>
+      <text class="page-subtitle">需要时再由您主动允许，不会在后台偷偷使用。</text>
+    </view>
+
+    <view class="permission-list">
+      <view class="permission-card">
+        <view class="permission-copy">
+          <view class="permission-icon-wrap">
+            <image class="permission-icon" src="/assets/icons/microphone.svg" mode="aspectFit"></image>
+          </view>
+          <view class="permission-text">
+            <text class="permission-title">麦克风</text>
+            <text class="permission-description">用来和小林通话</text>
+            <text class="permission-status permission-status--error" wx:if="{{microphoneState === 'denied'}}">
+              未允许，请去设置中恢复
+            </text>
+          </view>
+        </view>
+        <button
+          class="permission-button {{microphoneState === 'granted' ? 'permission-button--granted' : ''}}"
+          bindtap="onMicrophonePermissionTap"
+          disabled="{{microphoneBusy || microphoneState === 'granted'}}"
+        >
+          <view wx:if="{{microphoneBusy}}" class="button-spinner"></view>
+          <text wx:else>{{microphoneState === 'granted' ? '已允许' : (microphoneState === 'denied' ? '去设置' : '允许使用麦克风')}}</text>
+        </button>
+      </view>
+
+      <view class="permission-card">
+        <view class="permission-copy">
+          <view class="permission-icon-wrap">
+            <image class="permission-icon" src="/assets/icons/notification.svg" mode="aspectFit"></image>
+          </view>
+          <view class="permission-text">
+            <text class="permission-title">通知</text>
+            <text class="permission-description">到时间提醒您</text>
+            <text class="permission-status permission-status--error" wx:if="{{notificationState === 'denied'}}">
+              本次未允许，可再次申请
+            </text>
+            <text class="permission-status permission-status--error" wx:elif="{{notificationState === 'blocked'}}">
+              通知已关闭，请去设置中恢复
+            </text>
+            <text class="permission-status permission-status--attention" wx:elif="{{!templateConfigured}}">
+              通知模板尚未配置
+            </text>
+            <text class="permission-status permission-status--error" wx:elif="{{notificationState === 'failed'}}">
+              申请失败，请再试一次
+            </text>
+          </view>
+        </view>
+        <button
+          class="permission-button {{notificationState === 'granted' ? 'permission-button--granted' : ''}}"
+          bindtap="onNotificationPermissionTap"
+          disabled="{{notificationBusy || notificationState === 'granted' || !templateConfigured}}"
+        >
+          <view wx:if="{{notificationBusy}}" class="button-spinner"></view>
+          <text wx:else>
+            {{notificationState === 'granted' ? '已允许' : (notificationState === 'blocked' ? '去设置' : (notificationState === 'denied' ? '再次允许' : '允许发送通知'))}}
+          </text>
+        </button>
+      </view>
+    </view>
+  </view>
+
+  <view class="bottom-action safe-area-bottom">
+    <text class="permission-impact" wx:if="{{step === 2}}">{{permissionImpactText}}</text>
+    <text class="enter-error" wx:if="{{step === 2 && enterError}}">{{enterError}}</text>
+    <button
+      wx:if="{{step === 1}}"
+      class="primary-button"
+      bindtap="onSaveAddress"
+      disabled="{{isSaving}}"
+    >
+      <view wx:if="{{isSaving}}" class="button-spinner"></view>
+      <text wx:else>{{isEditMode ? '保存称呼' : '就这样称呼我'}}</text>
+    </button>
+    <button wx:else class="primary-button" bindtap="enterToday" disabled="{{isEntering}}">
+      <view wx:if="{{isEntering}}" class="button-spinner"></view>
+      <text wx:else>进入今天</text>
+    </button>
   </view>
 </view>

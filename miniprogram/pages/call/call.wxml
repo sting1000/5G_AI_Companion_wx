@@ -1,190 +1,217 @@
-<view class="companion-stage">
-  <image class="call-bg companion-poster" src="{{companionPosterSrc}}" mode="aspectFill"></image>
-  <video
-    id="companion-idle"
-    class="call-bg companion-video companion-video-idle {{showIdleVideo ? 'is-visible' : ''}}"
-    src="{{companionIdleSrc}}"
-    object-fit="cover"
-    muted="{{true}}"
-    loop="{{true}}"
-    autoplay="{{!!companionIdleSrc}}"
-    controls="{{false}}"
-    show-center-play-btn="{{false}}"
-    show-play-btn="{{false}}"
-    show-fullscreen-btn="{{false}}"
-    show-mute-btn="{{false}}"
-    show-progress="{{false}}"
-    show-bottom-progress="{{false}}"
-    enable-progress-gesture="{{false}}"
-    enable-play-gesture="{{false}}"
-    vslide-gesture="{{false}}"
-    show-casting-button="{{false}}"
-    show-background-playback-button="{{false}}"
-    picture-in-picture-mode=""
-    bindplay="onCompanionIdlePlay"
-    binderror="onCompanionIdleError"
-    bindloadedmetadata="onCompanionIdleLoaded">
-  </video>
-  <video
-    id="companion-speaking"
-    class="call-bg companion-video companion-video-speaking {{showSpeakingVideo ? 'is-visible' : ''}}"
-    src="{{companionSpeakingSrc}}"
-    object-fit="cover"
-    muted="{{true}}"
-    loop="{{true}}"
-    autoplay="{{false}}"
-    controls="{{false}}"
-    show-center-play-btn="{{false}}"
-    show-play-btn="{{false}}"
-    show-fullscreen-btn="{{false}}"
-    show-mute-btn="{{false}}"
-    show-progress="{{false}}"
-    show-bottom-progress="{{false}}"
-    enable-progress-gesture="{{false}}"
-    enable-play-gesture="{{false}}"
-    vslide-gesture="{{false}}"
-    show-casting-button="{{false}}"
-    show-background-playback-button="{{false}}"
-    picture-in-picture-mode=""
-    bindplay="onCompanionSpeakingPlay"
-    binderror="onCompanionSpeakingError"
-    bindloadedmetadata="onCompanionSpeakingLoaded">
-  </video>
-</view>
+<view class="call-page">
+  <view class="media-layer">
+    <image
+      class="companion-media"
+      src="{{companionPosterSrc}}"
+      mode="aspectFill"
+    />
+    <video
+      wx:if="{{companionIdleSrc}}"
+      id="companion-idle"
+      class="companion-media {{showIdleVideo ? 'is-visible' : ''}}"
+      src="{{companionIdleSrc}}"
+      object-fit="cover"
+      loop="{{true}}"
+      muted="{{true}}"
+      controls="{{false}}"
+      show-center-play-btn="{{false}}"
+      picture-in-picture-mode=""
+      bindplay="onCompanionIdlePlay"
+      bindloadedmetadata="onCompanionIdleLoaded"
+      binderror="onCompanionIdleError"
+    />
+    <video
+      wx:if="{{companionSpeakingSrc}}"
+      id="companion-speaking"
+      class="companion-media {{showSpeakingVideo ? 'is-visible' : ''}}"
+      src="{{companionSpeakingSrc}}"
+      object-fit="cover"
+      loop="{{true}}"
+      muted="{{true}}"
+      controls="{{false}}"
+      show-center-play-btn="{{false}}"
+      picture-in-picture-mode=""
+      bindplay="onCompanionSpeakingPlay"
+      bindloadedmetadata="onCompanionSpeakingLoaded"
+      binderror="onCompanionSpeakingError"
+    />
+  </view>
 
-<view class="call-page video-call-page" wx:if="{{!showIncoming}}">
-  <view class="call-shade call-shade-top"></view>
-  <view class="call-shade call-shade-bottom"></view>
+  <view class="top-shade"></view>
+  <view class="bottom-shade"></view>
 
-  <view class="call-header">
-    <view class="call-action">
-      <image class="call-action-icon" src="/assets/icons/video-expand.svg" mode="aspectFit"></image>
+  <block wx:if="{{showIncoming}}">
+    <view class="incoming-header" style="padding-top: {{topInset + 24}}px;">
+      <text class="person-name">小林</text>
+      <text class="incoming-purpose">{{incomingReminderTitle ? '来提醒您' + incomingReminderTitle : '给您打来提醒电话'}}</text>
+      <view class="incoming-state {{isIncomingAnswering ? 'is-answering' : ''}}">
+        <view class="state-dot"></view>
+        <text>{{incomingHint}}</text>
+      </view>
     </view>
-    <view class="call-identity">
-      <text class="call-name">AI 小林</text>
+
+    <view class="incoming-actions">
+      <button
+        class="incoming-action decline"
+        disabled="{{isIncomingAnswering}}"
+        bindtap="onDecline"
+        aria-label="拒绝来电"
+      >
+        <view class="incoming-action-circle">
+          <image class="incoming-action-icon" src="/assets/icons/call-decline.svg" />
+        </view>
+        <text>拒绝</text>
+      </button>
+      <button
+        class="incoming-action accept"
+        disabled="{{isIncomingAnswering}}"
+        bindtap="onAccept"
+        aria-label="{{isIncomingAnswering ? '正在接听' : '接听来电'}}"
+      >
+        <view class="incoming-action-circle">
+          <view wx:if="{{isIncomingAnswering}}" class="answering-spinner"></view>
+          <image wx:else class="incoming-action-icon" src="/assets/icons/call-answer.svg" />
+        </view>
+        <text>{{isIncomingAnswering ? '正在接听' : (status === 'failed' ? '重新接听' : '接听')}}</text>
+      </button>
+    </view>
+  </block>
+
+  <block wx:else>
+    <view class="call-header" style="padding-top: {{topInset + 4}}px;">
+      <text class="person-name">小林</text>
       <text class="call-time">{{elapsedText}}</text>
-      <text class="call-status">{{status === 'connecting' ? connectionHint : (isAssistantSpeaking ? '小林正在回复' : (isSpeaking ? '正在听您说话' : '陪伴通话中'))}}</text>
     </view>
-    <view class="call-action">
-      <image class="call-action-icon" src="/assets/icons/video-user-add.svg" mode="aspectFit"></image>
-    </view>
-  </view>
 
-  <view class="call-caption-layer">
-    <view class="reminder-chip" wx:if="{{incomingReminderTitle}}">
-      <view class="reminder-pill-icon">
-        <view class="reminder-pill-head"></view>
-        <view class="reminder-pill-tail"></view>
+    <view class="call-progress" wx:if="{{!isTranscriptExpanded}}">
+      <view class="call-status status-{{callStatusTone}}">
+        <view class="state-dot"></view>
+        <text>{{callStatusText}}</text>
       </view>
-      <text class="reminder-chip-text">{{incomingReminderTitle}}</text>
+      <text wx:if="{{status === 'connecting'}}" class="connection-detail">{{connectionHint}}</text>
     </view>
 
-    <scroll-view class="transcript-panel transcript-scroll" scroll-y scroll-into-view="{{transcriptAnchorId}}" scroll-top="{{transcriptScrollTop}}" scroll-with-animation lower-threshold="48" bindscroll="onTranscriptScroll" bindscrolltolower="onTranscriptScrollToLower" wx:if="{{transcriptItems.length > 0 || currentUserDraft || currentAssistantDraft}}">
+    <view
+      wx:if="{{reminderFeedback}}"
+      class="reminder-feedback feedback-{{reminderFeedback.state}} {{isTranscriptExpanded ? 'above-sheet' : ''}}"
+      aria-live="polite"
+    >
+      <view class="feedback-icon">
+        <view wx:if="{{reminderFeedback.state === 'saving'}}" class="feedback-spinner"></view>
+        <image wx:elif="{{reminderFeedback.state === 'saved'}}" src="/assets/icons/check-white.svg" />
+        <text wx:else>!</text>
+      </view>
+      <view class="feedback-copy">
+        <text class="feedback-title">
+          {{reminderFeedback.state === 'saving' ? '正在记下来' : (reminderFeedback.state === 'saved' ? '已记下' : '没有记成功')}}
+        </text>
+        <text wx:if="{{reminderFeedback.scheduleText}}" class="feedback-schedule">{{reminderFeedback.scheduleText}}</text>
+        <text class="feedback-item">{{reminderFeedback.state === 'failed' ? '请再说一次' : reminderFeedback.title}}</text>
+      </view>
+    </view>
+
+    <view class="recent-subtitles" wx:if="{{!isTranscriptExpanded && !reminderFeedback && (recentTranscriptItems.length || currentUserDraft || currentAssistantDraft)}}">
       <view
-        wx:for="{{transcriptItems}}"
+        wx:for="{{recentTranscriptItems}}"
         wx:key="id"
-        id="{{item.id}}"
-        class="transcript-item transcript-item-{{item.role}}">
-        <text class="transcript-role">{{item.role === 'user' ? '您' : '小林'}}</text>
-        <text class="transcript-content">{{item.content}}</text>
+        class="recent-line"
+      >
+        <text class="speaker-label">{{item.role === 'user' ? '您' : '小林'}}</text>
+        <text class="recent-text">{{item.content}}</text>
       </view>
-      <view class="transcript-item transcript-item-user transcript-item-draft" wx:if="{{currentUserDraft}}" id="draft-user">
-        <text class="transcript-role">您</text>
-        <text class="transcript-content">{{currentUserDraft}}</text>
+      <view class="recent-line is-draft" wx:if="{{currentUserDraft}}">
+        <text class="speaker-label">您</text>
+        <text class="recent-text">{{currentUserDraft}}</text>
       </view>
-      <view class="transcript-item transcript-item-assistant transcript-item-draft" wx:if="{{currentAssistantDraft}}" id="draft-assistant">
-        <text class="transcript-role">小林</text>
-        <text class="transcript-content">{{currentAssistantDraft}}</text>
+      <view class="recent-line is-draft" wx:if="{{currentAssistantDraft}}">
+        <text class="speaker-label">小林</text>
+        <text class="recent-text">{{currentAssistantDraft}}</text>
       </view>
-      <view class="transcript-anchor" id="{{transcriptAnchorId}}"></view>
-    </scroll-view>
-
-    <view class="call-prompt glass-panel" wx:elif="{{status === 'connecting'}}">
-      <text class="connecting-main-hint">{{connectionHint}}</text>
-      <text class="connecting-sub-hint">请稍等，马上为您接通</text>
-    </view>
-    <view class="call-prompt glass-panel" wx:else>
-      <text class="subtitle-hint">正在聆听，直接说话即可</text>
-    </view>
-  </view>
-
-  <view class="video-bottom">
-    <view class="voice-state">
-      <view class="status-dot {{status === 'connecting' ? 'status-dot-waiting' : (isAssistantSpeaking ? 'status-dot-assistant' : (isSpeaking ? 'status-dot-speaking' : 'status-dot-listening'))}}"></view>
-      <text class="voice-state-text">{{status === 'connecting' ? '连接中...' : (isAssistantSpeaking ? '小林说话中' : (isSpeaking ? '您说话中' : '实时聆听中'))}}</text>
     </view>
 
-    <view class="waveform {{isAssistantSpeaking || isSpeaking ? 'waveform-active' : ''}}">
-      <view class="wave-bar wave-bar-1"></view>
-      <view class="wave-bar wave-bar-2"></view>
-      <view class="wave-bar wave-bar-3"></view>
-      <view class="wave-bar wave-bar-4"></view>
-      <view class="wave-bar wave-bar-5"></view>
-      <view class="wave-bar wave-bar-6"></view>
-      <view class="wave-bar wave-bar-7"></view>
-      <view class="wave-bar wave-bar-8"></view>
-      <view class="wave-bar wave-bar-9"></view>
-      <view class="wave-bar wave-bar-10"></view>
-      <view class="wave-bar wave-bar-11"></view>
-      <view class="wave-bar wave-bar-12"></view>
-      <view class="wave-bar wave-bar-13"></view>
-      <view class="wave-bar wave-bar-14"></view>
-      <view class="wave-bar wave-bar-15"></view>
-      <view class="wave-bar wave-bar-16"></view>
-      <view class="wave-bar wave-bar-17"></view>
-      <view class="wave-bar wave-bar-18"></view>
-      <view class="wave-bar wave-bar-19"></view>
-    </view>
-
-    <view class="control-row">
-      <view class="control-item">
-        <view class="control-circle control-circle-light">
-          <image class="control-icon" src="/assets/icons/control-mic-off.svg" mode="aspectFit"></image>
+    <view class="transcript-sheet" wx:if="{{isTranscriptExpanded}}">
+      <view class="sheet-handle"></view>
+      <view class="sheet-header">
+        <text class="sheet-title">通话字幕</text>
+        <button class="sheet-close" bindtap="onCloseTranscript" aria-label="收起字幕">收起</button>
+      </view>
+      <scroll-view
+        class="transcript-scroll"
+        scroll-y
+        scroll-into-view="{{transcriptAnchorId}}"
+        scroll-top="{{transcriptScrollTop}}"
+      >
+        <view
+          wx:for="{{transcriptItems}}"
+          wx:key="id"
+          id="{{item.id}}"
+          class="transcript-line"
+        >
+          <text class="speaker-label">{{item.role === 'user' ? '您' : '小林'}}</text>
+          <text class="transcript-text">{{item.content}}</text>
         </view>
-        <text class="control-label">静音</text>
-      </view>
-      <view class="control-item">
-        <view class="control-circle control-circle-danger" catchtap="onHangup">
-          <image class="control-icon control-icon-phone" src="/assets/icons/control-phone-off.svg" mode="aspectFit"></image>
+        <view id="draft-user" class="transcript-line is-draft" wx:if="{{currentUserDraft}}">
+          <text class="speaker-label">您</text>
+          <text class="transcript-text">{{currentUserDraft}}</text>
         </view>
-        <text class="control-label">挂断</text>
-      </view>
-      <view class="control-item">
-        <view class="control-circle control-circle-light">
-          <image class="control-icon" src="/assets/icons/control-speaker.svg" mode="aspectFit"></image>
+        <view id="draft-assistant" class="transcript-line is-draft" wx:if="{{currentAssistantDraft}}">
+          <text class="speaker-label">小林</text>
+          <text class="transcript-text">{{currentAssistantDraft}}</text>
         </view>
-        <text class="control-label">扬声器</text>
-      </view>
+        <view class="empty-transcript" wx:if="{{!transcriptItems.length && !currentUserDraft && !currentAssistantDraft}}">
+          字幕会在通话开始后显示
+        </view>
+      </scroll-view>
     </view>
-  </view>
-</view>
 
-<view class="incoming-page" wx:if="{{showIncoming}}">
-  <view class="incoming-blur"></view>
-  <view class="call-shade call-shade-top"></view>
-  <view class="call-shade call-shade-bottom"></view>
+    <view class="failure-actions" wx:if="{{status === 'failed'}}">
+      <button class="failure-button secondary" bindtap="onHangup">结束</button>
+      <button class="failure-button primary" bindtap="onRetryCall">重新呼叫</button>
+    </view>
 
-  <view class="incoming-card">
-    <text class="incoming-label">AI 陪伴来电</text>
-    <text class="incoming-name">小林</text>
-    <text class="incoming-desc">{{incomingHint}}</text>
-    <view class="incoming-reminder" wx:if="{{incomingReminderTitle}}">
-      <text>{{incomingReminderTitle}}</text>
-    </view>
-  </view>
+    <view class="call-controls" wx:else>
+      <button
+        class="control-item {{isMuted ? 'is-active' : ''}}"
+        disabled="{{status !== 'connected'}}"
+        bindtap="onToggleMute"
+        aria-label="{{isMuted ? '打开麦克风' : '关闭麦克风'}}"
+      >
+        <view class="control-circle">
+          <image class="control-icon" src="{{isMuted ? '/assets/icons/call-mic-off.svg' : '/assets/icons/call-mic.svg'}}" />
+        </view>
+        <text>{{isMuted ? '取消静音' : '静音'}}</text>
+      </button>
 
-  <view class="incoming-actions">
-    <view class="incoming-action-group">
-      <view class="incoming-control incoming-control-decline {{isIncomingAnswering ? 'incoming-btn-disabled' : ''}}" catchtap="onDecline">
-        <image class="incoming-control-icon" src="/assets/icons/control-phone-off.svg" mode="aspectFit"></image>
-      </view>
-      <text class="incoming-action-label">拒绝</text>
+      <button class="control-item hangup" bindtap="onHangup" aria-label="挂断电话">
+        <view class="control-circle">
+          <image class="control-icon hangup-icon" src="/assets/icons/call-hangup.svg" />
+        </view>
+        <text>挂断</text>
+      </button>
+
+      <button
+        wx:if="{{speakerAvailable}}"
+        class="control-item {{isSpeakerOn ? 'is-active' : ''}}"
+        disabled="{{isSpeakerChanging}}"
+        bindtap="onToggleSpeaker"
+        aria-label="{{isSpeakerOn ? '关闭扬声器' : '打开扬声器'}}"
+      >
+        <view class="control-circle">
+          <image class="control-icon" src="{{isSpeakerOn ? '/assets/icons/call-speaker.svg' : '/assets/icons/call-speaker-off.svg'}}" />
+        </view>
+        <text>{{isSpeakerOn ? '扬声器开' : '听筒'}}</text>
+      </button>
+
+      <button
+        class="control-item {{isTranscriptExpanded ? 'is-active' : ''}}"
+        bindtap="onToggleTranscript"
+        aria-label="{{isTranscriptExpanded ? '收起字幕' : '展开字幕'}}"
+      >
+        <view class="control-circle">
+          <image class="control-icon" src="{{isTranscriptExpanded ? '/assets/icons/call-subtitle-off.svg' : '/assets/icons/call-subtitle.svg'}}" />
+        </view>
+        <text>{{isTranscriptExpanded ? '收起字幕' : '字幕'}}</text>
+      </button>
     </view>
-    <view class="incoming-action-group">
-      <view class="incoming-control incoming-control-accept {{isIncomingAnswering ? 'incoming-btn-disabled' : ''}}" catchtap="onAccept">
-        <image class="incoming-control-icon" src="/assets/icons/control-phone-off.svg" mode="aspectFit"></image>
-      </view>
-      <text class="incoming-action-label">{{isIncomingAnswering ? '接听中' : '接听'}}</text>
-    </view>
-  </view>
+  </block>
 </view>

@@ -42,6 +42,24 @@ const AUDIO_STUTTER_WARN_SEGMENTS = 2
 const AUDIO_STUTTER_WARN_SWITCH_AVG_MS = 80
 const logger = createLogger('Audio')
 
+function isSpeakerRouteSupported() {
+  return typeof wx !== 'undefined' && typeof wx.setInnerAudioOption === 'function'
+}
+
+function setSpeakerEnabled(speakerOn) {
+  return new Promise((resolve, reject) => {
+    if (!isSpeakerRouteSupported()) {
+      reject(new Error('当前微信版本不支持切换扬声器'))
+      return
+    }
+    wx.setInnerAudioOption({
+      speakerOn: Boolean(speakerOn),
+      success: resolve,
+      fail: (err) => reject(err || new Error('切换扬声器失败')),
+    })
+  })
+}
+
 /**
  * 录音管理器封装
  */
@@ -49,27 +67,34 @@ class AudioRecorder {
   constructor() {
     this.recorder = wx.getRecorderManager()
     this.onFrameData = null // (pcmBuffer: ArrayBuffer) => {}
+    this.onError = null // (error) => {}
     this.recording = false
 
-    this.recorder.onStart(() => {
+    this._handleStart = () => {
       logger.info('录音已启动')
-    })
+    }
 
-    this.recorder.onFrameRecorded((res) => {
+    this._handleFrameRecorded = (res) => {
       if (res.frameBuffer && this.onFrameData) {
         this.onFrameData(res.frameBuffer)
       }
-    })
+    }
 
-    this.recorder.onError((err) => {
+    this._handleError = (err) => {
       logger.error('AudioRecorder error:', JSON.stringify(err))
       this.recording = false
-    })
+      if (this.onError) this.onError(err)
+    }
 
-    this.recorder.onStop(() => {
+    this._handleStop = () => {
       logger.info('录音已停止')
       this.recording = false
-    })
+    }
+
+    this.recorder.onStart(this._handleStart)
+    this.recorder.onFrameRecorded(this._handleFrameRecorded)
+    this.recorder.onError(this._handleError)
+    this.recorder.onStop(this._handleStop)
   }
 
   start() {
@@ -91,6 +116,23 @@ class AudioRecorder {
       this.recorder.stop()
       this.recording = false
     }
+  }
+
+  destroy() {
+    this.stop()
+    const listeners = [
+      ['offStart', this._handleStart],
+      ['offFrameRecorded', this._handleFrameRecorded],
+      ['offError', this._handleError],
+      ['offStop', this._handleStop],
+    ]
+    listeners.forEach(([method, handler]) => {
+      if (this.recorder && typeof this.recorder[method] === 'function') {
+        this.recorder[method](handler)
+      }
+    })
+    this.onFrameData = null
+    this.onError = null
   }
 }
 
@@ -1077,4 +1119,6 @@ module.exports = {
   FRAME_SIZE,
   PLAYBACK_MODE_SINGLE_WAV,
   PLAYBACK_MODE_WEB_AUDIO,
+  isSpeakerRouteSupported,
+  setSpeakerEnabled,
 }

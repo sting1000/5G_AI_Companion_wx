@@ -1,3 +1,4 @@
 {
-  "navigationBarTitleText": "配置陪伴"
+  "navigationStyle": "custom",
+  "navigationBarTitleText": "叮嘱"
 }

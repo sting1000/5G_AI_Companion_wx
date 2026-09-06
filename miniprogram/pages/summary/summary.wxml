@@ -1,97 +1,60 @@
 <view class="summary-page">
-  <view class="summary-nav">
-    <view class="nav-back" bindtap="goBack">
-      <text class="back-icon">‹</text>
-    </view>
-    <text class="nav-title">通话复盘</text>
-    <view class="nav-placeholder"></view>
+  <view class="page-nav" style="padding-top: {{statusBarHeight}}px; height: {{navigationBarHeight}}px;">
+    <button class="nav-back" bindtap="goBack" aria-label="返回">
+      <image src="/assets/icons/elder-back.svg" />
+    </button>
+    <text class="nav-title">通话内容</text>
+    <view class="nav-spacer"></view>
   </view>
 
-  <scroll-view class="scroll-content" scroll-y>
-    <block wx:if="{{notFound}}">
-      <view class="empty-state">
-        <text>未找到通话记录</text>
-      </view>
-    </block>
+  <scroll-view class="summary-scroll" scroll-y>
+    <view wx:if="{{loadError}}" class="state-card">
+      <text class="state-title">暂时没有读取成功</text>
+      <text class="state-desc">通话记录还在，请稍后再试一次。</text>
+      <button class="state-action" bindtap="reloadRecord">重新读取</button>
+    </view>
+
+    <view wx:elif="{{notFound}}" class="state-card">
+      <text class="state-title">没有找到这条通话记录</text>
+      <text class="state-desc">这条记录可能已经不存在，请返回通话记录页。</text>
+      <button class="state-action" bindtap="goBack">返回通话记录</button>
+    </view>
 
     <block wx:elif="{{record}}">
-      <view class="summary-hero">
-        <view class="hero-topline">
-          <text class="hero-kicker">AI SUMMARY</text>
-          <view class="summary-state {{record.summaryStateClass}}">
-            <text>{{record.summaryStateText}}</text>
-          </view>
-        </view>
-        <text class="hero-title">小林已整理本次陪伴</text>
-        <text class="hero-date">{{record.date}}</text>
-        <view class="hero-metrics">
-          <view class="metric-block">
-            <text class="metric-value">{{record.durationText}}</text>
-            <text class="metric-label">通话时长</text>
-          </view>
-          <view class="metric-divider"></view>
-          <view class="metric-block">
-            <text class="metric-value">{{record.moodLabel || '平静'}}</text>
-            <text class="metric-label">情绪状态</text>
-          </view>
-          <view class="metric-divider"></view>
-          <view class="metric-block">
-            <text class="metric-value">{{record.topicCount}}</text>
-            <text class="metric-label">识别话题</text>
-          </view>
-        </view>
+      <view class="record-heading">
+        <text class="record-date">{{record.date}}</text>
+        <text class="record-duration">和小林聊了 {{record.durationText}}</text>
       </view>
 
-      <view class="mood-card">
-        <view class="mood-orb {{record.moodToneClass}}">
-          <text>{{record.moodLabel || '平静'}}</text>
+      <view class="summary-card state-{{record.summaryState}}">
+        <view class="summary-card-header">
+          <text class="card-title">本次摘要</text>
+          <text class="status-label">{{record.summaryStateText}}</text>
         </view>
-        <view class="mood-copy">
-          <text class="section-title">情绪观察</text>
-          <text class="section-desc">本次通话情绪评分 {{record.moodScore}}/5，适合用温和、简短的方式继续关心。</text>
-          <view class="mood-track">
-            <view class="mood-fill" style="width: {{record.moodPercent}}%;"></view>
+        <text class="summary-copy">{{record.summaryMessage}}</text>
+        <button
+          wx:if="{{record.summaryState === 'pending' || record.summaryState === 'failed'}}"
+          class="refresh-action"
+          bindtap="reloadRecord"
+        >
+          刷新状态
+        </button>
+      </view>
+
+      <view class="transcript-card">
+        <text class="card-title">通话字幕</text>
+        <view wx:if="{{record.hasTranscript}}" class="transcript-list">
+          <view
+            wx:for="{{record.transcript}}"
+            wx:key="id"
+            class="transcript-row role-{{item.role}}"
+          >
+            <text class="speaker">{{item.speaker}}</text>
+            <text class="transcript-copy">{{item.content}}</text>
           </view>
         </view>
-      </view>
-
-      <view class="insight-card">
-        <view class="section-header">
-          <text class="section-title">AI 概要</text>
-          <text class="section-tag">可转发给家人</text>
-        </view>
-        <view class="summary-status status-pending" wx:if="{{record.summaryStatus === 'pending'}}">通话内容已保存，AI 正在整理摘要...</view>
-        <view class="summary-status status-failed" wx:if="{{record.summaryStatus === 'failed'}}">{{record.summaryError || '摘要生成失败，请稍后重试'}}</view>
-        <text class="summary-text" wx:if="{{record.summary}}">{{record.summary}}</text>
-        <text class="summary-text summary-placeholder" wx:elif="{{record.summaryStatus === 'pending'}}">小林正在提炼本次通话重点，请稍后刷新。</text>
-        <text class="summary-text summary-placeholder" wx:elif="{{record.summaryStatus === 'failed'}}">本次摘要暂不可用，但通话记录已保留。</text>
-        <text class="summary-text summary-placeholder" wx:else>通话时间较短，暂无摘要。</text>
-      </view>
-
-      <view class="insight-card" wx:if="{{record.hasHighlights}}">
-        <view class="section-header">
-          <text class="section-title">重要提及</text>
-          <text class="section-tag">{{record.highlightCount}} 条</text>
-        </view>
-        <view class="highlight-list">
-          <view class="highlight-item" wx:for="{{record.highlights}}" wx:key="*this">
-            <view class="highlight-index">{{index + 1}}</view>
-            <text class="highlight-text">{{item}}</text>
-          </view>
-        </view>
-      </view>
-
-      <view class="insight-card" wx:if="{{record.hasTopics}}">
-        <view class="section-header">
-          <text class="section-title">对话信号</text>
-          <text class="section-tag">{{record.signalTitle || '兴趣信号'}}</text>
-        </view>
-        <view class="signal-tags">
-          <text class="signal-tag" wx:for="{{record.topics}}" wx:key="*this">{{item}}</text>
-        </view>
-        <view class="signal-tip">
-          <view class="signal-mark"></view>
-          <text>{{record.signalTip}}</text>
+        <view wx:else class="empty-transcript">
+          <text>{{record.missed ? '这次电话没有接通，因此没有通话内容。' : '这次没有保存到可查看的字幕。'}}</text>
         </view>
       </view>
     </block>

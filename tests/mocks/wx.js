@@ -16,6 +16,18 @@ function createRecorderManagerMock() {
     onFrameRecorded: jest.fn((cb) => { handlers.onFrameRecorded = cb }),
     onError: jest.fn((cb) => { handlers.onError = cb }),
     onStop: jest.fn((cb) => { handlers.onStop = cb }),
+    offStart: jest.fn((cb) => {
+      if (!cb || handlers.onStart === cb) handlers.onStart = null
+    }),
+    offFrameRecorded: jest.fn((cb) => {
+      if (!cb || handlers.onFrameRecorded === cb) handlers.onFrameRecorded = null
+    }),
+    offError: jest.fn((cb) => {
+      if (!cb || handlers.onError === cb) handlers.onError = null
+    }),
+    offStop: jest.fn((cb) => {
+      if (!cb || handlers.onStop === cb) handlers.onStop = null
+    }),
     __emitFrame(frameBuffer) {
       if (handlers.onFrameRecorded) handlers.onFrameRecorded({ frameBuffer })
     },
@@ -212,6 +224,9 @@ function createWxMock() {
       wx.__audioContext = audioContext
       return audioContext
     }),
+    setInnerAudioOption: jest.fn(({ success }) => {
+      if (success) success()
+    }),
     createWebAudioContext: jest.fn(() => webAudioContext),
     createVideoContext: jest.fn((id) => {
       const videoContext = createVideoContextMock()
@@ -246,17 +261,53 @@ function createWxMock() {
       }),
     },
     getFileSystemManager: jest.fn(() => fsMock),
+    getWindowInfo: jest.fn(() => ({
+      statusBarHeight: 20,
+      screenHeight: 844,
+      safeArea: { bottom: 810 },
+    })),
+    getMenuButtonBoundingClientRect: jest.fn(() => ({
+      top: 24,
+      bottom: 56,
+      height: 32,
+      left: 278,
+      right: 365,
+      width: 87,
+    })),
+    getNetworkType: jest.fn(({ success }) => {
+      if (success) success({ networkType: 'wifi' })
+    }),
+    getSetting: jest.fn(({ success }) => {
+      if (success) {
+        success({
+          authSetting: {},
+          subscriptionsSetting: { itemSettings: {} },
+        })
+      }
+    }),
     authorize: jest.fn(({ success }) => {
       if (success) success()
+    }),
+    requestSubscribeMessage: jest.fn(({ tmplIds, success }) => {
+      if (!success) return
+      const result = {}
+      ;(tmplIds || []).forEach((id) => {
+        result[id] = 'accept'
+      })
+      success(result)
     }),
     showModal: jest.fn(({ success }) => {
       if (success) success({ confirm: true })
     }),
     openSetting: jest.fn(({ success }) => {
+      if (success) success({ authSetting: { 'scope.record': true } })
+    }),
+    openPrivacyContract: jest.fn(({ success }) => {
       if (success) success()
     }),
     navigateBack: jest.fn(),
     navigateTo: jest.fn(),
+    redirectTo: jest.fn(),
     switchTab: jest.fn(),
     reLaunch: jest.fn(),
     showToast: jest.fn(),

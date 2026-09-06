@@ -29,6 +29,24 @@ describe('reminder-extractor 提醒抽取规则', () => {
     expect(eveningCandidate.timeOfDay).toBe('21:00')
   })
 
+  test('后续回答可以补全上一轮缺少的提醒时间', () => {
+    const incomplete = extractor.buildReminderCandidateFromText('提醒我吃药', { now })
+    const completed = extractor.completeReminderCandidateFromFollowup(
+      incomplete,
+      '明天早上九点',
+      { now }
+    )
+
+    expect(completed).toEqual(expect.objectContaining({
+      title: '吃药',
+      scheduleType: 'once',
+      remindDate: '2026-04-29',
+      timeOfDay: '09:00',
+      needsConfirmation: false,
+      missingFields: [],
+    }))
+  })
+
   test('明确提醒会去掉句末口语语气词', () => {
     const candidate = extractor.buildReminderCandidateFromText('提醒我明天九点出门吧', { now })
 

@@ -1,0 +1,37 @@
+<view class="ended-page">
+  <view class="ended-nav" style="padding-top: {{statusBarHeight}}px; height: {{navigationBarHeight}}px;">
+    <text>叮嘱</text>
+  </view>
+
+  <view class="ended-content">
+    <view class="success-mark">
+      <image src="/assets/icons/check-white.svg" />
+    </view>
+    <text class="ended-title">通话结束</text>
+    <text class="ended-duration">{{durationText}}</text>
+
+    <view wx:if="{{hasReminders}}" class="saved-section">
+      <text class="section-label">刚才记下</text>
+      <view
+        wx:for="{{reminders}}"
+        wx:key="reminderId"
+        class="saved-reminder"
+      >
+        <text class="saved-time">{{item.scheduleText}}</text>
+        <text class="saved-title">{{item.title}}</text>
+      </view>
+    </view>
+
+    <button
+      wx:if="{{canViewRecord}}"
+      class="record-link"
+      bindtap="viewCallRecord"
+    >
+      查看通话内容
+    </button>
+  </view>
+
+  <view class="ended-footer">
+    <button class="today-button" bindtap="backToToday">回到今天</button>
+  </view>
+</view>

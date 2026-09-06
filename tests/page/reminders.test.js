@@ -1,7 +1,7 @@
 const path = require('path')
 const { loadPageModule } = require('../helpers/page-loader')
 
-describe('reminders 页面离线关键分支', () => {
+describe('reminders 老人提醒列表', () => {
   const pagePath = path.resolve(__dirname, '../../miniprogram/pages/reminders/reminders.js')
 
   function loadPage() {
@@ -9,83 +9,91 @@ describe('reminders 页面离线关键分支', () => {
     return loadPageModule(pagePath)
   }
 
-  function createCandidateReminder(store, elderKey, overrides = {}) {
-    return store.saveReminder(Object.assign({
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-04T08:00:00'))
+  })
+
+  test('按今天、稍后、已完成分组并显示文字状态', () => {
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = store.getElderKey()
+    store.saveReminder({
+      id: 'today',
+      title: '吃药',
+      scheduleType: 'daily',
+      timeOfDay: '09:00',
+      status: 'pending',
+    }, elderKey)
+    store.saveReminder({
+      id: 'later',
       title: '医院复查',
       scheduleType: 'once',
-      remindDate: '2026-04-29',
+      remindDate: '2026-09-10',
+      timeOfDay: '10:00',
+      status: 'pending',
+    }, elderKey)
+    store.saveReminder({
+      id: 'done',
+      title: '测血压',
+      scheduleType: 'daily',
+      timeOfDay: '07:00',
+      status: 'done',
+    }, elderKey)
+    store.saveReminder({
+      id: 'candidate',
+      title: '给女儿打电话',
+      scheduleType: 'once',
+      remindDate: '',
       timeOfDay: '09:00',
       status: 'candidate',
       needsConfirmation: true,
-      missingFields: ['time'],
-    }, overrides), elderKey)
-  }
-
-  test('待确认提醒会显示待确认状态，点击显式确认后转为待提醒', () => {
-    const page = loadPage()
-    const store = require('../../miniprogram/utils/store')
-    const elderKey = store.getElderKey()
-    const reminder = createCandidateReminder(store, elderKey)
+    }, elderKey)
 
     page._loadReminders()
-    expect(page.data.reminders[0].statusText).toBe('待确认')
-    expect(page.data.reminders[0].statusClass).toBe('status-candidate')
-    expect(page.data.reminders[0].isCandidate).toBe(true)
 
-    page.onConfirmCandidate({ currentTarget: { dataset: { id: reminder.id } } })
-
-    const current = store.getReminders(elderKey).find(item => item.id === reminder.id)
-    expect(current.status).toBe('pending')
-    expect(current.needsConfirmation).toBe(false)
-    expect(current.missingFields).toEqual([])
-    expect(wx.showToast).toHaveBeenCalledWith({ title: '已确认提醒', icon: 'success' })
+    expect(page.data.todayReminders.map(item => item.id)).toEqual(['today'])
+    expect(page.data.laterReminders.map(item => item.id)).toEqual(['candidate', 'later'])
+    expect(page.data.doneReminders.map(item => item.id)).toEqual(['done'])
+    expect(page.data.laterReminders.find(item => item.id === 'candidate').statusText).toBe('待确认')
+    expect(page.data.laterReminders.find(item => item.id === 'candidate').statusText).not.toBe('已完成')
   })
 
-  test('待确认提醒点击状态点也复用确认逻辑', () => {
+  test('旧提醒缺少状态与日期时仍兼容为今天待提醒', () => {
     const page = loadPage()
     const store = require('../../miniprogram/utils/store')
     const elderKey = store.getElderKey()
-    const reminder = createCandidateReminder(store, elderKey)
+    store.saveReminder({
+      id: 'legacy',
+      title: '老提醒',
+      timeOfDay: '11:30',
+    }, elderKey)
 
     page._loadReminders()
-    page.onToggleDone({ currentTarget: { dataset: { id: reminder.id } } })
 
-    const current = store.getReminders(elderKey).find(item => item.id === reminder.id)
-    expect(current.status).toBe('pending')
-    expect(current.needsConfirmation).toBe(false)
-    expect(current.missingFields).toEqual([])
+    expect(page.data.todayReminders).toHaveLength(1)
+    expect(page.data.todayReminders[0]).toEqual(expect.objectContaining({
+      id: 'legacy',
+      status: 'pending',
+      statusText: '待提醒',
+      repeatText: '每天',
+    }))
   })
 
-  test('编辑待确认提醒并保存后会转为待提醒', () => {
+  test('点击整项进入提醒详情', () => {
     const page = loadPage()
-    const store = require('../../miniprogram/utils/store')
-    const elderKey = store.getElderKey()
-    const reminder = createCandidateReminder(store, elderKey, {
-      title: '去医院复查',
+
+    page.onTapReminder({ currentTarget: { dataset: { id: 'rem 1' } } })
+
+    expect(wx.navigateTo).toHaveBeenCalledWith({
+      url: '/pages/reminder-detail/reminder-detail?id=rem%201',
     })
-
-    page._loadReminders()
-    page.onEditReminder({ currentTarget: { dataset: { id: reminder.id } } })
-    page.onTitleInput({ detail: { value: '医院复查膝盖' } })
-    page.onSaveReminder()
-
-    const current = store.getReminders(elderKey).find(item => item.id === reminder.id)
-    expect(current.title).toBe('医院复查膝盖')
-    expect(current.status).toBe('pending')
-    expect(current.needsConfirmation).toBe(false)
-    expect(current.missingFields).toEqual([])
   })
 
-  test('待确认提醒不能直接触发呼入', () => {
+  test('返回使用 navigateBack', () => {
     const page = loadPage()
-    const store = require('../../miniprogram/utils/store')
-    const elderKey = store.getElderKey()
-    const reminder = createCandidateReminder(store, elderKey)
 
-    page._loadReminders()
-    page.onTriggerIncoming({ currentTarget: { dataset: { id: reminder.id } } })
+    page.goBack()
 
-    expect(wx.navigateTo).not.toHaveBeenCalled()
-    expect(wx.showToast).toHaveBeenCalledWith({ title: '请先确认提醒', icon: 'none' })
+    expect(wx.navigateBack).toHaveBeenCalled()
   })
 })

@@ -1,97 +1,127 @@
 <view class="dashboard-page">
-  <view class="dashboard-nav">
-    <view>
-      <text class="nav-kicker">亲情陪伴</text>
-      <text class="nav-title">AI 陪伴看护台</text>
+  <view class="custom-nav" style="padding-top: {{statusBarHeight}}px;">
+    <view class="custom-nav__inner" style="height: {{navigationBarHeight}}px;">
+      <text class="brand-name">叮嘱</text>
     </view>
   </view>
 
-  <view class="warning-bar" wx:if="{{hasWarning}}">
-    <view class="warning-dot"></view>
-    <text>妈妈今日连续3次未接听，点击处理</text>
+  <view class="offline-banner" wx:if="{{isOffline && hasCachedContent}}">
+    <image class="banner-icon" src="/assets/icons/elder-warning.svg" mode="aspectFit"></image>
+    <text>当前离线，显示上次内容</text>
+    <button class="banner-action" bindtap="retryLoad">重试</button>
   </view>
 
-  <view class="scroll-content">
-    <view class="hero-panel">
-      <view class="hero-copy">
-        <view class="hero-label-row">
-          <text class="hero-label">当前陪伴对象</text>
-          <view class="hero-status">
-            <view class="hero-status-dot"></view>
-            <text>在线</text>
+  <scroll-view class="dashboard-scroll" scroll-y enhanced show-scrollbar="{{false}}">
+    <view class="dashboard-content">
+      <view class="greeting-block">
+        <text class="greeting">{{greetingText}}</text>
+        <text class="date">{{dateText}}</text>
+      </view>
+
+      <view
+        class="notification-banner"
+        wx:if="{{notificationState !== 'granted'}}"
+      >
+        <view class="notification-copy">
+          <image class="notification-icon" src="/assets/icons/notification.svg" mode="aspectFit"></image>
+          <text>{{notificationState === 'unconfigured' ? '通知模板尚未配置，到点提醒不会通过微信通知出现' : '通知还没有开启，到点提醒不会通过微信通知出现'}}</text>
+        </view>
+        <button
+          class="notification-action"
+          wx:if="{{notificationState !== 'unconfigured'}}"
+          bindtap="recoverNotification"
+        >{{notificationState === 'blocked' ? '去设置' : '允许通知'}}</button>
+      </view>
+
+      <view class="section">
+        <text class="section-title">下一件事</text>
+
+        <view class="reminder-skeleton" wx:if="{{isLoading}}">
+          <view class="skeleton-line skeleton-time"></view>
+          <view class="skeleton-line skeleton-title"></view>
+          <view class="skeleton-line skeleton-caption"></view>
+        </view>
+
+        <view class="load-error" wx:elif="{{hasLoadError}}">
+          <image class="state-icon" src="/assets/icons/elder-warning.svg" mode="aspectFit"></image>
+          <text class="state-title">{{loadErrorText}}</text>
+          <text class="state-description">您仍然可以给小林打电话。</text>
+          <button class="retry-button" bindtap="retryLoad">
+            <image src="/assets/icons/retry.svg" mode="aspectFit"></image>
+            <text>重新加载</text>
+          </button>
+        </view>
+
+        <button
+          class="next-reminder"
+          wx:elif="{{nextReminder}}"
+          data-id="{{nextReminder.id}}"
+          bindtap="goReminderDetail"
+        >
+          <view class="next-main">
+            <text class="next-time">{{nextReminder.displayTime}}</text>
+            <text class="next-title">{{nextReminder.title}}</text>
+            <text class="next-repeat">{{nextReminder.dateLabel}} · {{nextReminder.scheduleLabel}}</text>
           </view>
-        </view>
-        <view class="elder-row">
-          <view class="elder-avatar">
-            <text>{{elderInitial}}</text>
+          <view class="next-status">
+            <view class="next-status__icon">
+              <image src="/assets/icons/clock.svg" mode="aspectFit"></image>
+            </view>
+            <text>{{nextReminder.statusText}}</text>
           </view>
-          <view class="elder-info">
-            <text class="elder-name">{{elderName}}</text>
-            <text class="last-call">{{lastCallTime}}</text>
+        </button>
+
+        <view class="empty-state" wx:else>
+          <view class="empty-icon-wrap">
+            <image class="state-icon" src="/assets/icons/clock.svg" mode="aspectFit"></image>
           </view>
-        </view>
-        <view class="mood-badge {{lastMoodClass}}" wx:if="{{lastMoodLabel}}">
-          <text>{{lastMoodLabel}}</text>
-        </view>
-      </view>
-      <image class="hero-companion" src="/assets/images/companion-xiaolin-call.jpg" mode="aspectFill"></image>
-    </view>
-
-    <view class="stats-panel">
-      <view class="stat-tile">
-        <text class="stat-value">{{totalCalls}}</text>
-        <text class="stat-label">通话次数</text>
-      </view>
-      <view class="stat-tile">
-        <text class="stat-value">{{totalDurationText}}</text>
-        <text class="stat-label">累计陪伴</text>
-      </view>
-    </view>
-
-    <view class="insight-card start-card" wx:if="{{!hasCallHistory}}">
-      <view class="card-mark card-mark-warm"></view>
-      <view class="signal-title-box">
-        <text class="signal-title">开始第一次陪伴通话</text>
-        <text class="signal-desc">点击下方按钮，让小林先陪老人聊几句。</text>
-      </view>
-    </view>
-
-    <view class="insight-card" wx:if="{{hasSignal}}">
-      <view class="signal-header">
-        <view class="card-mark card-mark-interest"></view>
-        <view class="signal-title-box">
-          <text class="signal-title">兴趣信号</text>
-          <text class="signal-desc">近期识别的兴趣标签</text>
+          <text class="state-title">今天没有要提醒的事</text>
+          <text class="state-description">想记点什么，打电话告诉小林就好。</text>
         </view>
       </view>
-      <view class="tag-list">
-        <text class="tag-item interest-tag" wx:for="{{interestTags}}" wx:key="*this">{{item}}</text>
-      </view>
-    </view>
 
-    <view class="insight-card health-signal-card" wx:if="{{hasCallHistory || hasHealthSignal}}">
-      <view class="signal-header">
-        <view class="card-mark card-mark-health"></view>
-        <view class="signal-title-box">
-          <text class="signal-title">健康线索</text>
-          <text class="signal-desc">来自健康备注与对话内容</text>
+      <view class="section other-section" wx:if="{{!isLoading && !hasLoadError && otherReminders.length > 0}}">
+        <view class="section-header">
+          <text class="section-title">今天还有</text>
+          <button class="text-link" wx:if="{{hasMoreToday}}" bindtap="goReminders">查看全部</button>
+        </view>
+        <view class="other-list">
+          <button
+            class="other-reminder"
+            wx:for="{{otherReminders}}"
+            wx:key="id"
+            data-id="{{item.id}}"
+            bindtap="goReminderDetail"
+          >
+            <text class="other-time">{{item.displayTime}}</text>
+            <view class="other-copy">
+              <text class="other-title">{{item.title}}</text>
+              <text class="other-repeat">{{item.scheduleLabel}} · {{item.statusText}}</text>
+            </view>
+            <image class="chevron" src="/assets/icons/chevron-right.svg" mode="aspectFit"></image>
+          </button>
         </view>
       </view>
-      <view class="tag-list" wx:if="{{healthTags.length > 0}}">
-        <text class="tag-item health-tag" wx:for="{{healthTags}}" wx:key="*this">{{item}}</text>
-      </view>
-      <view class="signal-action" wx:else>
-        <text>暂无健康标签，可在配置页补充健康备注。</text>
+
+      <view class="quick-links">
+        <button class="quick-link" bindtap="goRecords">
+          <image src="/assets/icons/elder-records.svg" mode="aspectFit"></image>
+          <text>最近通话</text>
+        </button>
+        <view class="quick-divider"></view>
+        <button class="quick-link" bindtap="goSettings">
+          <image src="/assets/icons/elder-settings.svg" mode="aspectFit"></image>
+          <text>设置</text>
+        </button>
       </view>
     </view>
-  </view>
+  </scroll-view>
 
-  <view class="bottom-action">
-    <button class="call-btn-large" bindtap="goCall">
-      <text>立即视频陪伴</text>
-    </button>
-    <button class="call-btn-secondary" bindtap="goSimulatedIncoming">
-      <text>模拟小林呼入</text>
+  <view class="call-dock">
+    <text class="call-helper">聊聊天，也可以请小林提醒您</text>
+    <button class="call-button" bindtap="goCall">
+      <image src="/assets/icons/elder-phone.svg" mode="aspectFit"></image>
+      <text>给小林打电话</text>
     </button>
   </view>
 </view>

@@ -1,342 +1,267 @@
 const store = require('../../utils/store')
-const sharedRules = (() => {
-  const LOW_INFO_SPEECH_PARTICLES = new Set([
-    '嗯', '嗯嗯', '哦', '噢', '喔', '呃', '额', '啊', '呀', '呢', '好', '好的', '行', '可以',
-  ])
+const permissions = require('../../utils/permissions')
 
-  function stripLeadingSpeechParticles(text) {
-    let result = String(text || '').trim()
-    let changed = true
-    while (changed) {
-      const before = result
-      result = result
-        .replace(/^[，。,、；;！!？?\s]+/, '')
-        .replace(/^(嗯嗯|嗯|哦|噢|喔|呃|额|啊|呀|好的|好|行|可以)[，。,、；;！!？?\s]*/u, '')
-        .trim()
-      changed = result !== before
-    }
-    return result
-  }
+const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六']
+const SHORT_WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 
-  function isLowInfoSpeechParticle(text) {
-    const normalized = String(text || '').trim().replace(/\s+/g, '')
-    return !normalized || normalized.length <= 1 || LOW_INFO_SPEECH_PARTICLES.has(normalized)
-  }
+function padNumber(value) {
+  return String(value).padStart(2, '0')
+}
 
-  function uniqTags(items) {
-    const seen = {}
-    const result = []
-    ;(items || []).forEach((item) => {
-      const text = String(item || '').trim()
-      if (!text || seen[text]) return
-      seen[text] = true
-      result.push(text)
-    })
-    return result
-  }
-  function normalizeInterestTags(tags) {
-    return uniqTags(tags).filter(tag => tag.length > 0 && tag.length <= 10)
-  }
-  function extractHealthTags(healthText) {
-    const text = String(healthText || '').trim()
-    if (!text) return []
-    const compact = text.replace(/\s+/g, '')
-    const keywordDict = [
-      ['失眠', ['失眠']],
-      ['睡不着', ['睡不着', '入睡困难', '早醒']],
-      ['睡眠问题', ['睡眠']],
-      ['高血压', ['高血压']],
-      ['血压波动', ['血压', '头晕']],
-      ['糖尿病', ['糖尿病']],
-      ['血糖偏高', ['血糖']],
-      ['心脏病', ['心脏病']],
-      ['心悸', ['心悸']],
-      ['胸闷', ['胸闷']],
-      ['胸痛', ['胸痛']],
-      ['心脏问题', ['心脏']],
-      ['关节疼痛', ['关节', '膝盖', '腰痛', '腰酸', '腿疼', '疼痛']],
-      ['食欲下降', ['胃口', '食欲']],
-      ['消化不适', ['消化', '胃痛', '腹胀']],
-      ['按时吃药', ['按时服药']],
-      ['漏服药', ['漏服']],
-      ['用药', ['吃药', '药']],
-    ]
-    const matchedMeta = keywordDict
-      .map(([tag, keywords]) => ({
-        tag,
-        matchedKeywords: keywords.filter(keyword => compact.includes(keyword)),
-      }))
-      .filter(item => item.matchedKeywords.length > 0)
-    const hasHypertension = matchedMeta.some(item => item.tag === '高血压')
-    const filtered = matchedMeta.filter(item => !(hasHypertension && item.tag === '血压波动'))
-    const matched = filtered.map(item => item.tag)
-    const matchedKeywordList = filtered.reduce((all, item) => all.concat(item.matchedKeywords), [])
-    const fallbackTags = text
-      .split(/[，。,、；;！!？?\n]/)
-      .map(item => stripLeadingSpeechParticles(item))
-      .filter(Boolean)
-      .filter(item => !isLowInfoSpeechParticle(item))
-      .filter(item => !matchedKeywordList.some(keyword => item.includes(keyword)))
-      .map(item => (item.length > 8 ? `${item.slice(0, 8)}...` : item))
-    return uniqTags([].concat(matched, fallbackTags))
-  }
+function toDateKey(date) {
+  return `${date.getFullYear()}-${padNumber(date.getMonth() + 1)}-${padNumber(date.getDate())}`
+}
+
+function getNavigationMetrics() {
+  let statusBarHeight = 20
+  let navigationBarHeight = 44
   try {
-    return require('../../utils/shared-rules')
-  } catch (err) {
-    return { extractHealthTags, normalizeInterestTags, uniqTags }
+    const windowInfo = wx.getWindowInfo
+      ? wx.getWindowInfo()
+      : (wx.getSystemInfoSync ? wx.getSystemInfoSync() : {})
+    statusBarHeight = Number(windowInfo.statusBarHeight || statusBarHeight)
+    const menu = wx.getMenuButtonBoundingClientRect
+      ? wx.getMenuButtonBoundingClientRect()
+      : null
+    if (menu && menu.height) {
+      navigationBarHeight = menu.height + Math.max(0, menu.top - statusBarHeight) * 2
+    }
+  } catch (err) {}
+  return { statusBarHeight, navigationBarHeight }
+}
+
+function getGreeting(hour) {
+  if (hour < 11) return '早上好'
+  if (hour < 14) return '中午好'
+  if (hour < 18) return '下午好'
+  return '晚上好'
+}
+
+function getEffectiveDate(reminder, now) {
+  return store.getReminderNextDate(reminder, now)
+}
+
+function getEffectiveTime(reminder, now) {
+  return store.getReminderNextTime(reminder, now)
+}
+
+function getReminderTimestamp(reminder, now) {
+  const date = getEffectiveDate(reminder, now)
+  const time = getEffectiveTime(reminder, now)
+  const timestamp = Date.parse(`${date || toDateKey(now)}T${time}:00`)
+  return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER
+}
+
+function dateLabel(effectiveDate, now) {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const target = new Date(`${effectiveDate}T00:00:00`)
+  if (!Number.isFinite(target.getTime())) return ''
+  const days = Math.round((target.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
+  if (days === 0) return '今天'
+  if (days === 1) return '明天'
+  return `${target.getMonth() + 1}月${target.getDate()}日`
+}
+
+function scheduleLabel(reminder, effectiveDate) {
+  if (reminder.snoozedDate && reminder.snoozedDate === effectiveDate) return '已改期'
+  if (reminder.scheduleType === 'once') return '单次'
+  if (reminder.scheduleType === 'weekly') {
+    const days = (reminder.weekdays || [])
+      .map(day => SHORT_WEEKDAYS[Number(day)])
+      .filter(Boolean)
+      .join('、')
+    return days ? `每周${days}` : '每周'
   }
-})()
-const { extractHealthTags, normalizeInterestTags, uniqTags } = sharedRules
+  if (reminder.scheduleType === 'monthly') return '每月'
+  return '每天'
+}
+
+function decorateReminder(reminder, now) {
+  const effectiveDate = getEffectiveDate(reminder, now)
+  return Object.assign({}, reminder, {
+    displayTime: getEffectiveTime(reminder, now),
+    scheduleLabel: scheduleLabel(reminder, effectiveDate),
+    dateLabel: dateLabel(effectiveDate, now),
+    effectiveDate,
+    timestamp: getReminderTimestamp(reminder, now),
+    statusText: reminder.status === 'candidate'
+      ? '待确认'
+      : (reminder.status === 'triggered' ? '已提醒' : '待提醒'),
+  })
+}
+
+function buildDashboardReminders(reminders, now = new Date()) {
+  const todayKey = toDateKey(now)
+  return (reminders || [])
+    .filter(item => item && item.status !== 'done')
+    .filter(item => item.status !== 'candidate')
+    .map(item => decorateReminder(item, now))
+    .filter(item => item.effectiveDate >= todayKey)
+    .sort((a, b) => a.timestamp - b.timestamp)
+}
 
 Page({
   data: {
-    // 老人信息
-    elderName: '',
-    elderEmoji: '👩',
-    elderInitial: '亲',
-    // 最近通话
-    lastCallTime: '',
-    lastMood: '',
-    lastMoodLabel: '',
-    lastMoodClass: 'mood-calm',
-    hasCallHistory: false,
-    // 统计
-    totalCalls: 0,
-    totalDurationText: '0秒',
-    // 兴趣信号
-    interestTags: [],
-    hasSignal: false,
-    // 健康信号
-    healthTags: [],
-    hasHealthSignal: false,
-    // 预警
-    hasWarning: false,
-    // 是否已配置
     configured: false,
+    greetingText: '',
+    dateText: '',
+    isLoading: true,
+    hasLoadError: false,
+    loadErrorText: '',
+    isOffline: false,
+    hasCachedContent: false,
+    notificationState: 'initial',
+    nextReminder: null,
+    otherReminders: [],
+    hasMoreToday: false,
+    todayReminderCount: 0,
+    statusBarHeight: 20,
+    navigationBarHeight: 44,
+  },
+
+  onLoad() {
+    this._isUnloaded = false
+    this.setData(getNavigationMetrics())
   },
 
   onShow() {
+    this._isUnloaded = false
     const config = store.getElderConfig()
     if (!config) {
-      wx.navigateTo({
-        url: '/pages/onboarding/onboarding'
-      })
+      wx.navigateTo({ url: '/pages/onboarding/onboarding' })
       return
     }
-
     this.setData({ configured: true })
-    this._loadElderInfo(config)
-    this._loadCallHistory()
-    this._loadProfile()
-    this._armSummaryRefreshIfNeeded()
-  },
-
-  onHide() {
-    this._clearSummaryRefreshTimer()
+    this._loadDashboard(config)
+    this._refreshNetworkState()
+    this._refreshNotificationState()
   },
 
   onUnload() {
-    this._clearSummaryRefreshTimer()
+    this._isUnloaded = true
   },
 
-  // 加载老人基本信息
-  _loadElderInfo(config) {
-    const elderName = config.parentName || '未设置'
+  retryLoad() {
+    const config = store.getElderConfig()
+    if (!config) {
+      wx.navigateTo({ url: '/pages/onboarding/onboarding' })
+      return
+    }
+    this._loadDashboard(config)
+    this._refreshNetworkState()
+  },
+
+  _loadDashboard(config) {
     this.setData({
-      elderName,
-      elderInitial: elderName && elderName !== '未设置' ? elderName.slice(0, 1) : '亲',
+      isLoading: true,
+      hasLoadError: false,
+      loadErrorText: '',
     })
-  },
+    const now = new Date()
+    const address = store.getElderTitle()
+      || config.preferredAddress
+      || config.parentName
+      || '您好'
+    this.setData({
+      greetingText: `${getGreeting(now.getHours())}，${address}`,
+      dateText: `${now.getMonth() + 1}月${now.getDate()}日 ${WEEKDAYS[now.getDay()]}`,
+    })
 
-  // 加载通话记录相关数据
-  _loadCallHistory() {
-    const history = store.getCallHistory()
-    const totalDurationSeconds = history.reduce((sum, item) => {
-      if (typeof item.durationSeconds === 'number' && item.durationSeconds >= 0) {
-        return sum + item.durationSeconds
-      }
-      return sum + this._parseDurationToSeconds(item.duration)
-    }, 0)
-    if (history.length > 0) {
-      const latest = history[0]
-      const moodLabel = latest.summaryStatus === 'pending'
-        ? '分析中'
-        : (latest.moodLabel || '平静')
-      const mood = latest.summaryStatus === 'pending'
-        ? '⏳'
-        : (latest.mood || '😌')
-      const moodClassMap = {
-        开心: 'mood-happy',
-        平静: 'mood-calm',
-        低落: 'mood-low',
-        焦虑: 'mood-anxious',
-        分析中: 'mood-pending',
-      }
+    try {
+      const elderKey = store.getElderKey(config)
+      const todayReminders = buildDashboardReminders(store.getReminders(elderKey), now)
+      this._applyReminderList(todayReminders, now)
+    } catch (error) {
       this.setData({
-        hasCallHistory: true,
-        lastCallTime: '上次通话：' + (latest.date || '未知'),
-        lastMood: mood,
-        lastMoodLabel: moodLabel,
-        lastMoodClass: moodClassMap[moodLabel] || 'mood-calm',
-        totalCalls: history.length,
-        totalDurationText: this._formatDuration(totalDurationSeconds),
-      })
-    } else {
-      this.setData({
-        hasCallHistory: false,
-        lastCallTime: '还没有通话记录',
-        lastMood: '',
-        lastMoodLabel: '',
-        lastMoodClass: 'mood-calm',
-        totalCalls: 0,
-        totalDurationText: '0秒',
+        isLoading: false,
+        hasLoadError: true,
+        loadErrorText: '今天的提醒暂时没有加载出来',
+        nextReminder: null,
+        otherReminders: [],
+        todayReminderCount: 0,
       })
     }
   },
 
-  _armSummaryRefreshIfNeeded() {
-    this._clearSummaryRefreshTimer()
-    const history = store.getCallHistory()
-    const latest = history[0]
-    if (!latest || latest.summaryStatus !== 'pending') return
-    let tickCount = 0
-    this.summaryRefreshTimer = setInterval(() => {
-      tickCount += 1
-      this._loadCallHistory()
-      const refreshed = store.getCallHistory()[0]
-      if (!refreshed || refreshed.summaryStatus !== 'pending' || tickCount >= 10) {
-        this._clearSummaryRefreshTimer()
-      }
-    }, 2000)
-  },
-
-  _clearSummaryRefreshTimer() {
-    if (this.summaryRefreshTimer) {
-      clearInterval(this.summaryRefreshTimer)
-      this.summaryRefreshTimer = null
-    }
-  },
-
-  // 加载档案信息（兴趣等）
-  _loadProfile() {
-    const config = store.getElderConfig() || {}
-    const profile = store.getProfile()
-    const elderKey = store.getElderKey ? store.getElderKey(config) : ''
-    const memoryBundle = store.getMemoryBundle ? store.getMemoryBundle(elderKey) : null
-    const elderMemory = memoryBundle && memoryBundle.elderMemory
-      ? memoryBundle.elderMemory
-      : {}
-    const memoryItems = memoryBundle && Array.isArray(memoryBundle.memoryItems)
-      ? memoryBundle.memoryItems
-      : []
-    const memoryHealthNotes = elderMemory.healthNotes || []
-    const memoryInterestTags = elderMemory.interestTags || []
-    const memoryItemInterestTags = memoryItems
-      .filter(item => item && item.type === 'interest')
-      .map(item => item.text)
-    const memoryItemHealthNotes = memoryItems
-      .filter(item => item && item.type === 'healthNote')
-      .map(item => item.text)
-    const hobbies = []
-      .concat(profile.hobbies || [])
-      .concat(memoryInterestTags)
-      .concat(memoryItemInterestTags)
-    const healthSources = []
-      .concat(config.health || '')
-      .concat(profile.health || '')
-      .concat(memoryHealthNotes)
-      .concat(memoryItemHealthNotes)
-      .filter(Boolean)
-    const extractedHealthTags = healthSources.reduce((all, source) => all.concat(extractHealthTags(source)), [])
-
-    const interestTags = this._normalizeInterestTags(hobbies).slice(0, 6)
-    const healthTags = uniqTags(extractedHealthTags).slice(0, 6)
-
+  _applyReminderList(reminders, now = new Date()) {
+    const list = reminders || []
+    const todayKey = toDateKey(now)
+    const todayReminders = list.filter(item => item.effectiveDate === todayKey)
+    const futureReminders = list.filter(item => item.effectiveDate > todayKey)
+    const nextReminder = todayReminders[0] || futureReminders[0] || null
+    const otherReminders = nextReminder && nextReminder.effectiveDate === todayKey
+      ? todayReminders.slice(1)
+      : todayReminders
     this.setData({
-      hasSignal: interestTags.length > 0,
-      interestTags,
-      hasHealthSignal: healthTags.length > 0,
-      healthTags,
+      isLoading: false,
+      hasLoadError: false,
+      hasCachedContent: list.length > 0,
+      nextReminder,
+      otherReminders: otherReminders.slice(0, 2),
+      hasMoreToday: otherReminders.length > 2,
+      todayReminderCount: todayReminders.length,
     })
+  },
+
+  _refreshNetworkState() {
+    if (!wx.getNetworkType) return
+    wx.getNetworkType({
+      success: (result) => {
+        if (this._isUnloaded) return
+        this.setData({ isOffline: result.networkType === 'none' })
+      },
+      fail: () => {
+        if (this._isUnloaded) return
+        this.setData({ isOffline: true })
+      },
+    })
+  },
+
+  async _refreshNotificationState() {
+    const snapshot = await permissions.getPermissionSnapshot()
+    if (this._isUnloaded) return
+    this.setData({ notificationState: snapshot.notification })
   },
 
   goCall() {
-    wx.navigateTo({
-      url: '/pages/call/call'
-    })
+    wx.navigateTo({ url: '/pages/call/call' })
+  },
+
+  goRecords() {
+    wx.navigateTo({ url: '/pages/records/records' })
+  },
+
+  goSettings() {
+    wx.navigateTo({ url: '/pages/settings/settings' })
   },
 
   goReminders() {
-    wx.switchTab({
-      url: '/pages/reminders/reminders',
-    })
+    wx.navigateTo({ url: '/pages/reminders/reminders' })
   },
 
-  goSimulatedIncoming() {
-    const elderKey = store.getElderKey()
-    const picked = store.pickNextIncomingReminder(elderKey)
-    const query = ['mode=incoming', 'triggerSource=manual']
-    if (picked) {
-      query.push(`reminderId=${encodeURIComponent(picked.id)}`)
-      query.push(`reminderText=${encodeURIComponent(picked.title || '')}`)
-    }
+  goReminderDetail(event) {
+    const id = event.currentTarget.dataset.id
+    if (!id) return
     wx.navigateTo({
-      url: `/pages/call/call?${query.join('&')}`,
+      url: `/pages/reminder-detail/reminder-detail?id=${encodeURIComponent(id)}`,
     })
   },
 
-  _parseDurationToSeconds(durationText) {
-    if (!durationText) return 0
-    const text = String(durationText)
-    const hourMatch = text.match(/(\d+)\s*小时/)
-    const minuteMatch = text.match(/(\d+)\s*分/)
-    const secondMatch = text.match(/(\d+)\s*秒/)
-    const hours = hourMatch ? Number(hourMatch[1]) : 0
-    const minutes = minuteMatch ? Number(minuteMatch[1]) : 0
-    const seconds = secondMatch ? Number(secondMatch[1]) : 0
-    const total = hours * 3600 + minutes * 60 + seconds
-    return Number.isFinite(total) ? total : 0
-  },
-
-  _formatDuration(totalSeconds) {
-    const safeSeconds = Math.max(0, Number(totalSeconds) || 0)
-    const hours = Math.floor(safeSeconds / 3600)
-    const minutes = Math.floor((safeSeconds % 3600) / 60)
-    const seconds = safeSeconds % 60
-    if (hours > 0) return `${hours}时${minutes}分`
-    if (minutes > 0) return `${minutes}分${seconds}秒`
-    return `${seconds}秒`
-  },
-
-  _extractHealthTags(healthText) {
-    return extractHealthTags(healthText)
-  },
-
-  _normalizeInterestTags(tags) {
-    const source = []
-      .concat(tags || [])
-      .map(tag => String(tag || '').trim())
-      .filter(Boolean)
-    const normalized = []
-
-    source.forEach(text => {
-      const compact = text.replace(/\s+/g, '')
-      if (!compact) return
-
-      // 更贴近原话：提到“广场舞”时统一展示“广场舞”，否则“跳舞/舞蹈”展示“跳舞”
-      if (compact.includes('广场舞')) {
-        normalized.push('广场舞')
-      } else if (compact.includes('跳舞') || compact.includes('舞蹈')) {
-        normalized.push('跳舞')
-      } else {
-        normalized.push(text)
-      }
-    })
-
-    return normalizeInterestTags(normalized)
-  },
-
-  _uniqTags(tags) {
-    return uniqTags(tags)
+  async recoverNotification() {
+    if (this.data.notificationState === 'blocked') {
+      await permissions.openAppSettings()
+    } else {
+      await permissions.requestReminderSubscription()
+    }
+    if (this._isUnloaded) return
+    await this._refreshNotificationState()
   },
 })
+
+module.exports = {
+  buildDashboardReminders,
+  dateLabel,
+  decorateReminder,
+  getGreeting,
+  toDateKey,
+}

@@ -10,4 +10,7 @@ module.exports = {
     idle: 'cloud://test-env.636c-test-bucket/companion-xiaolin-idle.mp4',
     speaking: 'cloud://test-env.636c-test-bucket/companion-xiaolin-speaking.mp4',
   },
+  subscriptionMessages: {
+    reminderTemplateId: 'YOUR_REMINDER_TEMPLATE_ID',
+  },
 }

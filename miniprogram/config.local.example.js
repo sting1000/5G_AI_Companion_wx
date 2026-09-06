@@ -20,4 +20,8 @@ module.exports = {
     idle: '',
     speaking: '',
   },
+  // 微信订阅消息模板。需在小程序后台申请，未配置时不会显示为已允许。
+  subscriptionMessages: {
+    reminderTemplateId: 'YOUR_REMINDER_TEMPLATE_ID',
+  },
 }

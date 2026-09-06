@@ -1,272 +1,158 @@
-.container {
-  min-height: 100vh;
-  background-color: #F9F9F9;
-  padding-bottom: 40rpx;
+page {
+  height: 100%;
+  background: #f3f4f2;
 }
 
-/* 顶部自定义导航栏 */
-.custom-nav {
+button {
+  margin: 0;
+  padding: 0;
+  line-height: inherit;
+  background: none;
+}
+
+button::after {
+  display: none;
+}
+
+.settings-page {
   display: flex;
+  height: 100vh;
+  flex-direction: column;
+  color: #1d282b;
+  background:
+    radial-gradient(circle at 92% 5%, rgba(49, 94, 107, .08), transparent 28%),
+    #f3f4f2;
+}
+
+.page-nav {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: center;
-  padding: 100rpx 40rpx 20rpx; /* 根据状态栏高度调整 */
-  background-color: #F9F9F9;
+  flex: 0 0 auto;
+  padding-left: 24rpx;
+  padding-right: 24rpx;
+  box-sizing: content-box;
 }
 
-.nav-left {
-  display: flex;
-  align-items: center;
-  gap: 16rpx;
+.nav-back,
+.nav-spacer {
+  width: 88rpx;
+  height: 88rpx;
 }
 
-.icon-avatar {
-  width: 64rpx;
-  height: 64rpx;
-  background-color: #FF6B4A;
-  border-radius: 50%;
+.nav-back {
   display: flex;
+  align-items: center;
   justify-content: center;
-  align-items: center;
-  color: white;
-  font-size: 32rpx;
+}
+
+.nav-back image {
+  width: 44rpx;
+  height: 44rpx;
 }
 
 .nav-title {
-  font-size: 36rpx;
-  font-weight: 600;
-  color: #333;
-}
-
-.nav-right {
-  display: flex;
-  align-items: center;
-  gap: 24rpx;
-}
-
-.bell-icon {
-  position: relative;
-  font-size: 40rpx;
-}
-
-.badge {
-  position: absolute;
-  top: -8rpx;
-  right: -8rpx;
-  background-color: #FF3B30;
-  color: white;
-  font-size: 20rpx;
-  padding: 2rpx 8rpx;
-  border-radius: 20rpx;
-  min-width: 24rpx;
-  text-align: center;
-}
-
-.user-avatar-small {
-  width: 64rpx;
-  height: 64rpx;
-  background-color: #FFE5D9;
-  color: #FF6B4A;
-  border-radius: 50%;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  font-weight: bold;
-}
-
-.page-title {
-  font-size: 48rpx;
-  font-weight: bold;
-  padding: 20rpx 40rpx 40rpx;
-  color: #333;
-}
-
-/* 卡片通用类 */
-.card {
-  background: white;
-  border-radius: 24rpx;
-  margin: 0 40rpx 40rpx;
-  box-shadow: 0 4rpx 16rpx rgba(0,0,0,0.02);
-}
-
-/* 用户信息卡片 */
-.user-profile-card {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 32rpx;
-}
-
-.profile-left {
-  display: flex;
-  align-items: center;
-  gap: 24rpx;
-}
-
-.user-avatar-large {
-  width: 96rpx;
-  height: 96rpx;
-  border-radius: 50%;
-  background-color: #FFE5D9;
-  color: #FF6B4A;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  font-size: 40rpx;
-  font-weight: bold;
-}
-
-.user-info {
-  display: flex;
-  flex-direction: column;
-}
-
-.user-name {
   font-size: 34rpx;
-  font-weight: bold;
-  color: #333;
-  margin-bottom: 8rpx;
+  line-height: 48rpx;
+  font-weight: 700;
 }
 
-.user-phone {
+.settings-scroll {
+  flex: 1;
+  min-height: 0;
+}
+
+.page-heading {
+  padding: 42rpx 40rpx 34rpx;
+}
+
+.heading-title {
+  display: block;
+  font-size: 44rpx;
+  line-height: 58rpx;
+  font-weight: 700;
+}
+
+.heading-desc {
+  display: block;
+  margin-top: 10rpx;
+  color: #657277;
   font-size: 28rpx;
-  color: #999;
+  line-height: 42rpx;
 }
 
-.arrow-right {
-  color: #ccc;
-  font-size: 40rpx;
+.settings-group {
+  margin: 0 32rpx;
+  overflow: hidden;
+  background: #fff;
+  border: 1rpx solid #dde2e0;
+  border-radius: 32rpx;
+  box-shadow: 0 12rpx 36rpx rgba(30, 48, 52, .05);
 }
 
-/* 模块通用样式 */
-.section-title {
-  font-size: 26rpx;
-  color: #999;
-  margin: 0 40rpx 16rpx;
-  display: block;
+.secondary-group {
+  margin-top: 24rpx;
+  margin-bottom: calc(40rpx + env(safe-area-inset-bottom));
 }
 
-.list-card {
-  padding: 0 32rpx;
-}
-
-.list-item {
+.setting-row {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 32rpx 0;
-  border-bottom: 1rpx solid #F0F0F0;
-}
-
-.no-border {
-  border-bottom: none;
-}
-
-.item-left {
-  display: flex;
-  align-items: center;
-  gap: 24rpx;
-}
-
-.full-width {
   width: 100%;
-}
-
-.item-icon {
-  width: 64rpx;
-  height: 64rpx;
-  border-radius: 50%;
-  display: flex;
-  justify-content: center;
+  min-height: 132rpx;
   align-items: center;
-  font-size: 32rpx;
+  padding: 20rpx 26rpx;
+  color: #1d282b;
+  text-align: left;
+  box-sizing: border-box;
 }
 
-.bg-orange {
-  background-color: rgba(255, 107, 74, 0.1);
-  color: #FF6B4A;
+.setting-row + .setting-row {
+  border-top: 1rpx solid #e7ebe9;
 }
 
-.bg-red {
-  background-color: rgba(255, 59, 48, 0.1);
-  color: #FF3B30;
+.setting-row[disabled] {
+  opacity: .65;
 }
 
-.bg-gray {
-  background-color: #F5F5F5;
-  color: #666;
-}
-
-.item-text {
+.setting-icon {
   display: flex;
+  width: 72rpx;
+  height: 72rpx;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  background: #e7efef;
+  border-radius: 22rpx;
+}
+
+.setting-icon image {
+  width: 42rpx;
+  height: 42rpx;
+}
+
+.setting-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
   flex-direction: column;
+  padding: 0 20rpx;
 }
 
-.item-title {
+.setting-title {
   font-size: 30rpx;
-  color: #333;
-  font-weight: 500;
-  margin-bottom: 4rpx;
+  line-height: 42rpx;
+  font-weight: 600;
 }
 
-.item-desc {
-  font-size: 24rpx;
-  color: #999;
+.setting-desc {
+  margin-top: 4rpx;
+  color: #657277;
+  font-size: 25rpx;
+  line-height: 36rpx;
 }
 
-/* 退出登录按钮 */
-.logout-btn {
-  background: white;
-  border-radius: 24rpx;
-  margin: 0 40rpx;
-  padding: 32rpx;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  color: #FF3B30;
-  font-size: 32rpx;
-  font-weight: 500;
-  box-shadow: 0 4rpx 16rpx rgba(0,0,0,0.02);
-}
-
-.debug-card {
-  padding: 24rpx;
-}
-
-.debug-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16rpx;
-}
-
-.debug-title {
-  font-size: 26rpx;
-  color: #333;
-  font-weight: 500;
-}
-
-.debug-actions {
-  display: flex;
-  align-items: center;
-  gap: 20rpx;
-}
-
-.debug-link {
-  font-size: 24rpx;
-  color: #2563EB;
-}
-
-.debug-link.danger {
-  color: #B42318;
-}
-
-.debug-json {
-  display: block;
-  font-size: 22rpx;
-  color: #344054;
-  background: #F8FAFC;
-  border-radius: 12rpx;
-  padding: 16rpx;
-  line-height: 1.6;
-  max-height: 420rpx;
+.row-chevron {
+  width: 34rpx;
+  height: 34rpx;
+  flex: 0 0 auto;
 }

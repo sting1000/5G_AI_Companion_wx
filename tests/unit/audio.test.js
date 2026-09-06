@@ -4,6 +4,27 @@ describe('audio 离线播放与录音', () => {
     return require('../../miniprogram/utils/audio')
   }
 
+  test('扬声器路由使用微信真实音频选项', async () => {
+    const { isSpeakerRouteSupported, setSpeakerEnabled } = loadAudioModule()
+
+    expect(isSpeakerRouteSupported()).toBe(true)
+    await setSpeakerEnabled(false)
+
+    expect(wx.setInnerAudioOption).toHaveBeenCalledWith(expect.objectContaining({
+      speakerOn: false,
+    }))
+  })
+
+  test('微信不支持音频路由时明确拒绝切换', async () => {
+    const setInnerAudioOption = wx.setInnerAudioOption
+    delete wx.setInnerAudioOption
+    const { isSpeakerRouteSupported, setSpeakerEnabled } = loadAudioModule()
+
+    expect(isSpeakerRouteSupported()).toBe(false)
+    await expect(setSpeakerEnabled(true)).rejects.toThrow('不支持切换扬声器')
+    wx.setInnerAudioOption = setInnerAudioOption
+  })
+
   test('AudioRecorder.start 会以 PCM 参数启动录音', () => {
     const { AudioRecorder } = loadAudioModule()
     const recorder = new AudioRecorder()

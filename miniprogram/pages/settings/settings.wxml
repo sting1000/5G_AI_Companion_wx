@@ -1,162 +1,75 @@
-<view class="container">
-  <!-- 自定义导航栏 -->
-  <view class="custom-nav">
+<view class="settings-page">
+  <view class="page-nav" style="padding-top: {{statusBarHeight}}px; height: {{navigationBarHeight}}px;">
+    <button class="nav-back" bindtap="goBack" aria-label="返回">
+      <image src="/assets/icons/elder-back.svg" />
+    </button>
+    <text class="nav-title">设置</text>
+    <view class="nav-spacer"></view>
   </view>
 
-  <view class="page-title">设置</view>
-
-  <!-- 用户信息卡片 -->
-  <view class="card user-profile-card">
-    <view class="profile-left">
-      <view class="user-avatar-large">
-        <text>李</text>
-      </view>
-      <view class="user-info">
-        <text class="user-name">李明</text>
-        <text class="user-phone">138****8888</text>
-      </view>
+  <scroll-view class="settings-scroll" scroll-y>
+    <view class="page-heading">
+      <text class="heading-title">叮嘱设置</text>
+      <text class="heading-desc">称呼和权限有变化时，可以在这里调整</text>
     </view>
-    <view class="arrow-right">›</view>
-  </view>
 
-  <!-- 陪伴设置模块 -->
-  <view class="section">
-    <text class="section-title">陪伴设置</text>
-    <view class="card list-card">
-      <view class="list-item" bindtap="goOnboarding">
-        <view class="item-left">
-          <view class="item-icon bg-orange">👤</view>
-          <view class="item-text">
-            <text class="item-title">父母信息</text>
-            <text class="item-desc">进入配置页修改资料</text>
-          </view>
+    <view class="settings-group">
+      <button class="setting-row" bindtap="editPreferredAddress">
+        <view class="setting-icon">
+          <image src="/assets/icons/settings-address.svg" />
         </view>
-        <view class="arrow-right">›</view>
-      </view>
+        <view class="setting-copy">
+          <text class="setting-title">小林怎么称呼我</text>
+          <text class="setting-desc">{{preferredAddress}}</text>
+        </view>
+        <image class="row-chevron" src="/assets/icons/chevron-right.svg" />
+      </button>
 
-      <view class="list-item">
-        <view class="item-left">
-          <view class="item-icon bg-red">💬</view>
-          <view class="item-text">
-            <text class="item-title">AI角色设置</text>
-            <text class="item-desc">更换陪伴角色</text>
-          </view>
+      <button class="setting-row" bindtap="recoverMicrophone" disabled="{{microphoneBusy}}">
+        <view class="setting-icon">
+          <image src="/assets/icons/microphone.svg" />
         </view>
-        <view class="arrow-right">›</view>
-      </view>
+        <view class="setting-copy">
+          <text class="setting-title">麦克风权限</text>
+          <text class="setting-desc">{{microphoneBusy ? '正在检查…' : microphoneText}}</text>
+        </view>
+        <image class="row-chevron" src="/assets/icons/chevron-right.svg" />
+      </button>
 
-      <view class="list-item">
-        <view class="item-left">
-          <view class="item-icon bg-orange">🕒</view>
-          <view class="item-text">
-            <text class="item-title">通话计划</text>
-            <text class="item-desc">调整通话时间和频率</text>
-          </view>
+      <button class="setting-row" bindtap="recoverNotification" disabled="{{notificationBusy}}">
+        <view class="setting-icon">
+          <image src="/assets/icons/notification.svg" />
         </view>
-        <view class="arrow-right">›</view>
-      </view>
-
-      <view class="list-item" bindtap="goMemory">
-        <view class="item-left">
-          <view class="item-icon bg-orange">🧠</view>
-          <view class="item-text">
-            <text class="item-title">小林记忆</text>
-            <text class="item-desc">查看、确认、编辑和删除长期记忆</text>
-          </view>
+        <view class="setting-copy">
+          <text class="setting-title">通知权限</text>
+          <text class="setting-desc">{{notificationBusy ? '正在检查…' : notificationText}}</text>
         </view>
-        <view class="arrow-right">›</view>
-      </view>
-
-      <view class="list-item no-border">
-        <view class="item-left">
-          <view class="item-icon bg-red">🤍</view>
-          <view class="item-text">
-            <text class="item-title">关怀事件</text>
-            <text class="item-desc">管理特殊日期</text>
-          </view>
-        </view>
-        <view class="arrow-right">›</view>
-      </view>
+        <image class="row-chevron" src="/assets/icons/chevron-right.svg" />
+      </button>
     </view>
-  </view>
 
-  <!-- 兴趣内容推荐模块 -->
-  <view class="section">
-    <text class="section-title">兴趣内容推荐</text>
-    <view class="card list-card">
-      <view class="list-item no-border">
-        <view class="item-left full-width">
-          <view class="item-text">
-            <text class="item-title">允许在通话中推荐内容</text>
-            <text class="item-desc">AI发现兴趣后，在日常通话中自然提及相关话题</text>
-          </view>
+    <view class="settings-group secondary-group">
+      <button class="setting-row" bindtap="openAbout">
+        <view class="setting-icon">
+          <image src="/assets/icons/settings-about.svg" />
         </view>
-        <switch checked="{{recommendEnabled}}" color="#07C160" bindchange="onRecommendChange"/>
-      </view>
+        <view class="setting-copy">
+          <text class="setting-title">关于叮嘱</text>
+          <text class="setting-desc">了解产品用途</text>
+        </view>
+        <image class="row-chevron" src="/assets/icons/chevron-right.svg" />
+      </button>
+
+      <button class="setting-row" bindtap="openPrivacy">
+        <view class="setting-icon">
+          <image src="/assets/icons/settings-privacy.svg" />
+        </view>
+        <view class="setting-copy">
+          <text class="setting-title">隐私说明</text>
+          <text class="setting-desc">查看微信隐私保护指引</text>
+        </view>
+        <image class="row-chevron" src="/assets/icons/chevron-right.svg" />
+      </button>
     </view>
-  </view>
-
-  <!-- 系统模块 -->
-  <view class="section">
-    <text class="section-title">系统</text>
-    <view class="card list-card">
-      <view class="list-item">
-        <view class="item-left">
-          <view class="item-icon bg-gray">🔔</view>
-          <view class="item-text">
-            <text class="item-title">通知设置</text>
-            <text class="item-desc">管理推送通知</text>
-          </view>
-        </view>
-        <view class="arrow-right">›</view>
-      </view>
-
-      <view class="list-item no-border">
-        <view class="item-left">
-          <view class="item-icon bg-gray">🛡️</view>
-          <view class="item-text">
-            <text class="item-title">隐私与安全</text>
-            <text class="item-desc">数据保护设置</text>
-          </view>
-        </view>
-        <view class="arrow-right">›</view>
-      </view>
-    </view>
-  </view>
-
-  <view class="section">
-    <text class="section-title">测试工具</text>
-    <view class="card list-card">
-      <view class="list-item no-border" bindtap="onClearAllTestData">
-        <view class="item-left">
-          <view class="item-icon bg-red">🗑️</view>
-          <view class="item-text">
-            <text class="item-title">清空本地测试数据</text>
-            <text class="item-desc">重置配置、通话记录、记忆缓存并返回配置页</text>
-          </view>
-        </view>
-        <view class="arrow-right">›</view>
-      </view>
-    </view>
-  </view>
-
-  <!-- 开发调试：记忆面板（仅开发环境显示） -->
-  <view class="section" wx:if="{{isDevMode}}">
-    <text class="section-title">开发调试（记忆）</text>
-    <view class="card list-card debug-card">
-      <view class="debug-header">
-        <text class="debug-title">当前老人：{{currentElderTitle}}</text>
-        <view class="debug-actions">
-          <text class="debug-link" bindtap="refreshMemoryDebug">刷新</text>
-          <text class="debug-link danger" bindtap="onResetCurrentMemory">重置</text>
-        </view>
-      </view>
-      <text class="debug-json" selectable>{{memoryDebugText}}</text>
-    </view>
-  </view>
-
-  <!-- 退出登录 -->
-  <view class="logout-btn" bindtap="onLogout">
-    <text>↪ 退出登录</text>
-  </view>
+  </scroll-view>
 </view>

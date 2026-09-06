@@ -392,6 +392,17 @@ function buildReminderCandidateFromText(text, options) {
   }
 }
 
+function completeReminderCandidateFromFollowup(candidate, followupText, options) {
+  if (!candidate || candidate.intentType !== 'explicit_reminder' || !candidate.needsConfirmation) return null
+  const followup = String(followupText || '').trim()
+  const normalizedFollowup = normalizeSentence(followup)
+  if (!normalizedFollowup) return null
+  const hasScheduleCue = /(\d{1,2}[:：]\d{1,2}|\d{1,2}点|[零〇一二两三四五六七八九十]{1,3}点|早上|上午|中午|下午|晚上|凌晨|今晚|明天|后天|大后天|今天|下周[一二三四五六日天]|周[一二三四五六日天]|每周|每天|每日|每月|\d{1,2}月\d{1,2}[日号]?)/.test(normalizedFollowup)
+  if (!hasScheduleCue) return null
+  const previousEvidence = String(candidate.evidence || `提醒我${candidate.title || ''}`).trim()
+  return buildReminderCandidateFromText(`${followup} ${previousEvidence}`, options)
+}
+
 function normalizeReminderCandidate(candidate, options) {
   if (!candidate || typeof candidate !== 'object') return null
   const rawEvidence = String(candidate.evidence || candidate.title || '').trim()
@@ -456,5 +467,6 @@ module.exports = {
   normalizeCandidateDate,
   normalizeReminderCandidate,
   buildReminderCandidateFromText,
+  completeReminderCandidateFromFollowup,
   hasReminderNoise,
 }

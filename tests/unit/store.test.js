@@ -39,6 +39,8 @@ describe('store 离线规则', () => {
     expect(result.skippedLowConfidence).toBe(0)
     expect(result.inserted).toBe(1)
     expect(result.updated).toBe(2)
+    expect(result.savedReminders).toHaveLength(1)
+    expect(result.savedReminders[0].status).toBe('pending')
 
     const list = store.getReminders(elderKey)
     expect(list).toHaveLength(1)
@@ -67,10 +69,168 @@ describe('store 离线规则', () => {
 
     expect(result.inserted).toBe(1)
     expect(result.insertedCandidates).toBe(1)
+    expect(result.savedReminders).toEqual([])
     const list = store.getReminders(elderKey)
     expect(list[0].status).toBe('candidate')
     expect(list[0].needsConfirmation).toBe(true)
     expect(store.pickNextIncomingReminder(elderKey)).toBe(null)
+  })
+
+  test('较弱候选不会降级已确认提醒，也不会返回 savedReminders', () => {
+    const store = loadStore()
+    const elderKey = 'elder:test:preserve-confirmed-reminder'
+    const reminder = store.saveReminder({
+      title: '吃药',
+      scheduleType: 'daily',
+      timeOfDay: '09:00',
+      status: 'pending',
+    }, elderKey)
+
+    const result = store.upsertExtractedReminderCandidates([{
+      title: '吃药',
+      scheduleType: 'daily',
+      timeOfDay: '09:00',
+      confidence: 0.66,
+      needsConfirmation: true,
+      missingFields: ['time'],
+    }], elderKey)
+
+    const updated = store.getReminderById(reminder.id, elderKey)
+    expect(updated.status).toBe('pending')
+    expect(updated.needsConfirmation).toBe(false)
+    expect(result.savedReminders).toEqual([])
+  })
+
+  test('同一事项和时间但不同日期的单次提醒不会互相覆盖', () => {
+    const store = loadStore()
+    const elderKey = 'elder:test:once-reminder-date'
+
+    store.upsertExtractedReminderCandidates([
+      {
+        title: '吃药',
+        scheduleType: 'once',
+        remindDate: '2026-04-16',
+        timeOfDay: '09:00',
+        confidence: 0.9,
+        intentType: 'explicit_reminder',
+      },
+      {
+        title: '吃药',
+        scheduleType: 'once',
+        remindDate: '2026-04-17',
+        timeOfDay: '09:00',
+        confidence: 0.9,
+        intentType: 'explicit_reminder',
+      },
+    ], elderKey)
+
+    const list = store.getReminders(elderKey)
+    expect(list).toHaveLength(2)
+    expect(list.map(item => item.remindDate).sort()).toEqual(['2026-04-16', '2026-04-17'])
+  })
+
+  test('补全日期时间时会升级原有待确认提醒而不是新增一条', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:complete-once-reminder'
+
+    store.upsertExtractedReminderCandidates([{
+      title: '吃药',
+      scheduleType: 'once',
+      confidence: 0.9,
+      evidence: '提醒我吃药',
+      needsConfirmation: true,
+      missingFields: ['date', 'time'],
+      intentType: 'explicit_reminder',
+    }], elderKey)
+    const firstId = store.getReminders(elderKey)[0].id
+
+    const result = store.upsertExtractedReminderCandidates([{
+      title: '吃药',
+      scheduleType: 'once',
+      remindDate: '2026-04-16',
+      timeOfDay: '09:00',
+      confidence: 0.9,
+      evidence: '明天早上九点 提醒我吃药',
+      needsConfirmation: false,
+      missingFields: [],
+      intentType: 'explicit_reminder',
+    }], elderKey)
+
+    const list = store.getReminders(elderKey)
+    expect(result.updated).toBe(1)
+    expect(result.inserted).toBe(0)
+    expect(list).toHaveLength(1)
+    expect(list[0]).toEqual(expect.objectContaining({
+      id: firstId,
+      status: 'pending',
+      needsConfirmation: false,
+      remindDate: '2026-04-16',
+      timeOfDay: '09:00',
+      missingFields: [],
+    }))
+  })
+
+  test('多轮补全的中间候选会合并到同一条提醒', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:refine-once-reminder'
+
+    store.upsertExtractedReminderCandidates([{
+      title: '吃药',
+      scheduleType: 'once',
+      remindDate: '2026-04-16',
+      confidence: 0.9,
+      evidence: '提醒我明天吃药',
+      needsConfirmation: true,
+      missingFields: ['time'],
+      intentType: 'explicit_reminder',
+    }], elderKey)
+    store.upsertExtractedReminderCandidates([{
+      title: '吃药',
+      scheduleType: 'once',
+      timeOfDay: '15:00',
+      confidence: 0.9,
+      evidence: '下午 提醒我明天吃药',
+      needsConfirmation: true,
+      missingFields: ['date'],
+      intentType: 'explicit_reminder',
+    }], elderKey)
+
+    expect(store.getReminders(elderKey)).toHaveLength(1)
+  })
+
+  test('新的明确请求可以重新启用已完成提醒，摘要候选不会', () => {
+    const store = loadStore()
+    const elderKey = 'elder:test:reactivate-reminder'
+    const done = store.saveReminder({
+      title: '吃药',
+      scheduleType: 'daily',
+      timeOfDay: '09:00',
+      status: 'done',
+      completedAt: '2026-04-15T09:05:00.000Z',
+    }, elderKey)
+    const explicit = {
+      title: '吃药',
+      scheduleType: 'daily',
+      timeOfDay: '09:00',
+      confidence: 0.9,
+      intentType: 'explicit_reminder',
+    }
+
+    store.upsertExtractedReminderCandidates([explicit], elderKey)
+    expect(store.getReminderById(done.id, elderKey).status).toBe('done')
+
+    const result = store.upsertExtractedReminderCandidates(
+      [explicit],
+      elderKey,
+      { reactivateCompleted: true }
+    )
+    expect(result.savedReminders).toHaveLength(1)
+    expect(store.getReminderById(done.id, elderKey)).toEqual(expect.objectContaining({
+      status: 'pending',
+      completedAt: '',
+    }))
   })
 
   test('提醒候选会归一化“提醒张叔叔吃药/吃药”为同一条', () => {
@@ -259,6 +419,95 @@ describe('store 离线规则', () => {
     const done = store.markReminderDone(reminder.id, elderKey)
     expect(done.status).toBe('done')
     expect(done.completedAt).toBeTruthy()
+  })
+
+  test('稍后提醒保留原重复规则并记录用户明确选择的新时间', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-04T08:00:00.000Z'))
+    const store = loadStore()
+    const elderKey = 'elder:test:snooze'
+    const reminder = store.saveReminder({
+      id: 'reminder_snooze',
+      title: '吃药',
+      scheduleType: 'daily',
+      timeOfDay: '09:00',
+      status: 'triggered',
+    }, elderKey)
+
+    const updated = store.snoozeReminder(reminder.id, {
+      remindDate: '2026-09-05',
+      timeOfDay: '10:30',
+    }, elderKey)
+
+    expect(updated).toEqual(expect.objectContaining({
+      scheduleType: 'daily',
+      timeOfDay: '09:00',
+      snoozedDate: '2026-09-05',
+      snoozedTime: '10:30',
+      status: 'pending',
+      completedAt: '',
+      lastTriggeredAt: '',
+    }))
+  })
+
+  test('月度提醒按原日期计算下一次日期，不会每天出现在今天', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-04T08:00:00.000Z'))
+    const store = loadStore()
+    const reminder = {
+      scheduleType: 'monthly',
+      remindDate: '2026-01-18',
+      createdAt: '2026-01-18T09:00:00.000Z',
+    }
+
+    expect(store.getReminderNextDate(reminder, new Date('2026-09-04T08:00:00'))).toBe('2026-09-18')
+    expect(store.getReminderNextDate(reminder, new Date('2026-09-20T08:00:00'))).toBe('2026-10-18')
+  })
+
+  test('稍后提醒拒绝无效日期和时间', () => {
+    const store = loadStore()
+    const elderKey = 'elder:test:invalid-snooze'
+    const reminder = store.saveReminder({
+      id: 'invalid_snooze',
+      title: '吃药',
+      status: 'pending',
+    }, elderKey)
+
+    expect(store.snoozeReminder(reminder.id, {
+      remindDate: '2026-02-30',
+      timeOfDay: '99:99',
+    }, elderKey)).toBeNull()
+    expect(store.getReminderById(reminder.id, elderKey).snoozedDate).toBe('')
+  })
+
+  test('过期的稍后时间不再覆盖重复提醒原时间', () => {
+    const store = loadStore()
+    const reminder = {
+      scheduleType: 'daily',
+      timeOfDay: '09:00',
+      snoozedDate: '2026-09-04',
+      snoozedTime: '07:30',
+    }
+    const now = new Date('2026-09-04T08:00:00')
+
+    expect(store.getReminderNextDate(reminder, now)).toBe('2026-09-04')
+    expect(store.getReminderNextTime(reminder, now)).toBe('09:00')
+  })
+
+  test('candidate 不能通过完成或稍后操作伪装成已确认提醒', () => {
+    const store = loadStore()
+    const elderKey = 'elder:test:candidate-actions'
+    const reminder = store.saveReminder({
+      id: 'candidate_action',
+      title: '未来计划',
+      status: 'candidate',
+      needsConfirmation: true,
+    }, elderKey)
+
+    expect(store.markReminderDone(reminder.id, elderKey)).toBeNull()
+    expect(store.snoozeReminder(reminder.id, {
+      remindDate: '2026-09-05',
+      timeOfDay: '10:30',
+    }, elderKey)).toBeNull()
+    expect(store.getReminderById(reminder.id, elderKey).status).toBe('candidate')
   })
 
   test('摘要候选更新命中已完成提醒时，不会把 done 改回 pending', () => {
@@ -633,5 +882,24 @@ describe('store 离线规则', () => {
       xiaolinMemory: { preferredAddress: '老李' },
     }, 'call_addr_001')
     expect(store.getPreferredAddress(elderKey)).toBe('老李')
+  })
+
+  test('getElderTitle 优先使用新称呼字段并兼容旧配置', () => {
+    const store = loadStore()
+    store.saveElderConfig({
+      parentName: '王秀兰',
+      titleSuffix: '阿姨',
+      preferredAddress: '老王',
+      phone: '13800138000',
+      health: '血压偏高',
+      hobbies: ['太极拳'],
+    })
+
+    expect(store.getElderTitle()).toBe('老王')
+    expect(store.getElderConfig()).toEqual(expect.objectContaining({
+      phone: '13800138000',
+      health: '血压偏高',
+      hobbies: ['太极拳'],
+    }))
   })
 })

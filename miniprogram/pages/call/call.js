@@ -5,6 +5,8 @@ const {
   FRAME_SIZE,
   PLAYBACK_MODE_SINGLE_WAV,
   PLAYBACK_MODE_WEB_AUDIO,
+  isSpeakerRouteSupported,
+  setSpeakerEnabled,
 } = require('../../utils/audio')
 const store = require('../../utils/store')
 const {
@@ -16,6 +18,8 @@ const {
 const { generateSummary, applyLocalSummary } = require('../../utils/call-finalizer')
 const reminderExtractor = require('../../utils/reminder-extractor')
 const cloudFunctions = require('../../utils/cloud-functions')
+const permissions = require('../../utils/permissions')
+const { sanitizeTranscriptText } = require('../../utils/transcript-display')
 const createLogger = (() => {
   try {
     const loggerModule = require('../../utils/logger')
@@ -122,6 +126,8 @@ const GREETING_ECHO_GUARD_MAX_MS = 8000
 const RECORDER_RESTART_COOLDOWN_MS = 3500
 const PLAYBACK_ECHO_TAIL_GUARD_MS = 420
 const ASSISTANT_TURN_PROGRESS_MAX_MS = 45000
+const REMINDER_FEEDBACK_SAVING_MS = 300
+const REMINDER_FEEDBACK_VISIBLE_MS = 4500
 const REMINDER_COMPLETE_HINTS = ['完成了', '已完成', '已经完成', '完成啦', '办好了', '办完了', '弄好了', '弄完了', '已经好了', '处理好了', '处理完了', '做完了', '搞定了', '解决了']
 const REMINDER_INCOMPLETE_HINTS = ['还没', '还没有', '没做完', '没完成', '没有完成', '未完成', '还没弄好', '还没办好', '没处理完', '还在弄', '没来得及', '忘了']
 const NO_MORE_CHAT_HINTS = ['没有了', '没了', '没别的', '没其他', '不用了', '先这样', '不聊了', '没什么了', '就这样吧', '不用聊了']
@@ -190,10 +196,33 @@ const PHONE_CONVERSATION_GUIDE = [
   '收尾规则：用户明确说“先这样吧/我挂了/不聊了/回头再说/再见”时，只说一句短收尾，不继续抛新问题，等对方挂断。',
 ].join('\n')
 const REMINDER_RESPONSE_GUIDE = [
-  '提醒能力：你可以记录并设置小程序内提醒。用户明确说“提醒我/叫我/通知我/帮我提醒”且给出时间和事项时，直接确认已经记上，到时会提醒。',
-  '提醒确认话术：只复述时间和事项，例如“好，我记上了，明早9点提醒您吃药”。不要说无法直接设置闹钟、手机闹钟、日历，也不要指导用户自己去手机里设置。',
+  '提醒能力：你可以记录并设置小程序内提醒。用户明确说“提醒我/叫我/通知我/帮我提醒”且给出时间和事项时，先等待“提醒保存结果”，不能提前承诺已经记上。',
+  '提醒确认话术：只有“提醒保存结果”明确为成功时，才复述时间和事项，例如“好，我记上了，明早9点提醒您吃药”；结果为失败时必须说“刚才没有记成功，请您再说一次”。不要说无法直接设置闹钟、手机闹钟、日历，也不要指导用户自己去手机里设置。',
   '提醒补全规则：如果缺时间或事项，只追问缺失的一项；如果用户问如何自己设置手机闹钟，才可以给手机操作建议。',
 ].join('\n')
+
+function getCallLayoutMetrics() {
+  let statusBarHeight = 20
+  let navigationBarHeight = 44
+  try {
+    const windowInfo = wx.getWindowInfo
+      ? wx.getWindowInfo()
+      : (wx.getSystemInfoSync ? wx.getSystemInfoSync() : {})
+    statusBarHeight = Number(windowInfo.statusBarHeight || statusBarHeight)
+    const menu = wx.getMenuButtonBoundingClientRect
+      ? wx.getMenuButtonBoundingClientRect()
+      : null
+    if (menu && menu.height) {
+      navigationBarHeight = menu.height + Math.max(0, menu.top - statusBarHeight) * 2
+    }
+  } catch (err) {}
+  return {
+    statusBarHeight,
+    navigationBarHeight,
+    topInset: statusBarHeight + navigationBarHeight,
+  }
+}
+
 const VOICE_PRESET_CONFIG = {
   safe: {
     label: '自然稳健',
@@ -232,6 +261,19 @@ Page({
     transcriptScrollTop: 0,
     isSpeaking: false,
     isAssistantSpeaking: false,
+    callActivity: 'connecting',
+    callStatusText: '正在呼叫小林',
+    callStatusTone: 'normal',
+    isMuted: false,
+    speakerAvailable: false,
+    isSpeakerOn: true,
+    isSpeakerChanging: false,
+    isTranscriptExpanded: false,
+    recentTranscriptItems: [],
+    reminderFeedback: null,
+    statusBarHeight: 20,
+    navigationBarHeight: 44,
+    topInset: 64,
     showIncoming: false, // 是否展示来电界面
     callMode: 'outgoing', // outgoing | incoming
     isIncomingAnswering: false,
@@ -246,6 +288,8 @@ Page({
   },
 
   onLoad(options) {
+    this._clearReminderFeedback()
+    const layoutMetrics = getCallLayoutMetrics()
     this.client = new RealtimeAPIClient()
     this.recorder = new AudioRecorder()
     this.player = new AudioPlayer({
@@ -334,6 +378,17 @@ Page({
     this.ragInFlightKeys = new Set()
     this.lastRagFinalText = ''
     this.lastRagFinalTextAt = 0
+    this.reminderFeedbackTimer = null
+    this.reminderFeedbackGeneration = 0
+    this.successfulCallReminders = []
+    this.pendingReminderCandidate = null
+    this.isMuted = false
+    const speakerSupported = isSpeakerRouteSupported()
+    this.setData(Object.assign({}, layoutMetrics, {
+      speakerAvailable: false,
+      isSpeakerChanging: speakerSupported,
+    }))
+    this._initializeAudioRoute()
     // 来电等待可播 idle；一旦接通，问候出声前不要先露聆听画面
     this.companionDeferIdle = options.mode !== 'incoming'
     this._initCompanionVisual()
@@ -360,6 +415,7 @@ Page({
 
   onHide() {
     this.companionPageVisible = false
+    this._clearReminderFeedback()
     this._pauseCompanionVideo('idle')
     this._pauseCompanionVideo('speaking')
     this._revealCompanionVisual('poster')
@@ -372,19 +428,129 @@ Page({
   // ===== 来电界面操作 =====
   onAccept() {
     if (this.data.isIncomingAnswering) return
+    const isRetry = this.data.status === 'failed'
+    if (isRetry) this._prepareRetryCall()
     this.setData({
       status: 'connecting',
       connectionPhase: 'dialing',
       connectionHint: '正在接听，马上就好...',
       isIncomingAnswering: true,
       incomingHint: '正在接听，请稍候...',
+      currentUserDraft: '',
+      currentAssistantDraft: '',
     })
+    if (isRetry) this._setCallActivity('connecting')
     this._startCall()
   },
 
   onDecline() {
     if (this.data.isIncomingAnswering) return
+    this._clearReminderFeedback()
     wx.navigateBack()
+  },
+
+  async _initializeAudioRoute() {
+    if (!isSpeakerRouteSupported()) {
+      this.setData({ speakerAvailable: false, isSpeakerChanging: false })
+      return
+    }
+    try {
+      await setSpeakerEnabled(true)
+      if (this.companionDestroyed) return
+      this.setData({
+        speakerAvailable: true,
+        isSpeakerOn: true,
+        isSpeakerChanging: false,
+      })
+    } catch (err) {
+      console.warn(FLOW_LOG_PREFIX, '扬声器路由初始化失败', err)
+      if (!this.companionDestroyed) {
+        this.setData({ speakerAvailable: false, isSpeakerChanging: false })
+      }
+    }
+  },
+
+  onToggleMute() {
+    if (this.data.status !== 'connected') return
+    const nextMuted = !this.isMuted
+    try {
+      if (nextMuted) this.recorder.stop()
+      else this.recorder.start()
+    } catch (err) {
+      console.error(FLOW_LOG_PREFIX, nextMuted ? '关闭麦克风失败' : '开启麦克风失败', err)
+      wx.showToast({
+        title: nextMuted ? '静音失败，请重试' : '麦克风开启失败',
+        icon: 'none',
+      })
+      return
+    }
+    this.isMuted = nextMuted
+    this.setData({ isMuted: nextMuted })
+    this._setCallActivity(nextMuted ? 'muted' : this._resolveLiveActivity())
+  },
+
+  async onToggleSpeaker() {
+    if (!this.data.speakerAvailable || this.data.isSpeakerChanging) return
+    const nextSpeakerOn = !this.data.isSpeakerOn
+    this.setData({ isSpeakerChanging: true })
+    try {
+      await setSpeakerEnabled(nextSpeakerOn)
+      if (this.companionDestroyed) return
+      this.setData({
+        isSpeakerOn: nextSpeakerOn,
+        isSpeakerChanging: false,
+      })
+    } catch (err) {
+      console.error(FLOW_LOG_PREFIX, '切换扬声器失败', err)
+      if (!this.companionDestroyed) {
+        this.setData({ isSpeakerChanging: false })
+        wx.showToast({ title: '切换失败，请重试', icon: 'none' })
+      }
+    }
+  },
+
+  onToggleTranscript() {
+    this.setData({ isTranscriptExpanded: !this.data.isTranscriptExpanded })
+  },
+
+  onCloseTranscript() {
+    this.setData({ isTranscriptExpanded: false })
+  },
+
+  _resolveLiveActivity() {
+    if (this.data.isAssistantSpeaking) return 'assistantSpeaking'
+    if (this.data.isSpeaking) return 'userSpeaking'
+    return 'listening'
+  },
+
+  _setCallActivity(activity) {
+    if (this.data.status === 'ended' && activity !== 'ended') return
+    if (this.data.status === 'failed' && activity !== 'failed') return
+    let nextActivity = activity || 'listening'
+    if (this.isMuted && !['reconnecting', 'failed', 'ended'].includes(nextActivity)) {
+      nextActivity = 'muted'
+    }
+    const activityMap = {
+      connecting: { text: '正在呼叫小林', tone: 'normal' },
+      listening: { text: '正在听您说', tone: 'listening' },
+      userSpeaking: { text: '您正在说话', tone: 'listening' },
+      assistantSpeaking: { text: '小林正在说话', tone: 'normal' },
+      muted: { text: '麦克风已关闭', tone: 'muted' },
+      reconnecting: { text: '网络不稳，正在重连', tone: 'warning' },
+      failed: { text: '通话中断', tone: 'error' },
+      ended: { text: '通话已结束', tone: 'normal' },
+    }
+    const presentation = activityMap[nextActivity] || activityMap.listening
+    if (this.data.callActivity === nextActivity
+      && this.data.callStatusText === presentation.text
+      && this.data.callStatusTone === presentation.tone) {
+      return
+    }
+    this.setData({
+      callActivity: nextActivity,
+      callStatusText: presentation.text,
+      callStatusTone: presentation.tone,
+    })
   },
 
   onCompanionIdlePlay() {
@@ -616,6 +782,7 @@ Page({
 
   // ===== 通话核心逻辑 =====
   async _startCall() {
+    this._clearReminderFeedback()
     this.companionDeferIdle = true
     this._setupCallbacks()
     this._setConnectionPhase('dialing')
@@ -651,16 +818,8 @@ Page({
       })
       const systemRole = layeredPersonaManifest
 
-      // 1-2. 并行处理：请求麦克风权限 + 连接 WebSocket，减少冷启动串行耗时
-      this._setConnectionPhase('authorizing')
-      const authorizePromise = this._authorize().then(() => {
-        console.log(FLOW_LOG_PREFIX, '麦克风权限已授权')
-      })
-      this._setConnectionPhase('connecting')
-      const connectPromise = this.client.connect().then(() => {
-        console.log(FLOW_LOG_PREFIX, 'WebSocket 已连接')
-      })
-      await Promise.all([authorizePromise, connectPromise])
+      // 1-2. 必须先取得麦克风权限，再连接语音服务，避免拒绝授权后仍保留后台连接
+      await this._authorizeAndConnect()
 
       // 3. 开始会话（默认 server_vad 模式，自动检测说话停顿）
       this._setConnectionPhase('preparing')
@@ -718,29 +877,52 @@ Page({
     } catch (err) {
       console.error('[Call] start failed:', err)
       console.error(FLOW_LOG_PREFIX, '通话初始化失败', err)
+      this._stopUplinkKeepalive()
+      this._clearGreetingEchoGuardFailsafe()
+      if (this.connectingFallbackTimer) {
+        clearTimeout(this.connectingFallbackTimer)
+        this.connectingFallbackTimer = null
+      }
+      if (this.connectedUiTimer) {
+        clearTimeout(this.connectedUiTimer)
+        this.connectedUiTimer = null
+      }
+      if (this.recorder && typeof this.recorder.stop === 'function') this.recorder.stop()
+      if (this.player && typeof this.player.stop === 'function') this.player.stop()
+      if (this.client && this.client.sessionActive && typeof this.client.finishSession === 'function') {
+        this.client.finishSession()
+      }
+      this._clearRealtimeCallbacks(this.client)
+      if (this.client && typeof this.client.disconnect === 'function') this.client.disconnect()
       this.setData({
+        status: 'failed',
         currentAssistantDraft: '连接失败，请重试',
         isIncomingAnswering: false,
         incomingHint: '接听失败，请重试',
       })
-      if (this.failNavigateTimer) {
-        clearTimeout(this.failNavigateTimer)
-        this.failNavigateTimer = null
-      }
-      this.failNavigateTimer = setTimeout(() => {
-        this.failNavigateTimer = null
-        if (typeof wx !== 'undefined' && wx.navigateBack) wx.navigateBack()
-      }, 2000)
+      this._setCallActivity('failed')
     }
   },
 
   _setupCallbacks() {
     // 录音帧 → 持续发送到 WebSocket
     this._frameCount = 0
+    this.recorder.onError = (err) => {
+      console.error(FLOW_LOG_PREFIX, '麦克风录音失败', err)
+      if (this.isMuted || this.data.status === 'ended') return
+      this.isMuted = true
+      this.setData({ isMuted: true })
+      this._setCallActivity('muted')
+      wx.showToast({ title: '麦克风已关闭', icon: 'none' })
+    }
     this.recorder.onFrameData = (pcmBuffer) => {
       this._frameCount++
       if (this._frameCount <= 3 || this._frameCount % 200 === 0) {
         console.log('[Call] 录音帧 #' + this._frameCount + ', 大小:', pcmBuffer ? pcmBuffer.byteLength : 0)
+      }
+      if (this.isMuted) {
+        this.lastUplinkBlockReason = 'muted'
+        return
       }
       if (this.initialEchoGuardActive) {
         if (this.lastUplinkBlockReason !== 'greeting_echo_guard') {
@@ -794,6 +976,8 @@ Page({
       turn.asrInfoAt = (meta && meta.receivedAt) || Date.now()
       turn.asrStartSynthetic = Boolean(meta && meta.synthetic)
       this._recordLatencyEvent('asr_start', meta)
+      this.setData({ isSpeaking: true, isAssistantSpeaking: false })
+      this._setCallActivity('userSpeaking')
     }
 
     this.client.onASRText = (text, isFinal, meta) => {
@@ -804,6 +988,7 @@ Page({
       this.pendingUserDraft = visibleText || ''
       this._flushUserDraft(false)
       this.setData({ isSpeaking: true, isAssistantSpeaking: false })
+      this._setCallActivity('userSpeaking')
       if (isFinal && visibleText) {
         this._flushUserDraft(true)
         this._appendTranscriptItem('user', visibleText)
@@ -821,6 +1006,7 @@ Page({
     // ASR 结束：用户停止说话
     this.client.onASREnd = (meta) => {
       this.setData({ isSpeaking: false, currentUserDraft: '' })
+      this._setCallActivity('listening')
       console.log(FLOW_LOG_PREFIX, 'ASR 结束，等待模型回复')
       const turn = this._ensureLatencyTurn(meta)
       turn.asrEndAt = (meta && meta.receivedAt) || Date.now()
@@ -845,6 +1031,7 @@ Page({
       // 某些机型可能收不到 ASR_ENDED，AI 有文本回复时强制退出聆听态
       if (this.data.isSpeaking) {
         this.setData({ isSpeaking: false, currentUserDraft: '' })
+        this._setCallActivity('listening')
       }
       if (this.currentLatencyTurn && !this.currentLatencyTurn.firstChatAt) {
         this.currentLatencyTurn.firstChatAt = (meta && meta.receivedAt) || Date.now()
@@ -1026,6 +1213,7 @@ Page({
       this._clearAssistantTurnProgress('disconnect')
       if (this.data.status === 'connected') {
         if (this.isRefreshingSession || this.isRecoveringDisconnect) return
+        this._setCallActivity('reconnecting')
         this._recoverAfterDisconnect()
       }
     }
@@ -1050,6 +1238,7 @@ Page({
       this.playbackEchoGuardUntil = 0
       this.companionAudioSpeaking = true
       this.setData({ isAssistantSpeaking: true })
+      this._setCallActivity('assistantSpeaking')
       this._requestCompanionVisual('speaking')
       if (this.currentLatencyTurn && !this.currentLatencyTurn.playStartAt) {
         this.currentLatencyTurn.playStartAt = (playMeta && playMeta.at) || Date.now()
@@ -1074,6 +1263,7 @@ Page({
       this._recordLatencyEvent('play_error', errorMeta)
       this.companionAudioSpeaking = false
       this.setData({ isAssistantSpeaking: false })
+      this._setCallActivity('listening')
       this.companionDeferIdle = false
       this._requestCompanionVisual('idle')
     }
@@ -1081,6 +1271,7 @@ Page({
       this._clearAssistantTurnProgress('play_end')
       this.companionAudioSpeaking = false
       this.setData({ isAssistantSpeaking: false })
+      this._setCallActivity('listening')
       if (this.waitingGreetingPlaybackEnd) {
         this.waitingGreetingPlaybackEnd = false
         this.initialEchoGuardActive = false
@@ -1109,6 +1300,28 @@ Page({
       }
       console.log(FLOW_LOG_PREFIX, '播放器播放结束')
     }
+  },
+
+  _clearRealtimeCallbacks(client) {
+    if (!client) return
+    ;[
+      'onASRStart',
+      'onASRText',
+      'onASREnd',
+      'onChatText',
+      'onChatEnd',
+      'onAudioData',
+      'onTTSStart',
+      'onTTSSentenceEnd',
+      'onTTSEnd',
+      'onSessionStarted',
+      'onError',
+      'onDisconnect',
+      'onFirstChatPacket',
+      'onFirstTTSAudioPacket',
+    ].forEach((callbackName) => {
+      client[callbackName] = null
+    })
   },
 
   _markAssistantTurnInProgress() {
@@ -1143,6 +1356,7 @@ Page({
     this.lastAudioUplinkAt = Date.now()
     this.uplinkKeepaliveTimer = setInterval(() => {
       if (this.data.status !== 'connected') return
+      if (this.isMuted) return
       if (!this.recorder || !this.recorder.recording) {
         const now = Date.now()
         if (now - this.lastRecorderRestartAt >= RECORDER_RESTART_COOLDOWN_MS) {
@@ -1190,7 +1404,7 @@ Page({
   },
 
   _markCallConnectedIfNeeded(reason) {
-    if (this.hasSwitchedToConnected || this.data.status === 'ended') return
+    if (this.hasSwitchedToConnected || this.data.status !== 'connecting') return
     this.hasSwitchedToConnected = true
     if (this.connectingFallbackTimer) {
       clearTimeout(this.connectingFallbackTimer)
@@ -1204,12 +1418,13 @@ Page({
     }
     this.connectedUiTimer = setTimeout(() => {
       this.connectedUiTimer = null
-      if (this.data.status === 'ended') return
+      if (this.data.status !== 'connecting') return
       this.setData({
         status: 'connected',
         showIncoming: false,
         isIncomingAnswering: false,
       })
+      this._setCallActivity('listening')
       this._startTimer()
       console.log(FLOW_LOG_PREFIX, '状态切换为 connected', { reason })
     }, waitMs)
@@ -1382,6 +1597,7 @@ Page({
 
   // 挂断
   onHangup() {
+    this._clearReminderFeedback()
     this._endCall({
       reason: 'hangup',
       shouldDisconnect: true,
@@ -1389,9 +1605,33 @@ Page({
     })
   },
 
+  onRetryCall() {
+    if (this.data.status !== 'failed') return
+    this._prepareRetryCall()
+    this.setData({
+      status: 'connecting',
+      isMuted: false,
+      currentUserDraft: '',
+      currentAssistantDraft: '',
+    })
+    this._setCallActivity('connecting')
+    this._startCall()
+  },
+
+  _prepareRetryCall() {
+    this.client = new RealtimeAPIClient()
+    this.hasSwitchedToConnected = false
+    this.hasFinalizedCall = false
+    this.callStartAt = Date.now()
+    this.initialEchoGuardActive = true
+    this.waitingGreetingPlaybackEnd = false
+    this.isMuted = false
+  },
+
   _endCall({ reason, shouldDisconnect, shouldNavigateBack }) {
     if (this.hasFinalizedCall) return
     this.hasFinalizedCall = true
+    this._clearReminderFeedback()
 
     this.setData({
       status: 'ended',
@@ -1399,6 +1639,7 @@ Page({
       currentAssistantDraft: '',
       isAssistantSpeaking: false,
     })
+    this._setCallActivity('ended')
     this.companionAudioSpeaking = false
     this.companionDeferIdle = false
     this._requestCompanionVisual('idle')
@@ -1415,6 +1656,7 @@ Page({
     this.player.stop()
 
     if (shouldDisconnect && this.client) {
+      this._clearRealtimeCallbacks(this.client)
       this.client.finishSession()
       this.client.disconnect()
     }
@@ -1426,25 +1668,40 @@ Page({
     })
 
     const record = this._buildCallRecord()
-    if (this.messages.length > 0 || this.data.elapsed > 5) {
-      store.addCallRecord(record)
-      if (this.incomingReminder && this._isReminderCompletedByConversation(record.messages)) {
-        store.markReminderDone(this.incomingReminder.id, this.currentElderKey)
-      }
-      if (this.messages.length > 0) {
-        this._generateSummary(record)
+    const shouldSaveRecord = this.messages.length > 0 || this.data.elapsed > 5
+    let recordSaved = false
+    if (shouldSaveRecord) {
+      try {
+        store.addCallRecord(record)
+        recordSaved = true
+        if (this.incomingReminder && this._isReminderCompletedByConversation(record.messages)) {
+          store.markReminderDone(this.incomingReminder.id, this.currentElderKey)
+        }
+        if (this.messages.length > 0) {
+          this._generateSummary(record)
+        }
+      } catch (err) {
+        console.error(FLOW_LOG_PREFIX, '通话记录保存失败', err)
       }
     }
 
-    if (shouldNavigateBack) {
-      if (this.endNavigateTimer) {
-        clearTimeout(this.endNavigateTimer)
-        this.endNavigateTimer = null
-      }
-      this.endNavigateTimer = setTimeout(() => {
-        this.endNavigateTimer = null
-        if (typeof wx !== 'undefined' && wx.navigateBack) wx.navigateBack()
-      }, reason === 'disconnect' ? 300 : 0)
+    if (shouldNavigateBack && typeof wx !== 'undefined' && wx.redirectTo) {
+      const successfulReminders = Array.isArray(this.successfulCallReminders)
+        ? this.successfulCallReminders
+        : []
+      const recordId = recordSaved && record.messages.length > 0 ? record.id : ''
+      const reminderIds = successfulReminders
+        .map(item => String((item && item.reminderId) || ''))
+        .filter(Boolean)
+        .slice(0, 5)
+      const query = [
+        `durationSeconds=${encodeURIComponent(String(record.durationSeconds || 0))}`,
+        `recordId=${encodeURIComponent(recordId)}`,
+        `reminderIds=${encodeURIComponent(reminderIds.join(','))}`,
+      ].join('&')
+      wx.redirectTo({
+        url: `/pages/call-ended/call-ended?${query}`,
+      })
     }
   },
 
@@ -1457,6 +1714,7 @@ Page({
     }
     this.isRefreshingSession = true
     this.stabilityMetrics.reconnectAttempts += 1
+    this._setCallActivity('reconnecting')
     console.warn(FLOW_LOG_PREFIX, '开始自动恢复会话')
     try {
       const latestDialogId = store.getDialogId(this.currentElderKey) || this.client.dialogId || ''
@@ -1477,6 +1735,9 @@ Page({
       console.error(FLOW_LOG_PREFIX, '自动恢复会话失败', err)
     } finally {
       this.isRefreshingSession = false
+      if (this.data.status === 'connected') {
+        this._setCallActivity(this._resolveLiveActivity())
+      }
     }
   },
 
@@ -1496,11 +1757,13 @@ Page({
         store.saveDialogId(resumedDialogId, this.currentElderKey)
       }
       this.stabilityMetrics.reconnectSuccess += 1
+      this._setCallActivity(this._resolveLiveActivity())
       console.log(FLOW_LOG_PREFIX, '断连恢复成功', {
         dialogId: resumedDialogId || latestDialogId || '',
       })
     } catch (err) {
       console.error(FLOW_LOG_PREFIX, '断连恢复失败，结束通话', err)
+      this._setCallActivity('failed')
       this._endCall({
         reason: 'disconnect',
         shouldDisconnect: false,
@@ -1648,6 +1911,7 @@ Page({
     const clipped = next.slice(-TRANSCRIPT_MAX_ITEMS)
     this.setData({
       transcriptItems: clipped,
+      recentTranscriptItems: clipped.slice(-2),
       transcriptAnchorId: id,
       transcriptScrollTop: this.data.transcriptScrollTop + 9999,
     })
@@ -1655,14 +1919,7 @@ Page({
   },
 
   _sanitizeForDisplay(text) {
-    if (!text) return ''
-    let output = String(text)
-    for (let i = 0; i < 5; i += 1) {
-      const stripped = output.replace(/（[^（）]*）|\([^()]*\)/g, '')
-      if (stripped === output) break
-      output = stripped
-    }
-    return output.replace(/\s+/g, ' ').trim()
+    return sanitizeTranscriptText(text)
   },
 
   _resetAssistantReplyRoute(questionId) {
@@ -2713,11 +2970,229 @@ Page({
     this.pendingMemoryConfirmation = null
   },
 
+  _clearReminderFeedback(options) {
+    const opts = options || {}
+    if (opts.invalidate !== false) {
+      this.reminderFeedbackGeneration = (Number(this.reminderFeedbackGeneration) || 0) + 1
+    }
+    if (this.reminderFeedbackTimer) {
+      clearTimeout(this.reminderFeedbackTimer)
+      this.reminderFeedbackTimer = null
+    }
+    const shouldClearState = opts.clearState !== false
+    if (shouldClearState && this.data.reminderFeedback) {
+      this.setData({ reminderFeedback: null })
+    }
+  },
+
+  _isReminderFeedbackEligible(candidate) {
+    if (!candidate || !candidate.title) return false
+    if (candidate.intentType !== 'explicit_reminder') return false
+    if (candidate.needsConfirmation) return false
+    if (Array.isArray(candidate.missingFields) && candidate.missingFields.length > 0) return false
+    return Number(candidate.confidence || 0) >= 0.78
+  },
+
+  _formatReminderSchedule(reminder) {
+    const item = reminder || {}
+    const time = String(item.timeOfDay || '').trim()
+    const scheduleType = String(item.scheduleType || '')
+    if (scheduleType === 'daily') return time ? `每天 ${time}` : '每天'
+    if (scheduleType === 'weekly') return time ? `每周 ${time}` : '每周'
+    if (scheduleType === 'monthly') return time ? `每月 ${time}` : '每月'
+
+    const remindDate = String(item.remindDate || '').trim()
+    const today = new Date()
+    const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+    const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
+    const tomorrowKey = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`
+    let dateText = remindDate
+    if (remindDate === todayKey) dateText = '今天'
+    else if (remindDate === tomorrowKey) dateText = '明天'
+    else if (/^\d{4}-\d{2}-\d{2}$/.test(remindDate)) {
+      const parts = remindDate.split('-')
+      dateText = `${Number(parts[1])}月${Number(parts[2])}日`
+    }
+    return [dateText, time].filter(Boolean).join(' ')
+  },
+
+  _rememberSuccessfulReminder(reminder) {
+    if (!reminder || !reminder.id) return
+    const payload = {
+      reminderId: reminder.id,
+      title: String(reminder.title || '').trim(),
+      scheduleText: this._formatReminderSchedule(reminder),
+    }
+    const list = Array.isArray(this.successfulCallReminders)
+      ? this.successfulCallReminders.slice()
+      : []
+    const index = list.findIndex(item => item.reminderId === payload.reminderId)
+    if (index >= 0) list[index] = payload
+    else list.push(payload)
+    this.successfulCallReminders = list.slice(-5)
+  },
+
+  _sendReminderPersistenceContext(saved, reminder) {
+    if (!this.client
+      || !this.client.sessionActive
+      || typeof this.client.sendRAGText !== 'function') {
+      return
+    }
+    const item = reminder || {}
+    const content = saved
+      ? `本地提醒已保存成功。现在可以确认：${this._formatReminderSchedule(item)}，${String(item.title || '').trim()}。`
+      : '本地提醒保存失败。不得说“已记下”或“会提醒”，请明确说“刚才没有记成功，请您再说一次”。'
+    const request = this.client.sendRAGText([{
+      title: '提醒保存结果（必须遵守）',
+      content,
+    }])
+    if (request && typeof request.catch === 'function') {
+      request.catch(() => {})
+    }
+  },
+
+  _sendReminderClarificationContext(candidate) {
+    if (!this.client
+      || !this.client.sessionActive
+      || typeof this.client.sendRAGText !== 'function') {
+      return
+    }
+    const missingLabelMap = {
+      date: '日期',
+      time: '具体时间',
+      weekday: '星期几',
+    }
+    const missingFields = (candidate.missingFields || [])
+      .map(field => missingLabelMap[field])
+      .filter(Boolean)
+    const missingText = missingFields.join('和') || '日期或具体时间'
+    const request = this.client.sendRAGText([{
+      title: '提醒尚未保存（必须遵守）',
+      content: `本地提醒尚未保存，因为还缺少${missingText}。请只追问缺少的信息，不得说“已记下”或“会提醒”。`,
+    }])
+    if (request && typeof request.catch === 'function') {
+      request.catch(() => {})
+    }
+  },
+
+  _showReminderFeedbackFailed(candidate, feedbackGeneration) {
+    if (feedbackGeneration !== this.reminderFeedbackGeneration
+      || this.data.status === 'ended'
+      || this.companionPageVisible === false) {
+      return
+    }
+    this._clearReminderFeedback({ clearState: false, invalidate: false })
+    this.setData({
+      reminderFeedback: {
+        state: 'failed',
+        title: String(candidate.title || '').trim(),
+        scheduleText: this._formatReminderSchedule(candidate),
+        reminderId: '',
+      },
+    })
+  },
+
+  _persistReminderCandidate(candidate, feedbackGeneration) {
+    try {
+      const result = store.upsertExtractedReminderCandidates(
+        [candidate],
+        this.currentElderKey,
+        { autoThreshold: 0.78, reactivateCompleted: true }
+      )
+      if (!this._isReminderFeedbackEligible(candidate)) return result
+
+      const savedReminder = result
+        && Array.isArray(result.savedReminders)
+        && result.savedReminders[0]
+      if (!savedReminder) {
+        this._sendReminderPersistenceContext(false, candidate)
+        this._showReminderFeedbackFailed(candidate, feedbackGeneration)
+        return result
+      }
+
+      this._rememberSuccessfulReminder(savedReminder)
+      this._sendReminderPersistenceContext(true, savedReminder)
+      if (feedbackGeneration !== this.reminderFeedbackGeneration
+        || this.data.status === 'ended'
+        || this.companionPageVisible === false) {
+        return result
+      }
+      this._clearReminderFeedback({ clearState: false, invalidate: false })
+      this.reminderFeedbackTimer = setTimeout(() => {
+        this.reminderFeedbackTimer = null
+        if (feedbackGeneration !== this.reminderFeedbackGeneration
+          || this.data.status === 'ended'
+          || this.companionPageVisible === false) {
+          return
+        }
+        this.setData({
+          reminderFeedback: {
+            state: 'saved',
+            title: String(savedReminder.title || candidate.title || '').trim(),
+            scheduleText: this._formatReminderSchedule(savedReminder),
+            reminderId: String(savedReminder.id || ''),
+          },
+        })
+        this.reminderFeedbackTimer = setTimeout(() => {
+          this.reminderFeedbackTimer = null
+          if (feedbackGeneration !== this.reminderFeedbackGeneration
+            || this.data.status === 'ended'
+            || this.companionPageVisible === false) {
+            return
+          }
+          this.setData({ reminderFeedback: null })
+        }, REMINDER_FEEDBACK_VISIBLE_MS)
+      }, REMINDER_FEEDBACK_SAVING_MS)
+      return result
+    } catch (err) {
+      console.error(FLOW_LOG_PREFIX, '提醒保存失败', err)
+      if (this._isReminderFeedbackEligible(candidate)) {
+        this._sendReminderPersistenceContext(false, candidate)
+        this._showReminderFeedbackFailed(candidate, feedbackGeneration)
+      }
+      return null
+    }
+  },
+
   _tryUpsertReminderCandidatesFromASRFinal(userText) {
     if (!this.currentElderKey || !store.upsertExtractedReminderCandidates) return
-    const candidate = this._buildReminderCandidateFromText(userText)
+    let candidate = this._buildReminderCandidateFromText(userText)
+    if (!candidate && this.pendingReminderCandidate) {
+      candidate = reminderExtractor.completeReminderCandidateFromFollowup(
+        this.pendingReminderCandidate,
+        userText
+      )
+    }
     if (!candidate) return
-    store.upsertExtractedReminderCandidates([candidate], this.currentElderKey, { autoThreshold: 0.78 })
+    const isFeedbackEligible = this._isReminderFeedbackEligible(candidate)
+    if (!isFeedbackEligible && candidate.intentType === 'explicit_reminder') {
+      this.pendingReminderCandidate = candidate
+    } else if (isFeedbackEligible) {
+      this.pendingReminderCandidate = null
+    }
+    if (!isFeedbackEligible) {
+      const result = this._persistReminderCandidate(candidate)
+      if (candidate.intentType === 'explicit_reminder') {
+        this._sendReminderClarificationContext(candidate)
+      }
+      return result
+    }
+
+    if (this.companionPageVisible === false) {
+      return this._persistReminderCandidate(candidate)
+    }
+
+    this._clearReminderFeedback()
+    const feedbackGeneration = this.reminderFeedbackGeneration
+    this.setData({
+      reminderFeedback: {
+        state: 'saving',
+        title: String(candidate.title || '').trim(),
+        scheduleText: this._formatReminderSchedule(candidate),
+        reminderId: '',
+      },
+    })
+    return this._persistReminderCandidate(candidate, feedbackGeneration)
   },
 
   async _maybeInjectTurnMemoryRAG(userText, meta) {
@@ -3279,23 +3754,20 @@ Page({
     return { mood: '😌', moodLabel: '平静' }
   },
 
-  _authorize() {
-    return new Promise((resolve, reject) => {
-      wx.authorize({
-        scope: 'scope.record',
-        success: resolve,
-        fail: () => {
-          wx.showModal({
-            title: '需要麦克风权限',
-            content: '请在设置中允许使用麦克风',
-            success: (res) => {
-              if (res.confirm) wx.openSetting({ success: resolve, fail: reject })
-              else reject(new Error('用户拒绝麦克风权限'))
-            },
-          })
-        },
-      })
-    })
+  async _authorizeAndConnect() {
+    this._setConnectionPhase('authorizing')
+    await this._authorize()
+    console.log(FLOW_LOG_PREFIX, '麦克风权限已授权')
+    this._setConnectionPhase('connecting')
+    await this.client.connect()
+    console.log(FLOW_LOG_PREFIX, 'WebSocket 已连接')
+  },
+
+  async _authorize() {
+    const result = await permissions.ensureRecordPermission()
+    if (result.state === 'granted') return
+    if (result.state === 'failed') throw new Error('麦克风授权流程失败')
+    throw new Error('用户拒绝麦克风权限')
   },
 
   _setConnectionPhase(phase) {
@@ -3311,6 +3783,7 @@ Page({
       connectionPhase: phase,
       connectionHint: hintMap[phase] || '正在准备中...',
     })
+    this._setCallActivity('connecting')
   },
 
   _startTimer() {
@@ -3358,6 +3831,7 @@ Page({
     }
     this._clearGreetingEchoGuardFailsafe()
     this._clearIncomingAutoEndGuard()
+    this._clearReminderFeedback()
     this._clearAssistantTurnProgress('cleanup')
     if (this.connectingFallbackTimer) {
       clearTimeout(this.connectingFallbackTimer)
@@ -3366,11 +3840,13 @@ Page({
     this._stopTimer()
     this._stopUplinkKeepalive()
     this._stopCompanionVideos()
-    this.recorder.stop()
+    if (this.recorder && typeof this.recorder.destroy === 'function') this.recorder.destroy()
+    else if (this.recorder) this.recorder.stop()
     this.player.stop()
     this.player.destroy()
     this.uplinkRemainder = new Uint8Array(0)
-    if (this.client.connected) {
+    this._clearRealtimeCallbacks(this.client)
+    if (this.client.connected || this.client.socket) {
       this.client.finishSession()
       this.client.disconnect()
     }

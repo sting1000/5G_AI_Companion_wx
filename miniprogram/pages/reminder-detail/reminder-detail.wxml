@@ -1,0 +1,138 @@
+<view class="detail-page">
+  <view class="custom-nav" style="padding-top: {{statusBarHeight}}px;">
+    <view class="custom-nav__inner" style="height: {{navigationBarHeight}}px;">
+      <button class="back-button" bindtap="goBack" aria-label="返回">
+        <image src="/assets/icons/elder-back.svg" mode="aspectFit"></image>
+      </button>
+      <text class="nav-title">提醒详情</text>
+    </view>
+  </view>
+
+  <view class="offline-banner" wx:if="{{isOffline && reminder}}">
+    <image src="/assets/icons/elder-warning.svg" mode="aspectFit"></image>
+    <text>当前离线，显示已保存的提醒</text>
+  </view>
+
+  <view class="loading-state" wx:if="{{isLoading}}">
+    <view class="loading-line loading-line--title"></view>
+    <view class="loading-line"></view>
+  </view>
+
+  <view class="error-state" wx:elif="{{hasError}}">
+    <image src="/assets/icons/elder-warning.svg" mode="aspectFit"></image>
+    <text class="not-found__title">{{errorText}}</text>
+    <button class="secondary-button" bindtap="retryLoad">重新加载</button>
+  </view>
+
+  <view class="not-found" wx:elif="{{notFound}}">
+    <image src="/assets/icons/elder-warning.svg" mode="aspectFit"></image>
+    <text class="not-found__title">没有找到这条提醒</text>
+    <button class="secondary-button" bindtap="goBack">返回</button>
+  </view>
+
+  <scroll-view class="detail-scroll" wx:elif="{{reminder}}" scroll-y enhanced show-scrollbar="{{false}}">
+    <view class="detail-content">
+      <view
+        class="notification-banner"
+        wx:if="{{notificationState !== 'granted'}}"
+      >
+        <view class="notification-copy">
+          <image src="/assets/icons/notification.svg" mode="aspectFit"></image>
+          <text>{{notificationState === 'unconfigured' ? '通知模板尚未配置，到点提醒不会通过微信通知出现' : '通知还没有开启，到点提醒不会通过微信通知出现'}}</text>
+        </view>
+        <button
+          wx:if="{{notificationState !== 'unconfigured'}}"
+          bindtap="recoverNotification"
+        >{{notificationState === 'blocked' ? '去设置' : '允许通知'}}</button>
+      </view>
+
+      <view class="status-pill status-pill--{{reminder.status}}">
+        <image src="{{reminder.isDone ? '/assets/icons/check.svg' : '/assets/icons/clock.svg'}}" mode="aspectFit"></image>
+        <text>{{reminder.statusText}}</text>
+      </view>
+
+      <text class="reminder-title">{{reminder.title}}</text>
+
+      <view class="schedule-card">
+        <view class="schedule-row">
+          <view class="schedule-icon">
+            <image src="/assets/icons/calendar.svg" mode="aspectFit"></image>
+          </view>
+          <view class="schedule-copy">
+            <text class="schedule-label">下一次提醒</text>
+            <text class="schedule-value">{{reminder.dateText}} {{reminder.displayTime}}</text>
+          </view>
+        </view>
+        <view class="schedule-divider"></view>
+        <view class="schedule-row">
+          <view class="schedule-icon">
+            <image src="/assets/icons/repeat.svg" mode="aspectFit"></image>
+          </view>
+          <view class="schedule-copy">
+            <text class="schedule-label">重复</text>
+            <text class="schedule-value">{{reminder.repeatText}}</text>
+          </view>
+        </view>
+      </view>
+
+      <view class="candidate-note" wx:if="{{!reminder.canManage}}">
+        <image src="/assets/icons/elder-warning.svg" mode="aspectFit"></image>
+        <text>这条提醒的信息还不完整，请在下次通话中告诉小林具体时间。</text>
+      </view>
+
+      <view class="primary-actions" wx:if="{{reminder.canManage && !reminder.isDone}}">
+        <button class="complete-button" bindtap="onComplete" disabled="{{isSubmitting}}">
+          <image src="/assets/icons/check-white.svg" mode="aspectFit"></image>
+          <text>已完成</text>
+        </button>
+        <button class="snooze-button" bindtap="openSnooze" disabled="{{isSubmitting}}">
+          <image src="/assets/icons/clock.svg" mode="aspectFit"></image>
+          <text>稍后提醒</text>
+        </button>
+      </view>
+
+      <button class="delete-button" bindtap="onDelete" disabled="{{isSubmitting}}">
+        <image src="/assets/icons/delete.svg" mode="aspectFit"></image>
+        <text>删除这条提醒</text>
+      </button>
+    </view>
+  </scroll-view>
+
+  <view class="snooze-mask" wx:if="{{showSnooze}}" bindtap="closeSnooze">
+    <view class="snooze-panel" catchtap="onSnoozePanelTap">
+      <text class="snooze-title">选择新的提醒时间</text>
+      <text class="snooze-description">请明确选择日期和时间，小林会按您选的时间提醒。</text>
+
+      <picker mode="date" value="{{snoozeDate}}" bindchange="onSnoozeDateChange">
+        <view class="picker-row">
+          <view>
+            <text class="picker-label">日期</text>
+            <text class="picker-value {{snoozeDate ? '' : 'picker-value--placeholder'}}">
+              {{snoozeDate || '请选择日期'}}
+            </text>
+          </view>
+          <image src="/assets/icons/chevron-right.svg" mode="aspectFit"></image>
+        </view>
+      </picker>
+
+      <picker mode="time" value="{{snoozeTime}}" bindchange="onSnoozeTimeChange">
+        <view class="picker-row">
+          <view>
+            <text class="picker-label">时间</text>
+            <text class="picker-value {{snoozeTime ? '' : 'picker-value--placeholder'}}">
+              {{snoozeTime || '请选择时间'}}
+            </text>
+          </view>
+          <image src="/assets/icons/chevron-right.svg" mode="aspectFit"></image>
+        </view>
+      </picker>
+
+      <text class="snooze-error" wx:if="{{snoozeError}}">{{snoozeError}}</text>
+
+      <view class="snooze-actions">
+        <button class="cancel-button" bindtap="closeSnooze" disabled="{{isSubmitting}}">取消</button>
+        <button class="confirm-button" bindtap="confirmSnooze" disabled="{{isSubmitting}}">确定新时间</button>
+      </view>
+    </view>
+  </view>
+</view>

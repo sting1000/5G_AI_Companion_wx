@@ -1,94 +1,117 @@
 const store = require('../../utils/store')
+const { sanitizeTranscriptText } = require('../../utils/transcript-display')
+
+function getNavigationMetrics() {
+  let statusBarHeight = 20
+  let navigationBarHeight = 44
+  try {
+    const windowInfo = wx.getWindowInfo
+      ? wx.getWindowInfo()
+      : (wx.getSystemInfoSync ? wx.getSystemInfoSync() : {})
+    statusBarHeight = Number(windowInfo.statusBarHeight || statusBarHeight)
+    const menu = wx.getMenuButtonBoundingClientRect
+      ? wx.getMenuButtonBoundingClientRect()
+      : null
+    if (menu && menu.height) {
+      navigationBarHeight = menu.height + Math.max(0, menu.top - statusBarHeight) * 2
+    }
+  } catch (err) {}
+  return { statusBarHeight, navigationBarHeight }
+}
+
+function normalizeTranscript(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .map((message, index) => {
+      const content = sanitizeTranscriptText(message && message.content)
+      if (!content) return null
+      const role = String((message && message.role) || '')
+      if (role !== 'user' && role !== 'assistant') return null
+      return {
+        id: `${role}_${index}`,
+        role,
+        speaker: role === 'user' ? '您' : '小林',
+        content,
+      }
+    })
+    .filter(Boolean)
+}
+
+function decorateRecord(record) {
+  const summary = String((record && record.summary) || '').trim()
+  const transcript = normalizeTranscript(record && record.messages)
+  const rawStatus = String((record && record.summaryStatus) || '')
+  let summaryState = 'success'
+  let summaryStateText = summary ? '摘要已整理' : '通话内容已保存'
+  let summaryMessage = summary || '本次通话较短，暂时没有摘要。'
+  if (rawStatus === 'pending') {
+    summaryState = 'pending'
+    summaryStateText = '摘要整理中'
+    summaryMessage = '通话内容已经保存，小林正在整理摘要。您可以稍后刷新查看。'
+  } else if (rawStatus === 'failed') {
+    summaryState = 'failed'
+    summaryStateText = '摘要暂不可用'
+    summaryMessage = '摘要这次没有整理好，已经保存的通话内容仍可在下方查看。'
+  }
+  return Object.assign({}, record, {
+    durationText: String((record && record.duration) || '0秒'),
+    summary,
+    summaryState,
+    summaryStateText,
+    summaryMessage,
+    transcript,
+    hasTranscript: transcript.length > 0,
+  })
+}
 
 Page({
   data: {
     record: null,
     notFound: false,
+    loadError: false,
     callId: '',
+    statusBarHeight: 20,
+    navigationBarHeight: 44,
   },
 
   onLoad(options) {
-    const callId = options.id
+    const callId = String((options && options.id) || '')
+    this.setData(Object.assign({}, getNavigationMetrics(), { callId }))
     if (!callId) {
-      this.setData({ notFound: true })
-      return
+      this.setData({ notFound: true, loadError: false })
     }
-
-    this.setData({ callId })
-    this._loadRecord()
   },
 
   onShow() {
-    if (this.data.callId) {
-      this._loadRecord()
+    if (this.data.callId) this.loadRecord()
+  },
+
+  loadRecord() {
+    try {
+      const record = store.getCallHistory().find(item => item && item.id === this.data.callId)
+      if (!record) {
+        this.setData({ notFound: true, loadError: false, record: null })
+        return
+      }
+      this.setData({
+        record: decorateRecord(record),
+        notFound: false,
+        loadError: false,
+      })
+    } catch (err) {
+      this.setData({ notFound: false, loadError: true, record: null })
     }
   },
 
-  _loadRecord() {
-    const history = store.getCallHistory()
-    const record = history.find(r => r.id === this.data.callId)
-
-    if (!record) {
-      this.setData({ notFound: true, record: null })
-      return
-    }
-
-    const moodLabel = String(record.moodLabel || '平静')
-    const moodScoreMap = {
-      开心: 5,
-      平静: 3,
-      低落: 2,
-      焦虑: 1,
-      分析中: 0,
-    }
-    const moodScore = moodScoreMap[moodLabel] || 3
-    const moodStars = [1, 2, 3, 4, 5].map((value) => ({
-      value,
-      active: value <= moodScore,
-    }))
-    const topics = Array.isArray(record.topics) ? record.topics : []
-    const highlights = Array.isArray(record.highlights) ? record.highlights : []
-    const summaryStatus = record.summaryStatus || (record.summary ? 'done' : '')
-    const hasHealthSignal = topics.some(tag => /(健康|心脏病|胸闷|胸痛|吃药|血压|血糖|失眠|复查|复诊)/.test(String(tag || '')))
-    const signalTitle = hasHealthSignal ? '健康信号' : '兴趣信号'
-    const signalIcon = hasHealthSignal ? '🩺' : '📡'
-    const signalTip = hasHealthSignal
-      ? '检测到健康风险相关线索，建议优先关注用药与就医安排。'
-      : 'AI将适时为老人推荐相关内容，帮助丰富日常生活。'
-    const summaryStateText = summaryStatus === 'pending'
-      ? '摘要生成中'
-      : (summaryStatus === 'failed' ? '摘要暂不可用' : '摘要已完成')
-    const moodToneClass = {
-      开心: 'mood-happy',
-      平静: 'mood-calm',
-      低落: 'mood-low',
-      焦虑: 'mood-anxious',
-      分析中: 'mood-pending',
-    }[moodLabel] || 'mood-calm'
-    const decoratedRecord = Object.assign({}, record, {
-      durationText: record.duration || '0秒',
-      hasHighlights: highlights.length > 0,
-      hasTopics: topics.length > 0,
-      highlightCount: highlights.length,
-      topicCount: topics.length,
-      moodPercent: Math.max(0, Math.min(100, moodScore * 20)),
-      moodScore,
-      moodStars,
-      moodToneClass,
-      summaryStateText,
-      summaryStateClass: summaryStatus === 'pending' ? 'summary-state-pending' : (summaryStatus === 'failed' ? 'summary-state-failed' : 'summary-state-done'),
-      signalTitle,
-      signalIcon,
-      signalTip,
-    })
-
-    this.setData({
-      record: decoratedRecord,
-      notFound: false,
-    })
+  reloadRecord() {
+    this.loadRecord()
   },
 
   goBack() {
     wx.navigateBack()
   },
 })
+
+module.exports = {
+  decorateRecord,
+  normalizeTranscript,
+}

@@ -54,11 +54,100 @@ describe('call 页面离线关键分支', () => {
     expect(page._startCall).not.toHaveBeenCalled()
   })
 
+  test('来电连接失败后重新接听会重置连接状态和客户端', () => {
+    const page = loadPage()
+    const failedClient = page.client
+    page._startCall = jest.fn()
+    page.hasSwitchedToConnected = true
+    page.hasFinalizedCall = true
+    page.setData({ status: 'failed', isIncomingAnswering: false })
+
+    page.onAccept()
+
+    expect(page.client).not.toBe(failedClient)
+    expect(page.hasSwitchedToConnected).toBe(false)
+    expect(page.hasFinalizedCall).toBe(false)
+    expect(page.data.status).toBe('connecting')
+    expect(page._startCall).toHaveBeenCalledTimes(1)
+  })
+
   test('onDecline 在可拒接状态会返回上一页', () => {
     const page = loadPage()
     page.setData({ isIncomingAnswering: false })
     page.onDecline()
     expect(wx.navigateBack).toHaveBeenCalled()
+  })
+
+  test('连接失败后可原位重新呼叫', () => {
+    const page = loadPage()
+    page._startCall = jest.fn()
+    page.hasSwitchedToConnected = true
+    page.hasFinalizedCall = true
+    page.isMuted = true
+    page.setData({ status: 'failed', isMuted: true })
+
+    page.onRetryCall()
+
+    expect(page.data.status).toBe('connecting')
+    expect(page.data.isMuted).toBe(false)
+    expect(page.hasSwitchedToConnected).toBe(false)
+    expect(page.hasFinalizedCall).toBe(false)
+    expect(page._startCall).toHaveBeenCalledTimes(1)
+  })
+
+  test('结束逻辑幂等，并向结束页传递真实时长、recordId 和成功提醒', () => {
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    page.hasFinalizedCall = false
+    page.messages = [
+      { role: 'user', content: '提醒我明天九点吃药' },
+      { role: 'assistant', content: '好，我记下了' },
+    ]
+    page.successfulCallReminders = [{
+      reminderId: 'reminder_saved_1',
+      title: '吃药',
+      scheduleText: '明天 09:00',
+    }]
+    page.currentElderKey = 'elder:test:end-call'
+    page.incomingReminder = null
+    page.sessionOptions = null
+    page.stabilityMetrics = {
+      idleTimeoutCount: 0,
+      reconnectAttempts: 0,
+      reconnectSuccess: 0,
+    }
+    page.recorder = { stop: jest.fn() }
+    page.player = { stop: jest.fn() }
+    page.client = {
+      connected: true,
+      sessionActive: true,
+      finishSession: jest.fn(),
+      disconnect: jest.fn(),
+    }
+    page._requestCompanionVisual = jest.fn()
+    page._generateSummary = jest.fn()
+    page.setData({ status: 'connected', elapsed: 125 })
+
+    page._endCall({
+      reason: 'hangup',
+      shouldDisconnect: true,
+      shouldNavigateBack: true,
+    })
+    page._endCall({
+      reason: 'hangup',
+      shouldDisconnect: true,
+      shouldNavigateBack: true,
+    })
+
+    expect(store.getCallHistory()).toHaveLength(1)
+    expect(wx.redirectTo).toHaveBeenCalledTimes(1)
+    const url = wx.redirectTo.mock.calls[0][0].url
+    const recordId = store.getCallHistory()[0].id
+    expect(url).toContain('durationSeconds=125')
+    expect(url).toContain(`recordId=${encodeURIComponent(recordId)}`)
+    expect(url).toContain('reminderIds=reminder_saved_1')
+    expect(page.recorder.stop).toHaveBeenCalledTimes(1)
+    expect(page.player.stop).toHaveBeenCalledTimes(1)
   })
 
   test('_setConnectionPhase 会根据呼叫模式写入提示语', () => {
@@ -73,12 +162,153 @@ describe('call 页面离线关键分支', () => {
     expect(page.data.connectionHint).toBe('正在接听，马上就好...')
   })
 
+  test('通话状态由连接、识别和播放事件驱动', () => {
+    const page = loadPage()
+    setupAssistantReplyPage(page)
+    page.setData({ status: 'connected' })
+
+    page._setConnectionPhase('connecting')
+    expect(page.data.callStatusText).toBe('正在呼叫小林')
+
+    page.client.onASRStart({ receivedAt: 1 })
+    expect(page.data.callStatusText).toBe('您正在说话')
+
+    page.client.onASREnd({ receivedAt: 2 })
+    expect(page.data.callStatusText).toBe('正在听您说')
+
+    page.player.onPlayStart({ at: 3 })
+    expect(page.data.callStatusText).toBe('小林正在说话')
+
+    page.player.onPlayEnd()
+    expect(page.data.callStatusText).toBe('正在听您说')
+  })
+
+  test('静音会真实停止录音，恢复时重新启动录音', () => {
+    const page = loadPage()
+    page.isMuted = false
+    page.setData({ status: 'connected' })
+    page.recorder = {
+      recording: true,
+      stop: jest.fn(() => { page.recorder.recording = false }),
+      start: jest.fn(() => { page.recorder.recording = true }),
+    }
+
+    page.onToggleMute()
+    expect(page.recorder.stop).toHaveBeenCalledTimes(1)
+    expect(page.data.isMuted).toBe(true)
+    expect(page.data.callStatusText).toBe('麦克风已关闭')
+
+    page.onToggleMute()
+    expect(page.recorder.start).toHaveBeenCalledTimes(1)
+    expect(page.data.isMuted).toBe(false)
+    expect(page.data.callStatusText).toBe('正在听您说')
+  })
+
+  test('麦克风恢复失败时保持静音状态并提示', () => {
+    const page = loadPage()
+    page.isMuted = true
+    page.setData({ status: 'connected', isMuted: true })
+    page.recorder = {
+      start: jest.fn(() => { throw new Error('start failed') }),
+      stop: jest.fn(),
+    }
+
+    page.onToggleMute()
+
+    expect(page.data.isMuted).toBe(true)
+    expect(page.isMuted).toBe(true)
+    expect(wx.showToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: '麦克风开启失败',
+    }))
+  })
+
+  test('静音时上行保活不会自动重启录音', () => {
+    jest.useFakeTimers()
+    const page = loadPage()
+    page.isMuted = true
+    page.uplinkKeepaliveTimer = null
+    page.lastAudioUplinkAt = 0
+    page.recorder = { recording: false, start: jest.fn() }
+    page.client = { connected: true, sessionActive: true }
+    page.setData({ status: 'connected' })
+
+    page._startUplinkKeepalive()
+    jest.advanceTimersByTime(2400)
+
+    expect(page.recorder.start).not.toHaveBeenCalled()
+    page._stopUplinkKeepalive()
+    jest.useRealTimers()
+  })
+
+  test('扬声器切换成功后同时更新路由状态和文字状态', async () => {
+    const page = loadPage()
+    page.companionDestroyed = false
+    page.setData({
+      speakerAvailable: true,
+      isSpeakerOn: true,
+      isSpeakerChanging: false,
+    })
+
+    await page.onToggleSpeaker()
+
+    expect(wx.setInnerAudioOption).toHaveBeenCalledWith(expect.objectContaining({
+      speakerOn: false,
+    }))
+    expect(page.data.isSpeakerOn).toBe(false)
+    expect(page.data.isSpeakerChanging).toBe(false)
+  })
+
+  test('完整字幕可展开收起，最近字幕仅保留最后两轮', () => {
+    const page = loadPage()
+    page.setData({ transcriptItems: [], recentTranscriptItems: [] })
+
+    page._appendTranscriptItem('assistant', '第一句')
+    page._appendTranscriptItem('user', '第二句')
+    page._appendTranscriptItem('assistant', '第三句')
+
+    expect(page.data.recentTranscriptItems.map(item => item.content)).toEqual(['第二句', '第三句'])
+    page.onToggleTranscript()
+    expect(page.data.isTranscriptExpanded).toBe(true)
+    page.onCloseTranscript()
+    expect(page.data.isTranscriptExpanded).toBe(false)
+  })
+
   test('_authorize 失败且用户取消时会 reject', async () => {
     const page = loadPage()
     wx.authorize.mockImplementation(({ fail }) => fail())
     wx.showModal.mockImplementation(({ success }) => success({ confirm: false }))
 
     await expect(page._authorize()).rejects.toThrow('用户拒绝麦克风权限')
+  })
+
+  test('_authorizeAndConnect 会在授权完成后才连接语音服务', async () => {
+    const page = loadPage()
+    let resolveAuthorization
+    page._authorize = jest.fn(() => new Promise((resolve) => {
+      resolveAuthorization = resolve
+    }))
+    page.client = { connect: jest.fn(() => Promise.resolve()) }
+
+    const startPromise = page._authorizeAndConnect()
+    expect(page.data.connectionPhase).toBe('authorizing')
+    expect(page.client.connect).not.toHaveBeenCalled()
+
+    resolveAuthorization()
+    await startPromise
+
+    expect(page.client.connect).toHaveBeenCalledTimes(1)
+    expect(page.data.connectionPhase).toBe('connecting')
+  })
+
+  test('_sanitizeForDisplay 只移除明确舞台指令并保留正常括号内容', () => {
+    const page = loadPage()
+
+    expect(page._sanitizeForDisplay('周三（9月9日）去医院')).toBe('周三（9月9日）去医院')
+    expect(page._sanitizeForDisplay('Call me on (September 9)')).toBe('Call me on (September 9)')
+    expect(page._sanitizeForDisplay('好的（轻声笑）我记住了')).toBe('好的我记住了')
+    expect(page._sanitizeForDisplay('Okay (chuckles) I remember.')).toBe('Okay I remember.')
+    expect(page._sanitizeForDisplay('好的（笑着说）我记住了')).toBe('好的我记住了')
+    expect(page._sanitizeForDisplay('Okay (speaking softly) I remember.')).toBe('Okay I remember.')
   })
 
   test('首句仅走 SAY_HELLO/TTS 时也会落字幕和消息', () => {
@@ -944,6 +1174,181 @@ describe('call 页面离线关键分支', () => {
     expect(list[0].status).toBe('pending')
   })
 
+  test('完整提醒按 saving → saved 展示，并在 4.5 秒后消失', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const page = loadPage()
+    page.currentElderKey = 'elder:test:feedback-saved'
+    page.successfulCallReminders = []
+    page.reminderFeedbackTimer = null
+    page.setData({ status: 'connected', reminderFeedback: null })
+
+    page._tryUpsertReminderCandidatesFromASRFinal('提醒我明天早上九点吃药')
+    expect(page.data.reminderFeedback.state).toBe('saving')
+
+    jest.advanceTimersByTime(299)
+    expect(page.data.reminderFeedback.state).toBe('saving')
+    jest.advanceTimersByTime(1)
+    expect(page.data.reminderFeedback).toEqual(expect.objectContaining({
+      state: 'saved',
+      title: '吃药',
+      scheduleText: '明天 09:00',
+    }))
+    expect(page.successfulCallReminders).toHaveLength(1)
+
+    jest.advanceTimersByTime(4499)
+    expect(page.data.reminderFeedback.state).toBe('saved')
+    jest.advanceTimersByTime(1)
+    expect(page.data.reminderFeedback).toBe(null)
+  })
+
+  test('重复提醒返回 updated，但不会新增重复提醒或结束页条目', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = 'elder:test:feedback-updated'
+    page.currentElderKey = elderKey
+    page.successfulCallReminders = []
+    page.reminderFeedbackTimer = null
+    page.setData({ status: 'connected', reminderFeedback: null })
+
+    page._tryUpsertReminderCandidatesFromASRFinal('提醒我明天早上九点吃药')
+    page._tryUpsertReminderCandidatesFromASRFinal('提醒我明天早上九点吃药')
+    jest.advanceTimersByTime(300)
+
+    expect(store.getReminders(elderKey)).toHaveLength(1)
+    expect(page.data.reminderFeedback.state).toBe('saved')
+    expect(page.successfulCallReminders).toHaveLength(1)
+  })
+
+  test('缺时间、待确认、低置信和无提醒意图都不会显示 saved', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const page = loadPage()
+    page.currentElderKey = 'elder:test:feedback-ineligible'
+    page.successfulCallReminders = []
+    page.reminderFeedbackTimer = null
+    page.setData({ status: 'connected', reminderFeedback: null })
+
+    page._tryUpsertReminderCandidatesFromASRFinal('提醒我吃药')
+    expect(page.data.reminderFeedback).toBe(null)
+
+    page._tryUpsertReminderCandidatesFromASRFinal('我明天去医院复查')
+    expect(page.data.reminderFeedback).toBe(null)
+
+    page._persistReminderCandidate({
+      title: '测血压',
+      scheduleType: 'daily',
+      timeOfDay: '08:00',
+      confidence: 0.4,
+      needsConfirmation: false,
+      missingFields: [],
+      intentType: 'explicit_reminder',
+    })
+    expect(page.data.reminderFeedback).toBe(null)
+
+    page._tryUpsertReminderCandidatesFromASRFinal('今天天气不错')
+    expect(page.data.reminderFeedback).toBe(null)
+    expect(page.successfulCallReminders).toHaveLength(0)
+  })
+
+  test('分两轮补全提醒后才显示 saved 并写入待提醒', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const page = loadPage()
+    const store = require('../../miniprogram/utils/store')
+    const elderKey = 'elder:test:feedback-multi-turn'
+    page.currentElderKey = elderKey
+    page.successfulCallReminders = []
+    page.reminderFeedbackTimer = null
+    page.client = {
+      sessionActive: true,
+      sendRAGText: jest.fn(() => Promise.resolve(true)),
+    }
+    page.setData({ status: 'connected', reminderFeedback: null })
+
+    page._tryUpsertReminderCandidatesFromASRFinal('提醒我吃药')
+
+    expect(page.data.reminderFeedback).toBe(null)
+    expect(page.pendingReminderCandidate).toEqual(expect.objectContaining({
+      title: '吃药',
+      needsConfirmation: true,
+    }))
+    expect(page.client.sendRAGText).toHaveBeenCalledWith([
+      expect.objectContaining({
+        title: '提醒尚未保存（必须遵守）',
+        content: expect.stringContaining('不得说“已记下”'),
+      }),
+    ])
+
+    page._tryUpsertReminderCandidatesFromASRFinal('明天早上九点')
+    jest.advanceTimersByTime(300)
+
+    expect(store.getReminders(elderKey)).toHaveLength(1)
+    expect(store.getReminders(elderKey)[0]).toEqual(expect.objectContaining({
+      title: '吃药',
+      remindDate: '2026-04-16',
+      timeOfDay: '09:00',
+      status: 'pending',
+    }))
+    expect(page.data.reminderFeedback).toEqual(expect.objectContaining({
+      state: 'saved',
+      title: '吃药',
+      scheduleText: '明天 09:00',
+    }))
+    expect(page.pendingReminderCandidate).toBe(null)
+  })
+
+  test('store 异常显示 failed，且不触发本地成功话术', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
+    const page = loadPage()
+    wx.setStorageSync.mockImplementation(() => {
+      throw new Error('storage unavailable')
+    })
+    page.currentElderKey = 'elder:test:feedback-failed'
+    page.successfulCallReminders = []
+    page.reminderFeedbackTimer = null
+    page.client = {
+      sessionActive: true,
+      sendTextQuery: jest.fn(),
+      sendRAGText: jest.fn(() => Promise.resolve(true)),
+    }
+    page.setData({ status: 'connected', reminderFeedback: null })
+
+    page._tryUpsertReminderCandidatesFromASRFinal('提醒我明天早上九点吃药')
+
+    expect(page.data.reminderFeedback).toEqual(expect.objectContaining({
+      state: 'failed',
+      title: '吃药',
+    }))
+    expect(page.successfulCallReminders).toHaveLength(0)
+    expect(page.client.sendTextQuery).not.toHaveBeenCalled()
+    expect(page.client.sendRAGText).toHaveBeenCalledWith([
+      expect.objectContaining({
+        title: '提醒保存结果（必须遵守）',
+        content: expect.stringContaining('保存失败'),
+      }),
+    ])
+  })
+
+  test('页面隐藏会清理提醒反馈和自动收起定时器', () => {
+    jest.useFakeTimers()
+    const page = loadPage()
+    page.reminderFeedbackTimer = setTimeout(() => {}, 4500)
+    page._pauseCompanionVideo = jest.fn()
+    page._revealCompanionVisual = jest.fn()
+    page.setData({
+      reminderFeedback: {
+        state: 'saved',
+        title: '吃药',
+        scheduleText: '明天 09:00',
+        reminderId: 'reminder_1',
+      },
+    })
+
+    page.onHide()
+
+    expect(page.reminderFeedbackTimer).toBe(null)
+    expect(page.data.reminderFeedback).toBe(null)
+  })
+
   test('ASR 最终识别支持“明早9点提醒我吃药”并直接入库', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-15T10:00:00.000Z'))
     const page = loadPage()
@@ -1777,12 +2182,11 @@ describe('call 页面离线关键分支', () => {
     jest.useRealTimers()
   })
 
-  test('通话页 WXML 共用静音循环视频层，且无控制栏', () => {
+  test('通话页保留双视频切换，并只展示阶段 3 的真实控件', () => {
     const fs = require('fs')
     const wxml = fs.readFileSync(path.resolve(__dirname, '../../miniprogram/pages/call/call.wxml'), 'utf8')
     expect(wxml).toContain('id="companion-idle"')
     expect(wxml).toContain('id="companion-speaking"')
-    expect(wxml).toContain('class="companion-stage"')
     expect(wxml).toContain('muted="{{true}}"')
     expect(wxml).toContain('loop="{{true}}"')
     expect(wxml).toContain('controls="{{false}}"')
@@ -1790,8 +2194,24 @@ describe('call 页面离线关键分支', () => {
     expect(wxml).toContain('picture-in-picture-mode=""')
     expect(wxml).not.toContain('src="/assets/images/companion-xiaolin-call.jpg"')
     expect((wxml.match(/<video/g) || []).length).toBe(2)
-    expect(wxml.indexOf('companion-stage')).toBeLessThan(wxml.indexOf('call-page'))
-    expect(wxml.indexOf('companion-stage')).toBeLessThan(wxml.indexOf('incoming-page'))
+    expect(wxml).toContain('bindtap="onToggleMute"')
+    expect(wxml).toContain('bindtap="onToggleSpeaker"')
+    expect(wxml).toContain('bindtap="onToggleTranscript"')
+    expect(wxml).toContain('bindtap="onHangup"')
+    expect(wxml).not.toContain('video-expand')
+    expect(wxml).not.toContain('video-user-add')
+  })
+
+  test('通话姓名和计时上移，连接状态位于挂断控件上方', () => {
+    const fs = require('fs')
+    const wxml = fs.readFileSync(path.resolve(__dirname, '../../miniprogram/pages/call/call.wxml'), 'utf8')
+    const wxss = fs.readFileSync(path.resolve(__dirname, '../../miniprogram/pages/call/call.wxss'), 'utf8')
+
+    expect(wxml).toContain('class="call-header" style="padding-top: {{topInset + 4}}px;"')
+    expect(wxml).toContain('class="call-progress" wx:if="{{!isTranscriptExpanded}}"')
+    expect(wxml).toContain('!isTranscriptExpanded && !reminderFeedback')
+    expect(wxss).toMatch(/\.call-progress\s*\{[^}]*bottom:\s*calc\(214rpx \+ env\(safe-area-inset-bottom\)\);/s)
+    expect(wxss).toMatch(/\.recent-subtitles\s*\{[^}]*bottom:\s*calc\(340rpx \+ env\(safe-area-inset-bottom\)\);/s)
   })
 
   test('会把 CloudBase 文件经临时 HTTPS 下到本地，并且初始化时只播 idle', () => {

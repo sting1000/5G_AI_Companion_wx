@@ -1,44 +1,50 @@
-/* 全局样式 - 适老化设计 */
+/* 叮嘱全局视觉基础 */
 page {
-  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  background-color: #FFF7EE;
-  color: #2D2A26;
-  font-size: 32rpx;
-  line-height: 1.6;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  background-color: #F3F4F2;
+  color: #1E292D;
+  font-size: 30rpx;
+  line-height: 1.47;
 }
 
-/* 设计 token（阶段一保守模式：仅收口，不重塑视觉） */
+/* DESIGN_SYSTEM.md 冻结 Token */
 :root {
-  --color-bg-page: #FFF7EE;
+  --color-bg-page: #F3F4F2;
   --color-bg-card: #FFFFFF;
-  --color-bg-subtle: #F7F1EA;
-  --color-text-primary: #2D2A26;
-  --color-text-secondary: #66615C;
-  --color-text-muted: #8A8580;
-  --color-border: #E8E4DF;
-  --color-brand: #FF7A59;
-  --color-brand-pressed: #E9503D;
-  --color-care-deep: #7A4B36;
-  --color-care-green: #7C8F62;
-  --color-accent-blue: #FF8A65;
-  --color-success-soft: #EAF8ED;
-  --color-success-text: #2E7D32;
-  --color-warning-soft: #FFF8DB;
-  --color-warning-text: #9A6700;
-  --color-danger-soft: #FFECEB;
-  --color-danger-text: #B42318;
-  --radius-input: 16rpx;
-  --radius-card: 24rpx;
-  --radius-pill: 48rpx;
-  --space-page-x: 40rpx;
+  --color-bg-subtle: #DCE9EA;
+  --color-text-primary: #1E292D;
+  --color-text-secondary: #657277;
+  --color-text-muted: #657277;
+  --color-border: #DDE2E0;
+  --color-brand: #315E6B;
+  --color-brand-pressed: #274C57;
+  --color-care-deep: #274C57;
+  --color-care-green: #3C7D65;
+  --color-accent-blue: #315E6B;
+  --color-success-soft: #E6F0EB;
+  --color-success-text: #3C7D65;
+  --color-warning-soft: #F5EBD8;
+  --color-warning-text: #9A6A18;
+  --color-danger-soft: #F8E5E5;
+  --color-danger-text: #C83F3F;
+  --color-call-overlay: rgba(18, 24, 25, 0.78);
+  --radius-input: 20rpx;
+  --radius-card: 36rpx;
+  --radius-hero: 48rpx;
+  --radius-pill: 999rpx;
+  --space-page-x: 32rpx;
   --space-card: 32rpx;
   --space-gap-sm: 16rpx;
   --space-gap-md: 24rpx;
-  --space-gap-lg: 32rpx;
-  --font-title: 36rpx;
+  --space-gap-lg: 48rpx;
+  --font-display: 52rpx;
+  --font-title: 44rpx;
+  --font-section: 36rpx;
+  --font-body-lg: 34rpx;
   --font-body: 30rpx;
-  --font-caption: 24rpx;
-  --shadow-card: 0 14rpx 46rpx rgba(75, 68, 58, 0.08);
+  --font-label: 28rpx;
+  --font-caption: 26rpx;
+  --shadow-card: 0 12rpx 36rpx rgba(24, 40, 43, 0.06);
 }
 
 /* 通用基础类 */
@@ -80,13 +86,14 @@ page {
   font-weight: 600;
   text-align: center;
   width: 100%;
-  min-height: 96rpx;
-  line-height: 96rpx;
+  min-height: 112rpx;
+  line-height: 112rpx;
   box-sizing: border-box;
 }
 
 .ui-btn-primary:active {
   background: var(--color-brand-pressed);
+  transform: scale(0.98);
 }
 
 .ui-btn-primary[disabled] {
@@ -128,8 +135,8 @@ page {
   color: #FFFFFF;
   border: none;
   border-radius: var(--radius-pill);
-  min-height: 96rpx;
-  line-height: 96rpx;
+  min-height: 112rpx;
+  line-height: 112rpx;
   font-size: 32rpx;
   font-weight: 600;
   text-align: center;
@@ -139,6 +146,7 @@ page {
 
 .btn-primary:active {
   background: var(--color-brand-pressed);
+  transform: scale(0.98);
 }
 
 .btn-primary[disabled] {
@@ -161,4 +169,8 @@ page {
 
 .btn-secondary:active {
   background: var(--color-bg-subtle);
+}
+
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
 }
